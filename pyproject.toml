@@ -1,0 +1,14 @@
+# https://beta.ruff.rs/docs/settings/
+[tool.ruff]
+# https://beta.ruff.rs/docs/rules/
+line-length = 120
+select = ["E", "W", "F", "I", "UP"]
+# Exclude a variety of commonly ignored directories.
+respect-gitignore = true
+ignore-init-module-imports = true
+
+[tool.ruff.format]
+quote-style = "single"
+line-ending = "lf"
+skip-magic-trailing-comma = true
+docstring-code-format = true
