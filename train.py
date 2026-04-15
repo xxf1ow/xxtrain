@@ -5,7 +5,7 @@ import ultralytics
 from ruamel.yaml import YAML
 from ultralytics.models import YOLO
 
-from .annconverter import annconverter
+from annconverter import annconverter
 
 
 def get_template_name(model_version='v8', task_type='detect'):
@@ -34,8 +34,9 @@ def get_model_yaml_path(root_path, model_name):
     return os.path.join(root_path, f'{model_name}.yaml')
 
 
-def get_pretrained_weights_path(root_path, model_name):
-    return os.path.join(root_path, '.weights', f'{model_name}.pt')
+def get_pretrained_weights_path(model_name):
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(current_dir, '.weights', f'{model_name}.pt')
 
 
 def convert_voc_to_yolo(task_type, root_path, split, reserve_no_label):
@@ -107,7 +108,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
 def download_pretrained(root_path, model_name):
     # download pretrained weights if not exist
     pretrained_weights = f'{model_name}.pt'
-    pretrained_weights_path = get_pretrained_weights_path(root_path, model_name)
+    pretrained_weights_path = get_pretrained_weights_path(model_name)
     if os.path.isfile(pretrained_weights_path):
         print(f'✅ Pretrained weights already exists at {pretrained_weights_path}\n')
         return
@@ -127,7 +128,7 @@ def process(root_path, model_version='v8', model_scale='n', task_type='detect', 
     # Train the model
     print(f'🚀 Starting training for model: {model_name} ...')
     model = YOLO(get_model_yaml_path(root_path, model_name))
-    model.load(get_pretrained_weights_path(root_path, model_name))
+    model.load(get_pretrained_weights_path(model_name))
     model.train(data=get_dataset_yaml_path(root_path), epochs=10, batch=8, imgsz=128, device='cpu')
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
     print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
