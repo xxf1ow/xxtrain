@@ -16,6 +16,26 @@ def rectangle_include_point(r: 'list[float]', p: 'list[float]') -> bool:
     return p[0] >= r[0] and p[0] <= r[2] and p[1] >= r[1] and p[1] <= r[3]
 
 
+# 判断点 point 是否在矩形 rect 内部, 宽松版本. rect: [xmin, ymin, xmax, ymax]
+def rectangle_include_point_wide(r: 'list[float]', p: 'list[float]', w: float) -> bool:
+    return p[0] >= r[0] - w and p[0] <= r[2] + w and p[1] >= r[1] - w and p[1] <= r[3] + w
+
+
+# 判断一个 shape 是否完全在矩形 rect 内部, 宽松版本. rect: [xmin, ymin, xmax, ymax], shape_points: [x1, y1, x2, y2, ...]
+def rectangle_include_shape(rect: 'list[float]', shape_points: 'list[float]', shape_type=None) -> bool:
+    w = 10  # 宽松版本的宽度, 用于容忍标注误差.
+    if shape_type == 'circle':
+        assert len(shape_points) == 4, 'Shape of shape_type=circle must have 4 points'
+        (cx, cy), (px, py) = shape_points[:2], shape_points[2:]
+        r = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+        return rectangle_include_point_wide(rect, [cx, cy], r + w)
+    else:
+        for i in range(0, len(shape_points), 2):
+            if not rectangle_include_point_wide(rect, [shape_points[i], shape_points[i + 1]], w):
+                return False
+        return True
+
+
 # box (list): [xmin, ymin, xmax, ymax]
 def calculate_iou(box1: 'list[float]', box2: 'list[float]') -> float:
     x1 = max(box1[0], box2[0])
@@ -92,7 +112,7 @@ def get_xml_list(root: 'ET.Element[str]', name: str, length: int) -> 'list[ET.El
 
 
 # 解析单个 labelimg 标注文件(xml)
-def parse_labelimg(det_path: str, img_width: int, img_height: int, overlap_check: bool = True) -> dict:
+def parse_det_anns_from_labelimg(det_path: str, img_width: int, img_height: int, overlap_check: bool = True) -> dict:
     if not os.path.isfile(det_path):
         return {}
     try:
@@ -155,6 +175,125 @@ def create_labelimg(xml_path: str, image_name: str, width: int, height: int, bbo
     pretty_xml_str = reparsed.toprettyxml(indent='    ')
     with open(xml_path, 'w', encoding='utf-8') as f:
         f.write(pretty_xml_str)
+
+
+def parse_seg_anns_from_labelme(seg_path: str, img_width: int, img_height: int) -> dict:
+    if not os.path.isfile(seg_path):
+        return {}
+    # load json label file
+    with open(seg_path, encoding='utf-8') as file:
+        data = json.load(file)
+    # check image size
+    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {seg_path}'
+    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {seg_path}'
+    # parse shapes info
+    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
+    for shape in data['shapes']:
+        # check shape type (rotation == polygon)
+        shape_type = shape['shape_type']
+        if shape_type not in ['circle', 'rectangle', 'polygon', 'rotation']:
+            raise Exception(f'Unsupported shape types: {shape_type}, check: {seg_path}')
+        # get instance (mark: 忽略 group_id. 同一实例的多个部分被认为是多个不同的实例)
+        instance = (shape['label'], shape_type, uuid.uuid1())
+        points = shape['points']
+        # points convert
+        if shape_type == 'rectangle':  # 矩形将两个对角点转换为四个顶点
+            assert len(points) == 2 or len(points) == 4, f'{seg_path}: Shape of rectangle must have 2 or 4 points'
+            if len(points) == 2:
+                (x1, y1), (x2, y2) = points
+                x1, x2 = sorted([x1, x2])
+                y1, y2 = sorted([y1, y2])
+                points = [x1, y1, x2, y1, x2, y2, x1, y2]
+            elif len(points) == 4:
+                assert (
+                    points[0][0] == points[3][0]
+                    and points[1][0] == points[2][0]
+                    and points[0][1] == points[1][1]
+                    and points[2][1] == points[3][1]
+                ), f'{seg_path}: Shape of shape_type=rectangle is invalid box'
+        elif shape_type == 'circle':  # 圆形根据圆心和半径,生成一个多边形的点坐标.
+            (x1, y1), (x2, y2) = points
+            r = np.linalg.norm([x2 - x1, y2 - y1])
+            # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
+            # x: tolerance of the gap between the arc and the line segment
+            n_points_circle = max(int(np.pi / np.arccos(1 - 1 / r)), 12)
+            i = np.arange(n_points_circle)
+            x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
+            y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
+            points = np.stack((x, y), axis=1).flatten()
+        else:
+            points = np.asarray(points).flatten().tolist()
+        assert len(points) >= 6, f'{seg_path}: Shape must have more than 3 points'
+        # push to shapes
+        shapes[instance].append(points)
+    # shapes convert to normal dict
+    return dict(shapes)
+
+
+def parse_obb_anns_from_labelme(obb_path: str, img_width: int, img_height: int) -> dict:
+    if not os.path.isfile(obb_path):
+        return {}
+    # load json label file
+    with open(obb_path, encoding='utf-8') as file:
+        data = json.load(file)
+    # check image size
+    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {obb_path}'
+    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {obb_path}'
+    # parse shapes info
+    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
+    for shape in data['shapes']:
+        # check shape type
+        shape_type = shape['shape_type']
+        if shape_type not in ['circle', 'rectangle', 'linestrip', 'polygon', 'rotation']:
+            raise Exception(f'Unsupported shape types: {shape_type}, check: {obb_path}')
+        # get instance (mark: 忽略 group_id. obb 任务没有 group_id.)
+        instance = (shape['label'], shape_type, uuid.uuid1())
+        points = shape['points']
+        # points convert
+        if shape_type == 'circle':  # 圆形根据圆心和半径,生成一个多边形的点坐标.
+            (x1, y1), (x2, y2) = points
+            r = np.linalg.norm([x2 - x1, y2 - y1])
+            # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
+            # x: tolerance of the gap between the arc and the line segment
+            n_points_circle = max(int(np.pi / np.arccos(1 - 1 / r)), 12)
+            i = np.arange(n_points_circle)
+            x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
+            y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
+            points = np.stack((x, y), axis=1).flatten()
+        else:
+            points = np.asarray(points).flatten().tolist()
+        # todo: 获取 points 的最小外接矩形 (obb)
+        assert False, 'Not implemented yet: obb conversion from shape points'
+        assert len(points) == 8, f'{obb_path}: Shape must have 4 points'
+        # push to shapes
+        shapes[instance].append(points)
+    # shapes convert to normal dict
+    return dict(shapes)
+
+
+def parse_pose_anns_from_labelme(pose_path: str, img_width: int, img_height: int) -> dict:
+    if not os.path.isfile(pose_path):
+        return {}
+    # load json label file
+    with open(pose_path, encoding='utf-8') as file:
+        data = json.load(file)
+    # check image size
+    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {pose_path}'
+    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {pose_path}'
+    # parse shapes info
+    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
+    for shape in data['shapes']:
+        # check shape type
+        shape_type = shape['shape_type']
+        if shape_type not in ['line', 'linestrip', 'point', 'polygon']:
+            raise Exception(f'Unsupported shape types: {shape_type}, check: {pose_path}')
+        # get instance (mark: 忽略 group_id. pose 任务没有 group_id.)
+        instance = (shape['label'], shape_type, uuid.uuid1())
+        points = np.asarray(shape['points']).flatten().tolist()
+        # push to shapes
+        shapes[instance].append(points)
+    # shapes convert to normal dict
+    return dict(shapes)
 
 
 # shape_to_mask
@@ -243,7 +382,7 @@ def parse_labelme(
                     and points[0][1] == points[1][1]
                     and points[2][1] == points[3][1]
                 ), f'{seg_path}: Shape of shape_type=rectangle is invalid box'
-        elif shape_type == 'circle':  # 圆形根据圆心和半径，生成一个多边形的点坐标。
+        elif shape_type == 'circle':  # 圆形根据圆心和半径,生成一个多边形的点坐标.
             (x1, y1), (x2, y2) = points
             r = np.linalg.norm([x2 - x1, y2 - y1])
             # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)

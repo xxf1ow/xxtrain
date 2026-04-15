@@ -5,7 +5,7 @@ import ultralytics
 from ruamel.yaml import YAML
 from ultralytics.models import YOLO
 
-from annconverter import voc2yolo
+from .annconverter import annconverter
 
 
 def get_template_name(model_version='v8', task_type='detect'):
@@ -38,18 +38,18 @@ def get_pretrained_weights_path(root_path, model_name):
     return os.path.join(root_path, '.weights', f'{model_name}.pt')
 
 
-def convert_voc_to_yolo(root_path, split, reserve_no_label):
+def convert_voc_to_yolo(task_type, root_path, split, reserve_no_label):
     dataset_yaml_path = get_dataset_yaml_path(root_path)
     yolo_dataset_path = os.path.join(root_path, 'labels')
     if os.path.isfile(dataset_yaml_path) and os.path.isdir(yolo_dataset_path) and os.listdir(yolo_dataset_path):
         print(f'✅ Dataset configuration file already exists at {dataset_yaml_path}\n')
         return
-    print('🚀 Converting VOC dataset to YOLO format ...')
-    voc2yolo.process(root_path, split, reserve_no_label)
+    print('🚀 Converting dataset to YOLO format ...')
+    annconverter.process(task_type, root_path, split, reserve_no_label)
     if not os.path.isfile(dataset_yaml_path):
         print(f'❌ dataset.yaml not found at {dataset_yaml_path} after conversion, please check the process')
         return
-    print('✅ COCO conversion done!\n')
+    print('✅ Conversion done!\n')
 
 
 def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_type='detect'):
@@ -61,12 +61,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
     try:
         yaml_handler = YAML()
         yaml_handler.preserve_quotes = True  # 保留引号
-        # read num_classes from dataset.yaml
-        dataset_yaml_path = get_dataset_yaml_path(root_path)
-        with open(dataset_yaml_path) as f:
-            num_classes = len(yaml_handler.load(f)['names'])
-        if num_classes <= 0:
-            raise ValueError(f'❌ No classes found in dataset.yaml: {dataset_yaml_path}')
+
         # source template model.yaml
         template_name = get_template_name(model_version, task_type)
         if template_name is None:
@@ -75,15 +70,36 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
         source_path = os.path.join(package_path, 'cfg', 'models', model_version, template_name)
         if not os.path.isfile(source_path):
             raise FileNotFoundError(f'❌ Template model configuration file not found: {source_path}')
+
+        # read num_classes from dataset.yaml
+        dataset_yaml_path = get_dataset_yaml_path(root_path)
+        with open(dataset_yaml_path) as f:
+            dataset = yaml_handler.load(f)
+
+        # read template model.yaml and write target model.yaml
         with open(source_path) as f:
-            content = yaml_handler.load(f)
-            content['nc'] = num_classes
+            model = yaml_handler.load(f)
+
+        # set num_classes in model.yaml content
+        num_classes = len(dataset['names'])
+        if num_classes <= 0:
+            raise ValueError(f'❌ No classes found in dataset.yaml: {dataset_yaml_path}')
+        model['nc'] = num_classes
+
+        # set kpt_shape in model.yaml content if pose task
+        if task_type == 'pose':
+            if 'kpt_shape' not in dataset:
+                raise KeyError("❌ 'kpt_shape' missing in dataset.yaml for pose task")
+            model['kpt_shape'] = dataset['kpt_shape']
+
         # target model.yaml
         with open(target_path, 'w') as f:
-            yaml_handler.dump(content, f)
+            yaml_handler.dump(model, f)
+
     except Exception as e:
         print(f'❌ Failed to generate model configuration file: {e}')
         return
+
     print(f'✅ Model configuration file generated: {target_path}\n')
     return model_name
 
@@ -104,7 +120,7 @@ def download_pretrained(root_path, model_name):
 
 def process(root_path, model_version='v8', model_scale='n', task_type='detect', split=10, reserve_no_label=True):
     # process dataset and generate dataset.yaml, generate model.yaml, download pretrained weights
-    convert_voc_to_yolo(root_path, split, reserve_no_label)
+    convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
     model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
     download_pretrained(root_path, model_name)
 
@@ -112,22 +128,31 @@ def process(root_path, model_version='v8', model_scale='n', task_type='detect', 
     print(f'🚀 Starting training for model: {model_name} ...')
     model = YOLO(get_model_yaml_path(root_path, model_name))
     model.load(get_pretrained_weights_path(root_path, model_name))
-    model.train(data=get_dataset_yaml_path(root_path), epochs=100, batch=16, imgsz=640, device=0)
+    model.train(data=get_dataset_yaml_path(root_path), epochs=10, batch=8, imgsz=128, device='cpu')
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
     print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
+
+    # Validate the model using the best checkpoint
+    print(f'🚀 Running inference on validation set using best model: {best_model_path} ...')
     if not os.path.isfile(best_model_path):
+        print(f'❌ Best model checkpoint not found at {best_model_path}, skipping ...')
         return
+    model = YOLO(best_model_path)
+    val_path = os.path.join(root_path, 'val.txt')
+    save_path = os.path.abspath(os.path.join(root_path, 'val_results'))
+    model.predict(source=val_path, save=True, conf=0.25, project=save_path, name=model_name, exist_ok=True)
+    print(f'✅ Inference completed! Results saved at: {save_path}\n')
 
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
         import onnx
         import onnxsim
 
-        onnx_path = os.path.join(root_path, f'{model_name}.onnx')
         print('🚀 Exporting best model to ONNX format ...')
-        model = YOLO(best_model_path)
+        onnx_path = os.path.join(root_path, f'{model_name}.onnx')
         model.export(format='onnx', path=onnx_path)
         print(f'✅ Model exported to ONNX format: {onnx_path}')
+
         onnxsim_path = os.path.join(root_path, f'{model_name}.sim.onnx')
         model_simplified, check = onnxsim.simplify(onnx.load(onnx_path))
         if check:
