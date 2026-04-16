@@ -1,14 +1,64 @@
-import collections
 import json
 import math
 import os
-import uuid
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Any, Optional, Union
+from uuid import UUID, uuid1
 from xml.dom import minidom
 
 import numpy as np
 import PIL.Image
 import PIL.ImageDraw
+
+
+class ShapeType(Enum):
+    RECTANGLE = 'rectangle'
+    CIRCLE = 'circle'
+    POLYGON = 'polygon'
+    LINE = 'line'
+    LINESTRIP = 'linestrip'
+    POINT = 'point'
+    ROTATION = 'rotation'  # OBB 或 旋转矩形
+
+
+class TaskType(Enum):
+    OBB = 'obb'
+    POSE = 'pose'
+    DETECT = 'detect'
+    SEGMENT = 'segment'
+    CLASSIFY = 'classify'
+
+
+@dataclass
+class Annotation:
+    """单个标注实例的通用类"""
+
+    label: str
+    type: ShapeType
+    parts: 'list[list[float]]' = field(default_factory=list)  # [x1, y1, x2, y2, ...] (可能多个形状是一个实例的不同部分)
+    instance: Union[tuple, UUID] = field(default_factory=uuid1)  # noqa: UP007, UP045, group id 仅在语义分割标注中使用
+    mask: Optional[np.ndarray] = None  # noqa: UP007, UP045, 掩码图像, 部分分割标注中使用
+
+    @property
+    def points(self) -> 'list[float]':
+        """返回 parts[0], 不适用 group id 的任务使用"""
+        return self.parts[0] if self.parts else []
+
+    @property
+    def bbox(self) -> 'list[float]':
+        """根据 points 自动计算外接矩形 [xmin, ymin, xmax, ymax]"""
+        if not self.points:
+            return [0.0, 0.0, 0.0, 0.0]
+        xs = self.points[0::2]
+        ys = self.points[1::2]
+        return [min(xs), min(ys), max(xs), max(ys)]
+
+    def translate(self, dx: float, dy: float) -> 'Annotation':
+        """返回平移后的新对象"""
+        new_parts = [[(p + dx if i % 2 == 0 else p + dy) for i, p in enumerate(part)] for part in self.parts]
+        return replace(self, parts=new_parts)
 
 
 # 判断点 point 是否在矩形 rect 内部. rect: [xmin, ymin, xmax, ymax]
@@ -92,13 +142,25 @@ def find_img(path: str) -> 'list[str]':
 
 
 # 取出 xml 单项 (length 预期长度, 为 0 则不检查)
-def get_xml_value(root: 'ET.Element[str]', name: str) -> float:
+def get_xml_value(root: 'ET.Element[str]', name: str) -> ET.Element[str]:
     XmlValue = root.findall(name)
     if XmlValue is None:
         raise Exception(f'Cannot find {name} in XML file.')
     if len(XmlValue) != 1:
         raise Exception(f'The size of {name} is supposed to be 1, but is {len(XmlValue)}.')
-    return 0 if XmlValue[0].text is None else float(XmlValue[0].text)
+    return XmlValue[0]
+
+
+# 取出 xml 单项
+def get_xml_str_value(root: 'ET.Element[str]', name: str) -> str:
+    value = get_xml_value(root, name)
+    return '' if value.text is None else value.text
+
+
+# 取出 xml 单项
+def get_xml_float_value(root: 'ET.Element[str]', name: str) -> float:
+    value = get_xml_value(root, name)
+    return 0 if value.text is None else float(value.text)
 
 
 # 取出 xml 列表 (length 预期长度, 为 0 则不检查)
@@ -112,34 +174,40 @@ def get_xml_list(root: 'ET.Element[str]', name: str, length: int) -> 'list[ET.El
 
 
 # 解析单个 labelimg 标注文件(xml)
-def parse_det_anns_from_labelimg(det_path: str, img_width: int, img_height: int, overlap_check: bool = True) -> dict:
-    if not os.path.isfile(det_path):
-        return {}
+def parse_det_anns_from_labelimg(
+    det_path: str, img_width: int, img_height: int, overlap_check: bool = True
+) -> 'dict[UUID, Annotation]':
     try:
+        if not os.path.isfile(det_path):
+            raise FileNotFoundError('file not found ...')
         tree = ET.parse(det_path)
         root = tree.getroot()
         # check image size
-        imgsize = get_xml_list(root, 'size', 1)[0]
-        assert img_width == int(get_xml_value(imgsize, 'width')), f'图片与标签不对应: {det_path}'
-        assert img_height == int(get_xml_value(imgsize, 'height')), f'图片与标签不对应: {det_path}'
+        imgsize = get_xml_value(root, 'size')
+        assert img_width == int(get_xml_float_value(imgsize, 'width')), f'图片与标签不对应: {det_path}'
+        assert img_height == int(get_xml_float_value(imgsize, 'height')), f'图片与标签不对应: {det_path}'
         # parse box info
-        bbox = {}
+        instances_map: dict[UUID, Annotation] = {}
         for obj in get_xml_list(root, 'object', 0):
-            name = get_xml_list(obj, 'name', 1)[0].text
-            bndbox = get_xml_list(obj, 'bndbox', 1)[0]
-            xmin = round(get_xml_value(bndbox, 'xmin'))
-            ymin = round(get_xml_value(bndbox, 'ymin'))
-            xmax = round(get_xml_value(bndbox, 'xmax'))
-            ymax = round(get_xml_value(bndbox, 'ymax'))
+            name = get_xml_str_value(obj, 'name')
+            bndbox = get_xml_value(obj, 'bndbox')
+            xmin = get_xml_float_value(bndbox, 'xmin')
+            ymin = get_xml_float_value(bndbox, 'ymin')
+            xmax = get_xml_float_value(bndbox, 'xmax')
+            ymax = get_xml_float_value(bndbox, 'ymax')
             assert xmax > xmin and ymax > ymin and xmax <= img_width and ymax <= img_height, f'{det_path}'
-            bbox[(name, uuid.uuid1())] = [xmin, ymin, xmax, ymax]
-        if overlap_check:
-            sorted_bboxes = calculate_nms(bbox)
-            if len(bbox) != len(sorted_bboxes):
-                print(f'\n labelimg 标注出现重叠框: {det_path}\n')
+            points = [xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax]  # 矩形转多边形点集
+            instances_map[uuid1()] = Annotation(label=name, parts=[points], type=ShapeType.RECTANGLE)
+
+        # todo: fix it ...
+        # if overlap_check:
+        #     sorted_bboxes = calculate_nms(bbox)
+        #     if len(bbox) != len(sorted_bboxes):
+        #         print(f'\n labelimg 标注出现重叠框: {det_path}\n')
+
+        return instances_map
     except Exception as e:
-        raise Exception(f'Failed to parse XML file: {det_path}, {e}')
-    return bbox
+        raise Exception(f'Failed to parse annotation: {det_path}, {e}')
 
 
 def create_labelimg(xml_path: str, image_name: str, width: int, height: int, bbox_dict: dict):
@@ -175,125 +243,6 @@ def create_labelimg(xml_path: str, image_name: str, width: int, height: int, bbo
     pretty_xml_str = reparsed.toprettyxml(indent='    ')
     with open(xml_path, 'w', encoding='utf-8') as f:
         f.write(pretty_xml_str)
-
-
-def parse_seg_anns_from_labelme(seg_path: str, img_width: int, img_height: int) -> dict:
-    if not os.path.isfile(seg_path):
-        return {}
-    # load json label file
-    with open(seg_path, encoding='utf-8') as file:
-        data = json.load(file)
-    # check image size
-    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {seg_path}'
-    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {seg_path}'
-    # parse shapes info
-    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
-    for shape in data['shapes']:
-        # check shape type (rotation == polygon)
-        shape_type = shape['shape_type']
-        if shape_type not in ['circle', 'rectangle', 'polygon', 'rotation']:
-            raise Exception(f'Unsupported shape types: {shape_type}, check: {seg_path}')
-        # get instance (mark: 忽略 group_id. 同一实例的多个部分被认为是多个不同的实例)
-        instance = (shape['label'], shape_type, uuid.uuid1())
-        points = shape['points']
-        # points convert
-        if shape_type == 'rectangle':  # 矩形将两个对角点转换为四个顶点
-            assert len(points) == 2 or len(points) == 4, f'{seg_path}: Shape of rectangle must have 2 or 4 points'
-            if len(points) == 2:
-                (x1, y1), (x2, y2) = points
-                x1, x2 = sorted([x1, x2])
-                y1, y2 = sorted([y1, y2])
-                points = [x1, y1, x2, y1, x2, y2, x1, y2]
-            elif len(points) == 4:
-                assert (
-                    points[0][0] == points[3][0]
-                    and points[1][0] == points[2][0]
-                    and points[0][1] == points[1][1]
-                    and points[2][1] == points[3][1]
-                ), f'{seg_path}: Shape of shape_type=rectangle is invalid box'
-        elif shape_type == 'circle':  # 圆形根据圆心和半径,生成一个多边形的点坐标.
-            (x1, y1), (x2, y2) = points
-            r = np.linalg.norm([x2 - x1, y2 - y1])
-            # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
-            # x: tolerance of the gap between the arc and the line segment
-            n_points_circle = max(int(np.pi / np.arccos(1 - 1 / r)), 12)
-            i = np.arange(n_points_circle)
-            x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
-            y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
-            points = np.stack((x, y), axis=1).flatten()
-        else:
-            points = np.asarray(points).flatten().tolist()
-        assert len(points) >= 6, f'{seg_path}: Shape must have more than 3 points'
-        # push to shapes
-        shapes[instance].append(points)
-    # shapes convert to normal dict
-    return dict(shapes)
-
-
-def parse_obb_anns_from_labelme(obb_path: str, img_width: int, img_height: int) -> dict:
-    if not os.path.isfile(obb_path):
-        return {}
-    # load json label file
-    with open(obb_path, encoding='utf-8') as file:
-        data = json.load(file)
-    # check image size
-    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {obb_path}'
-    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {obb_path}'
-    # parse shapes info
-    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
-    for shape in data['shapes']:
-        # check shape type
-        shape_type = shape['shape_type']
-        if shape_type not in ['circle', 'rectangle', 'linestrip', 'polygon', 'rotation']:
-            raise Exception(f'Unsupported shape types: {shape_type}, check: {obb_path}')
-        # get instance (mark: 忽略 group_id. obb 任务没有 group_id.)
-        instance = (shape['label'], shape_type, uuid.uuid1())
-        points = shape['points']
-        # points convert
-        if shape_type == 'circle':  # 圆形根据圆心和半径,生成一个多边形的点坐标.
-            (x1, y1), (x2, y2) = points
-            r = np.linalg.norm([x2 - x1, y2 - y1])
-            # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
-            # x: tolerance of the gap between the arc and the line segment
-            n_points_circle = max(int(np.pi / np.arccos(1 - 1 / r)), 12)
-            i = np.arange(n_points_circle)
-            x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
-            y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
-            points = np.stack((x, y), axis=1).flatten()
-        else:
-            points = np.asarray(points).flatten().tolist()
-        # todo: 获取 points 的最小外接矩形 (obb)
-        assert False, 'Not implemented yet: obb conversion from shape points'
-        assert len(points) == 8, f'{obb_path}: Shape must have 4 points'
-        # push to shapes
-        shapes[instance].append(points)
-    # shapes convert to normal dict
-    return dict(shapes)
-
-
-def parse_pose_anns_from_labelme(pose_path: str, img_width: int, img_height: int) -> dict:
-    if not os.path.isfile(pose_path):
-        return {}
-    # load json label file
-    with open(pose_path, encoding='utf-8') as file:
-        data = json.load(file)
-    # check image size
-    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {pose_path}'
-    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {pose_path}'
-    # parse shapes info
-    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
-    for shape in data['shapes']:
-        # check shape type
-        shape_type = shape['shape_type']
-        if shape_type not in ['line', 'linestrip', 'point', 'polygon']:
-            raise Exception(f'Unsupported shape types: {shape_type}, check: {pose_path}')
-        # get instance (mark: 忽略 group_id. pose 任务没有 group_id.)
-        instance = (shape['label'], shape_type, uuid.uuid1())
-        points = np.asarray(shape['points']).flatten().tolist()
-        # push to shapes
-        shapes[instance].append(points)
-    # shapes convert to normal dict
-    return dict(shapes)
 
 
 # shape_to_mask
@@ -335,137 +284,121 @@ def shape_to_mask(img_shape, points, shape_type=None, line_width=10, point_size=
     return mask
 
 
+class TaskProcessor:
+    # 定义不同任务允许的形状
+    RULES = {
+        TaskType.DETECT: [ShapeType.RECTANGLE],
+        TaskType.SEGMENT: [ShapeType.POLYGON, ShapeType.CIRCLE, ShapeType.RECTANGLE, ShapeType.ROTATION],
+        TaskType.POSE: [ShapeType.POLYGON, ShapeType.POINT, ShapeType.LINE, ShapeType.LINESTRIP],
+        TaskType.OBB: [
+            ShapeType.POLYGON,
+            ShapeType.CIRCLE,
+            ShapeType.RECTANGLE,
+            ShapeType.ROTATION,
+            ShapeType.LINESTRIP,
+        ],
+    }
+
+    @staticmethod
+    def circle_to_polygon(points: 'list[float]') -> 'list[float]':
+        assert len(points) == 4, 'Shape of shape_type=circle must have 2 points'
+        x1, y1, x2, y2 = points
+        r = np.linalg.norm([x2 - x1, y2 - y1])
+        # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
+        # x: tolerance of the gap between the arc and the line segment
+        n_points_circle = max(int(np.pi / np.arccos(1 - 1 / r)), 12)
+        i = np.arange(n_points_circle)
+        x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
+        y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
+        return np.stack((x, y), axis=1).flatten().tolist()
+
+    @staticmethod
+    def transform(task_type: TaskType, shape_type: ShapeType, points: 'list[float]') -> 'list[float]':
+        if shape_type not in TaskProcessor.RULES[task_type]:
+            raise Exception(f"[Warning] Task {task_type.value} usually doesn't use {shape_type}")
+        if task_type == TaskType.SEGMENT:
+            if shape_type == ShapeType.RECTANGLE:
+                assert len(points) == 4 or len(points) == 8, 'Shape of rectangle must have 2 or 4 points'
+                if len(points) == 2:
+                    x1, y1, x2, y2 = points
+                    x1, x2 = sorted([x1, x2])
+                    y1, y2 = sorted([y1, y2])
+                    return [x1, y1, x2, y1, x2, y2, x1, y2]
+            elif shape_type == ShapeType.CIRCLE:
+                return TaskProcessor.circle_to_polygon(points)
+            return points
+        elif task_type == TaskType.OBB:
+            if shape_type == ShapeType.CIRCLE:
+                points = TaskProcessor.circle_to_polygon(points)
+            assert False, 'Not implemented yet: obb conversion from shape points'
+            # todo: 获取 points 的最小外接矩形 (obb)
+            return points
+        return points
+
+
 # 解析单个 labelme 标注文件(json)
-def parse_labelme(
-    seg_path,
-    img_width,
-    img_height,
-    allow_shape_type=['circle', 'rectangle', 'line', 'linestrip', 'point', 'polygon', 'rotation'],
-    need_shape_type=False,
-):
-    if not os.path.isfile(seg_path):
-        return {}, {}
-    # load json label file
-    with open(seg_path, encoding='utf-8') as file:
-        data = json.load(file)
-    # check image size
-    assert img_width == int(data['imageWidth']), f'图片与标签不对应: {seg_path}'
-    assert img_height == int(data['imageHeight']), f'图片与标签不对应: {seg_path}'
-    # parse shapes info
-    masks = {}
-    shapes = collections.defaultdict(list)  # 如果你访问一个不存在的键, defaultdict 会自动为这个键创建一个默认值
-    for shape in data['shapes']:
-        # check shape type (rotation == polygon)
-        shape_type = shape['shape_type']
-        if shape_type not in allow_shape_type:
-            raise Exception(f'Unsupported shape types: {shape_type}, check: {seg_path}')
-        # get instance (唯一实例 flag 值)
-        label = shape['label']
-        group_id = uuid.uuid1() if shape['group_id'] is None else shape['group_id']
-        instance = (label, group_id, shape_type) if need_shape_type else (label, group_id)
-        # generate mask (如果存在同一 group_id 的 mask , 就合并它们)
-        points = shape['points']
-        mask = shape_to_mask([img_height, img_width], points, shape_type)
-        masks[instance] = masks[instance] | mask if instance in masks else mask
-        # points convert
-        if shape_type == 'rectangle':  # 矩形将两个对角点转换为四个顶点
-            assert len(points) == 2 or len(points) == 4, f'{seg_path}: Shape of rectangle must have 2 or 4 points'
-            if len(points) == 2:
-                (x1, y1), (x2, y2) = points
-                x1, x2 = sorted([x1, x2])
-                y1, y2 = sorted([y1, y2])
-                points = [x1, y1, x2, y1, x2, y2, x1, y2]
-            elif len(points) == 4:
-                assert (
-                    points[0][0] == points[3][0]
-                    and points[1][0] == points[2][0]
-                    and points[0][1] == points[1][1]
-                    and points[2][1] == points[3][1]
-                ), f'{seg_path}: Shape of shape_type=rectangle is invalid box'
-        elif shape_type == 'circle':  # 圆形根据圆心和半径,生成一个多边形的点坐标.
-            (x1, y1), (x2, y2) = points
-            r = np.linalg.norm([x2 - x1, y2 - y1])
-            # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
-            # x: tolerance of the gap between the arc and the line segment
-            n_points_circle = max(int(np.pi / np.arccos(1 - 1 / r)), 12)
-            i = np.arange(n_points_circle)
-            x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
-            y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
-            points = np.stack((x, y), axis=1).flatten()
-        else:
-            points = np.asarray(points).flatten().tolist()
-        # points round to int
-        shapes[instance].append(points)
-    # shapes convert to normal dict
-    shapes = dict(shapes)
-
-    return masks, shapes
+def parse_seg_anns_from_labelme(
+    seg_path: str, img_width: int, img_height: int, task: TaskType, need_mask: bool = False
+) -> 'dict[Any, Annotation]':
+    try:
+        if not os.path.isfile(seg_path):
+            raise FileNotFoundError('file not found ...')
+        # load json label file
+        with open(seg_path, encoding='utf-8') as file:
+            data = json.load(file)
+        # check image size
+        assert img_width == int(data['imageWidth']), f'图片与标签不对应: {seg_path}'
+        assert img_height == int(data['imageHeight']), f'图片与标签不对应: {seg_path}'
+        # process shapes info
+        instances_map: dict[Any, Annotation] = {}
+        for shape in data['shapes']:
+            # read shape info
+            label = shape['label']
+            group_id = shape.get('group_id')
+            shape_type = shape['shape_type']
+            raw_points = np.array(shape['points']).flatten().tolist()
+            instance_key = uuid1() if group_id is None else (label, group_id)
+            # create or get instance
+            if instance_key not in instances_map:
+                instances_map[instance_key] = Annotation(label=label, type=shape_type, instance=instance_key)
+            # points convert and transform according to task
+            processed_points = TaskProcessor.transform(task, shape_type, raw_points)
+            # add points to instance
+            instances_map[instance_key].parts.append(processed_points)
+            # if need_mask, convert shape to mask and add to instance mask (only for segment task)
+            if need_mask and task == TaskType.SEGMENT:
+                new_mask = shape_to_mask([img_height, img_width], raw_points, shape_type)
+                if instances_map[instance_key].mask is None:
+                    instances_map[instance_key].mask = new_mask
+                else:
+                    instances_map[instance_key].mask |= new_mask
+        # return result
+        return instances_map
+    except Exception as e:
+        raise Exception(f'Failed to parse annotation: {seg_path}, {e}')
 
 
-def query_labelme_flags(seg_path, flag):
-    with open(seg_path, encoding='utf-8') as file:
-        data = json.load(file)
-    flags = data.get('flags', {})
-    return flags.get(flag, False)
-
-
-def set_labelme_flags(seg_path, flag):
-    with open(seg_path, encoding='utf-8') as file:
-        data = json.load(file)
-    data.setdefault('flags', {})
-    data['flags'][flag] = True
-    with open(seg_path, 'w', encoding='utf-8') as file:
-        json.dump(data, file, indent=4)
-
-
-def get_matching_pairs(seg_path, bbox, shapes, check_no_rotation=False):
-    # [Warning] no rotation
-    if check_no_rotation:
-        for _, xy in shapes.items():
-            if (
-                len(xy[0]) == 8
-                and xy[0][0] == xy[0][6]
-                and xy[0][2] == xy[0][4]
-                and xy[0][1] == xy[0][3]
-                and xy[0][5] == xy[0][7]
-                and not query_labelme_flags(seg_path, 'Ignoring_no_rotation_warning')
-            ):
-                print(f'\n\033[1;33m[Warning] no rotation: {seg_path}\033[0m')
-                print('\nEnter [Y/N] to choose to keep/discard the annotations for this file: ')
-                user_input = input().lower()
-                if user_input != 'y':
-                    return {}
-                set_labelme_flags(seg_path, 'Ignoring_no_rotation_warning')
-    # get_matching_pairs
-    pairs = {}
-    selected_shapes = set()
-    centers = {instance: np.asarray(shape).reshape(-1, 2).mean(axis=0) for instance, shape in shapes.items()}
-    for box_instance, box in bbox.items():
-        matching_shapes = []
-        for shape_instance, _ in shapes.items():
-            if shape_instance in selected_shapes or not rectangle_include_point(box, centers[shape_instance]):
-                continue
-            selected_shapes.add(shape_instance)
-            matching_shapes.append(shape_instance)
-        if len(matching_shapes) > 0:
-            pairs[box_instance] = matching_shapes
-    # [Error] matching pairs
-    if (len(bbox) != len(pairs) or len(shapes) != len(selected_shapes)) and not query_labelme_flags(
-        seg_path, 'Ignoring_matching_errors'
-    ):
-        print(
-            f'\n\033[1;31m[Error] matching pairs: {seg_path}\nlen(bbox): {len(bbox)}, len(pairs): {len(pairs)}, '
-            f'len(shapes): {len(shapes)}, len(selected_shapes): {len(selected_shapes)}\033[0m'
-        )
-        for box_instance, box in bbox.items():
-            if box_instance not in pairs:
-                print(f'box: {box}')
-        for shape_instance, shape in shapes.items():
-            if shape_instance not in selected_shapes:
-                print(f'shape: {centers[shape_instance]}, {np.rint(shape).astype(int).tolist()}')
-        print('\nEnter [Y/N] to choose to keep/discard the annotations for this file: ')
-        user_input = input().lower()
-        if user_input != 'y':
-            return {}
-        set_labelme_flags(seg_path, 'Ignoring_matching_errors')
-    return pairs
+def map_parent_child_annotations(parents: 'dict[Any, Annotation]', children: 'dict[Any, Annotation]'):
+    # 计算 parent 和 children 之间的匹配关系, 返回一个 dict
+    # key 是 parent 的 instance, value 是一个 list 包含所有匹配的 cheren instance
+    mapping = {pkey: [] for pkey, _ in parents.items()}
+    # 遍历每个子标注，寻找其唯一的父标注
+    for ckey, cval in children.items():
+        # 找到所有包含 child 的 parent
+        matched_parents = []
+        for pkey, pval in parents.items():
+            if rectangle_include_shape(pval.bbox, cval.points, cval.type):
+                matched_parents.append(pkey)
+        # 约束检查：不允许一个 child 没有 parent, 或一个 child 匹配多个 parent
+        if not matched_parents:
+            raise ValueError(f'Child annotation (id: {ckey}, bbox: {cval.bbox}) does not belong to any parent.')
+        if len(matched_parents) > 1:
+            pkeys = [pkey for pkey in matched_parents]
+            raise ValueError(f'Child annotation (id: {ckey}) is ambiguous: it matches multiple parents: {pkeys}')
+        # 记录匹配关系
+        mapping[matched_parents[0]].append(ckey)
+    # 约束检查：如果有 parent 没有匹配的 child，则抛出异常
+    for pkey, linked_children in mapping.items():
+        if not linked_children:
+            raise ValueError(f'Parent annotation (id: {pkey}) has no matching children.')
+    return mapping

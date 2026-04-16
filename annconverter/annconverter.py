@@ -32,12 +32,13 @@ import PIL.Image
 from tqdm import tqdm
 
 from .annparser import (
+    ShapeType,
+    TaskType,
     find_dir,
     find_img,
+    map_parent_child_annotations,
     parse_det_anns_from_labelimg,
-    parse_pose_anns_from_labelme,
     parse_seg_anns_from_labelme,
-    rectangle_include_shape,
 )
 
 
@@ -48,7 +49,6 @@ class GlobalContext:
         self.split = split
         self.reserve_no_label = reserve_no_label
         self.label_list = []
-        self.sub_label_list = []
 
         # ---------------------- 全局统计与状态 ----------------------
         self.train_list = []
@@ -69,12 +69,6 @@ class GlobalContext:
         with open(label_path, encoding='utf-8') as f:
             self.label_list = [line.strip() for line in f.readlines()]
         assert len(self.label_list) > 0, f'标签列表为空: {label_path}'
-        # 读取子标签列表 (如果存在)
-        sub_label_path = self.get_sub_labels_list_path()
-        if os.path.isfile(sub_label_path):
-            with open(sub_label_path, encoding='utf-8') as f:
-                self.sub_label_list = [line.strip() for line in f.readlines()]
-            assert len(self.sub_label_list) > 0, f'标签列表为空: {sub_label_path}'
 
     def get_images_path(self):
         return os.path.join(self.root_path, 'images')
@@ -99,6 +93,25 @@ class GlobalContext:
 
     def get_dataset_yaml_path(self):
         return os.path.join(self.root_path, 'dataset.yaml')
+
+    def dataset_finalize(self):
+        # 写入 txt 和 yaml
+        with open(self.get_train_list_path(), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(self.train_list))
+        with open(self.get_val_list_path(), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(self.val_list))
+        # detect
+        content = f'path: {self.root_path}\ntrain: train.txt\nval: val.txt\n\nnames:\n'
+        for i, name in enumerate(self.label_list):
+            content += f'  {i}: {name}\n'
+        # pose
+        if self.task_type.endswith('pose'):
+            content += f'\nkpt_shape: [{len(self.label_list)}, 3]\nkpt_names:\n  0:\n'
+            for i, name in enumerate(self.label_list):
+                content += f'    - {name}\n'
+        # 写入 dataset.yaml
+        with open(self.get_dataset_yaml_path(), 'w', encoding='utf-8') as f:
+            f.write(content)
 
     def print_summary(self):
         print('\n\033[1;32m[Convert Summary]\033[0m')
@@ -178,7 +191,7 @@ class Pipeline(BaseProcessor):
             processor.process(ctx, payload)
 
 
-class DirectoryIteratorProcessor(BaseProcessor):
+class DirectoryIterator(BaseProcessor):
     """遍历所有子目录和图片, 并执行单图处理流水线. 子流程使用新的 Payload 包裹"""
 
     def __init__(self, sub_pipeline: Pipeline):
@@ -202,13 +215,11 @@ class DirectoryIteratorProcessor(BaseProcessor):
                 self.set(sub_payload, 'in_img_path', f'{work_path}/{dir_name}/imgs/{raw_name}{extension}')
                 self.set(sub_payload, 'in_det_path', f'{work_path}/{dir_name}/anns/{raw_name}.xml')
                 self.set(sub_payload, 'in_seg_path', f'{work_path}/{dir_name}/anns_seg/{raw_name}.json')
-                self.set(sub_payload, 'in_obb_path', f'{work_path}/{dir_name}/anns_obb/{raw_name}.json')
-                self.set(sub_payload, 'in_pose_path', f'{work_path}/{dir_name}/anns_pose/{raw_name}.json')
                 self.set(sub_payload, 'output_path', f'{save_path}/{dir_name}/imgs/{raw_name}')
                 self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
 
 
-class ReadImageMetaProcessor(BaseProcessor):
+class ImageSizeParser(BaseProcessor):
     """读取图片宽高信息"""
 
     def required_inputs(self) -> list:
@@ -224,40 +235,70 @@ class ReadImageMetaProcessor(BaseProcessor):
         self.set(payload, 'img_size', (width, height))
 
 
-class ParseDetectAnnsProcessor(BaseProcessor):
+class DetectAnnsParser(BaseProcessor):
     def required_inputs(self) -> list:
-        return ['in_det_path', 'img_size']
+        return ['in_img_path', 'in_det_path', 'img_size']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         # outputs: det_anns
         in_det_path = payload.get('in_det_path')
         width, height = payload.get('img_size')
-        self.set(payload, 'det_anns', parse_det_anns_from_labelimg(in_det_path, width, height))
+        det_anns = parse_det_anns_from_labelimg(in_det_path, width, height)
+        # remove anns whose labels are not in label_list, and mark the file to be skipped
+        labelset = set(ctx.label_list)
+        invalid_instance = [key for key, val in det_anns.items() if val.label not in labelset]
+        if invalid_instance:
+            ctx.skip_files.add(payload.get('in_img_path'))
+            for key in invalid_instance:
+                ctx.skip_label_list.add(key)
+                del det_anns[key]
+        # set to payload
+        self.set(payload, 'det_anns', det_anns)
 
 
-class ParseSegmentAnnsProcessor(BaseProcessor):
+class SegmentAnnsParser(BaseProcessor):
     def required_inputs(self) -> list:
-        return ['in_seg_path', 'img_size']
+        return ['in_img_path', 'in_seg_path', 'img_size']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         # outputs: seg_anns
         in_seg_path = payload.get('in_seg_path')
         width, height = payload.get('img_size')
-        self.set(payload, 'seg_anns', parse_seg_anns_from_labelme(in_seg_path, width, height))
+        seg_anns = parse_seg_anns_from_labelme(in_seg_path, width, height, TaskType.SEGMENT)
+        # remove anns whose labels are not in label_list, and mark the file to be skipped
+        labelset = set(ctx.label_list)
+        invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]
+        if invalid_instance:
+            ctx.skip_files.add(payload.get('in_img_path'))
+            for key in invalid_instance:
+                ctx.skip_label_list.add(key)
+                del seg_anns[key]
+        # set to payload
+        self.set(payload, 'seg_anns', seg_anns)
 
 
-class ParsePoseAnnsProcessor(BaseProcessor):
+class PoseAnnsParser(BaseProcessor):
     def required_inputs(self) -> list:
-        return ['in_pose_path', 'img_size']
+        return ['in_img_path', 'in_pose_path', 'img_size']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         # outputs: pose_anns
         in_pose_path = payload.get('in_pose_path')
         width, height = payload.get('img_size')
-        self.set(payload, 'pose_anns', parse_pose_anns_from_labelme(in_pose_path, width, height))
+        seg_anns = parse_seg_anns_from_labelme(in_pose_path, width, height, TaskType.POSE)
+        # remove anns whose labels are not in label_list, and mark the file to be skipped
+        labelset = set(ctx.label_list)
+        invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]
+        if invalid_instance:
+            ctx.skip_files.add(payload.get('in_img_path'))
+            for key in invalid_instance:
+                ctx.skip_label_list.add(key)
+                del seg_anns[key]
+        # set to payload
+        self.set(payload, 'seg_anns', seg_anns)
 
 
-class GenerateDetectYoloAnnsProcessor(BaseProcessor):
+class DetectAnnsGenerator(BaseProcessor):
     """将 det_anns 转为 YOLO 格式并保存 Txt"""
 
     def required_inputs(self) -> list:
@@ -270,18 +311,15 @@ class GenerateDetectYoloAnnsProcessor(BaseProcessor):
         det_anns = payload.get('det_anns')
         out_txt_path = f'{payload.get("output_path")}.txt'
         boxes = []
-        for instance, box in det_anns.items():
-            label = instance[0]
-            if label not in ctx.label_list:
-                ctx.skip_files.add(in_img_path)
-                ctx.skip_label_list.add(label)
-                continue
-            # box: [xmin, ymin, xmax, ymax]
-            label_id = ctx.label_list.index(label)
-            x_center = (box[0] + box[2]) / 2.0 / width
-            y_center = (box[1] + box[3]) / 2.0 / height
-            w_norm = (box[2] - box[0]) / width
-            h_norm = (box[3] - box[1]) / height
+        for key, val in det_anns.items():
+            # val.bbox: [xmin, ymin, xmax, ymax]
+            label_id = ctx.label_list.index(val.label)
+            x_center = (val.bbox[0] + val.bbox[2]) / 2.0 / width
+            y_center = (val.bbox[1] + val.bbox[3]) / 2.0 / height
+            w_norm = (val.bbox[2] - val.bbox[0]) / width
+            h_norm = (val.bbox[3] - val.bbox[1]) / height
+            # detect 标注格式: 类别ID + det框信息
+            # <class-index> <x_center> <y_center> <width> <height>
             boxes.append(f'{label_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}')
         self.set(payload, 'ann_count', len(boxes))
         self.set(payload, 'out_img_path', in_img_path)
@@ -289,59 +327,56 @@ class GenerateDetectYoloAnnsProcessor(BaseProcessor):
             f.write('\n'.join(boxes))
 
 
-class GeneratePoseYoloAnnsProcessor(BaseProcessor):
-    """将 det_anns & pose_anns 转为 YOLO 格式并保存 Txt"""
-
+class DetectAndSegAnnsMatcher(BaseProcessor):
     def required_inputs(self) -> list:
-        return ['in_img_path', 'output_path', 'img_size', 'det_anns', 'pose_anns']
+        return ['det_anns', 'seg_anns']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
-        assert len(ctx.sub_label_list) > 0, '子标签列表不能为空, 请提供 sub_labels.txt'
+        det_anns = payload.get('det_anns')
+        seg_anns = payload.get('seg_anns')
+        matched_map = map_parent_child_annotations(det_anns, seg_anns)
+        self.set(payload, 'matched_map', matched_map)
+
+
+class PoseAnnsGenerator(BaseProcessor):
+    """将 det_anns & seg_anns 转为 YOLO 格式并保存 Txt"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'img_size', 'det_anns', 'seg_anns', 'matched_map']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
         # outputs: ann_count, out_img_path
         in_img_path = payload.get('in_img_path')
         width, height = payload.get('img_size')
         det_anns = payload.get('det_anns')
-        pose_anns = payload.get('pose_anns')
+        seg_anns = payload.get('seg_anns')
+        matched_map = payload.get('matched_map')
         out_txt_path = f'{payload.get("output_path")}.txt'
-        # remove pose anns whose labels are not in sub_label_list, and mark the file to be skipped if any
-        pose_remove = []
-        for instance, _ in pose_anns.items():
-            if instance[0] not in ctx.sub_label_list:
-                pose_remove.append(instance)
-                ctx.skip_files.add(in_img_path)
-                ctx.skip_label_list.add(instance[0])
-        for instance in pose_remove:
-            del pose_anns[instance]
-        # generate anns
         boxes = []
-        for instance, box in det_anns.items():
-            label = instance[0]
-            if label not in ctx.label_list:
-                ctx.skip_files.add(in_img_path)
-                ctx.skip_label_list.add(label)
-                continue
-            # 处理框内的形状 (同类别会覆盖, 宽松版本, 容忍点在框外一点的情况)
-            points = {
-                instance[0]: shape[0]  # 为了支持 group id, shape 是个 list, 这里直接取 [0] 即可
-                for instance, shape in pose_anns.items()
-                if instance[1] == 'point' and rectangle_include_shape(box, shape[0], instance[1])
-            }
-            if len(points) != len(ctx.sub_label_list):
-                print('\n\n', box, '\n', points, '\n', pose_anns, '\n')
-                print(f'\n\033[1;31m[Error] 标注点数错误: {in_img_path}\033[0m\n')
-                continue
-            # 组成一个框的标签
-            label_id = ctx.label_list.index(label)
-            x_center = (box[0] + box[2]) / 2.0 / width
-            y_center = (box[1] + box[3]) / 2.0 / height
-            w_norm = (box[2] - box[0]) / width
-            h_norm = (box[3] - box[1]) / height
+        for dkey, skeys in matched_map.items():
+            # 得到骨骼点坐标列表, 骨骼点必须是点类型, 且数量必须与标签列表一致
+            points = dict()
+            for skey in skeys:
+                sval = seg_anns[skey]
+                if sval.type != ShapeType.POINT or len(sval.points) != 2:
+                    raise ValueError(f'骨骼标注必须是点类型: {in_img_path}, {sval}')
+                points[sval.label] = sval.points  # 骨骼点坐标, {label: [x, y]}
+            if len(points) != len(ctx.label_list):
+                raise ValueError(f'标注点数与标签数量不匹配: {in_img_path}, points: {points}, labels: {ctx.label_list}')
+            # 计算 det 框的中心点坐标和宽高, 并归一化到 [0, 1]
+            bbox = det_anns[dkey].bbox
+            label_id = 0  # pose 任务只有一个类别, 可以直接设置为 0
+            x_center = (bbox[0] + bbox[2]) / 2.0 / width
+            y_center = (bbox[1] + bbox[3]) / 2.0 / height
+            w_norm = (bbox[2] - bbox[0]) / width
+            h_norm = (bbox[3] - bbox[1]) / height
+            # pose 标注格式: 类别ID + det框信息 + 关键点坐标 (带可见性 2-可见不遮挡 1-遮挡 0-没有点)
+            # <class-index> <x> <y> <width> <height> <px1> <py1> <p1-visibility> ... <pxn> <pyn> <pn-visibility>
             result = f'{label_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}'
-            # 将这些点按类别排序后, 添加到框的标签后面
-            for cls in ctx.sub_label_list:
+            for cls in ctx.label_list:
                 px = points[cls][0] / width if cls in points else 0
                 py = points[cls][1] / height if cls in points else 0
-                visibility = 2 if cls in points else 0  # 2-可见不遮挡 1-遮挡 0-没有点 (这里简化为只有可见和没有)
+                visibility = 2 if cls in points else 0
                 result += f' {px:.6f} {py:.6f} {visibility}'
             boxes.append(result)
         self.set(payload, 'ann_count', len(boxes))
@@ -350,154 +385,7 @@ class GeneratePoseYoloAnnsProcessor(BaseProcessor):
             f.write('\n'.join(boxes))
 
 
-class CropImageByDetectByPoseAnnsIteratorProcessor(BaseProcessor):
-    """根据 det_anns 裁剪出目标图像, 保存并执行单图处理流水线. 子流程使用新的 Payload 包裹"""
-
-    def __init__(self, sub_pipeline: Pipeline):
-        self.sub_pipeline = sub_pipeline
-
-    def required_inputs(self) -> list:
-        return ['in_img_path', 'output_path', 'current_dir', 'current_idx', 'det_anns', 'pose_anns']
-
-    def process(self, ctx: GlobalContext, payload: TaskPayload):
-        in_img_path = payload.get('in_img_path')
-        det_anns = payload.get('det_anns')
-        pose_anns = payload.get('pose_anns')
-        output_path = payload.get('output_path')
-        current_dir = payload.get('current_dir')
-        current_idx = payload.get('current_idx')
-        # crop images and generate anns
-        for idx, (instance, box) in enumerate(det_anns.items()):
-            label = instance[0]
-            if label not in ctx.label_list:
-                ctx.skip_files.add(in_img_path)
-                ctx.skip_label_list.add(label)
-                continue
-            sub_output_path = f'{output_path}_{idx}'
-            sub_in_img_path = f'{output_path}_{idx}.jpg'
-            sub_pose_anns = {  # 处理框内的形状 (同类别会覆盖, 宽松版本, 容忍点在框外一点的情况)
-                instance: shape[0]  # 为了支持 group id, shape 是个 list, 这里直接取 [0] 即可
-                for instance, shape in pose_anns.items()
-                if rectangle_include_shape(box, shape[0], instance[1])
-            }
-            # 将坐标转换为相对于裁剪后图像的坐标
-            for instance, points in sub_pose_anns.items():
-                for i in range(len(points) // 2):
-                    points[2 * i] -= box[0]  # x - xmin
-                    points[2 * i + 1] -= box[1]  # y - ymin
-            # crop image and save
-            img = PIL.Image.open(in_img_path)
-            cimg = img.crop(box)
-            if cimg.mode != 'RGB':
-                cimg = cimg.convert('RGB')
-            cimg.save(sub_in_img_path)
-            # create new payload for sub pipeline
-            sub_payload = TaskPayload()  # 每张图片流转前,创建全新的包裹,杜绝脏数据累积
-            self.set(sub_payload, 'current_dir', current_dir)
-            self.set(sub_payload, 'current_idx', current_idx)
-            self.set(sub_payload, 'img_size', (box[2] - box[0], box[3] - box[1]))
-            self.set(sub_payload, 'in_img_path', sub_in_img_path)
-            self.set(sub_payload, 'output_path', sub_output_path)
-            self.set(sub_payload, 'pose_anns', sub_pose_anns)
-            self.set(sub_payload, 'parent_label', label)
-            self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
-
-
-class GenerateYoloPoseAnnsByCropPoseProcessor(BaseProcessor):
-    """根据 pose_anns line 标注生成 YOLO 格式的标注并保存 Txt, 其中检测标注由 line 标注生成"""
-
-    def required_inputs(self) -> list:
-        return ['in_img_path', 'output_path', 'img_size', 'pose_anns', 'parent_label']
-
-    def process(self, ctx: GlobalContext, payload: TaskPayload):
-        assert len(ctx.sub_label_list) == 2, '子标签列表, 应当有且仅有两个标签, 分别代表线的起点和终点'
-        # outputs: ann_count, out_img_path
-        in_img_path = payload.get('in_img_path')
-        width, height = payload.get('img_size')
-        pose_anns = payload.get('pose_anns')
-        out_txt_path = f'{payload.get("output_path")}.txt'
-        parent_label_id = ctx.label_list.index(payload.get('parent_label'))
-        boxes = []
-        for instance, line in pose_anns.items():
-            shape_type = instance[1]
-            if shape_type != 'line' or len(line) != 4:
-                raise ValueError(f'标注类型错误: {in_img_path} 中的 {instance} 不是 line 类型')
-            # box: [xmin, ymin, xmax, ymax]
-            xmin = min(line[0], line[2])
-            xmax = max(line[0], line[2])
-            ymin = min(line[1], line[3])
-            ymax = max(line[1], line[3])
-            x = (xmin + xmax) / 2.0 / width
-            y = (ymin + ymax) / 2.0 / height
-            w = (xmax - xmin) / width
-            h = (ymax - ymin) / height
-            # 如果父标签是第一个类别, 则 p[0] 是起点, p[1] 是终点
-            x0 = line[0] / width
-            y0 = line[1] / height
-            x1 = line[2] / width
-            y1 = line[3] / height
-            if parent_label_id != 0:
-                x0, y0, x1, y1 = x1, y1, x0, y0
-            boxes.append(f'0 {x:.6f} {y:.6f} {w:.6f} {h:.6f} {x0:.6f} {y0:.6f} 2 {x1:.6f} {y1:.6f} 2')
-        self.set(payload, 'ann_count', len(boxes))
-        self.set(payload, 'out_img_path', in_img_path)
-        with open(out_txt_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(boxes))
-
-
-class GenerateYoloSegAnnsByCropPoseProcessor(BaseProcessor):
-    """根据 pose_anns line 标注生成 YOLO 格式的标注并保存 Txt, 其中检测标注由 line 标注生成"""
-
-    def required_inputs(self) -> list:
-        return ['in_img_path', 'output_path', 'img_size', 'pose_anns', 'parent_label']
-
-    def process(self, ctx: GlobalContext, payload: TaskPayload):
-        # outputs: ann_count, out_img_path
-        in_img_path = payload.get('in_img_path')
-        width, height = payload.get('img_size')
-        pose_anns = payload.get('pose_anns')
-        out_txt_path = f'{payload.get("output_path")}.txt'
-        boxes = []
-        line_thickness = 6.0  # 定义线段加粗的宽度(像素单位)
-        for instance, line in pose_anns.items():
-            shape_type = instance[1]
-            if shape_type != 'line' or len(line) != 4:
-                raise ValueError(f'标注类型错误: {in_img_path} 中的 {instance} 不是 line 类型')
-            # line to roatated box
-            p1 = np.array([line[0], line[1]], dtype=np.float32)  # 起点
-            p2 = np.array([line[2], line[3]], dtype=np.float32)  # 终点
-            vec = p2 - p1  # 线段方向向量
-            length = np.linalg.norm(vec)  # 线段长度
-            unit_vec = np.array([1, 0]) if length == 0 else vec / length  # 线段单位方向向量
-            normal_vec = np.array([-unit_vec[1], unit_vec[0]])  # 线段的法向量 (垂直于线段的方向)
-            half_t = line_thickness / 2.0  # 线段加粗后, 法向量的长度为半个线宽
-            # corners = [
-            #     p1 + half_t * normal_vec,  # 左上
-            #     p1 - half_t * normal_vec,  # 右上
-            #     p2 - half_t * normal_vec,  # 右下
-            #     p2 + half_t * normal_vec,  # 左下
-            # ]
-            corners = [  # 起点变成两个点, 终点保持尖头, 形成三角形
-                p1 + half_t * normal_vec,  # 左上
-                p1 - half_t * normal_vec,  # 右上
-                p2,  # 线段终点 (不加法向量)
-            ]
-            result = '0'
-            for pt in corners:
-                norm_x = pt[0] / width
-                norm_y = pt[1] / height
-                # 限制在 [0, 1] 范围内
-                norm_x = max(0.0, min(1.0, norm_x))
-                norm_y = max(0.0, min(1.0, norm_y))
-                result += f' {norm_x:.6f} {norm_y:.6f}'
-            boxes.append(result)
-        self.set(payload, 'ann_count', len(boxes))
-        self.set(payload, 'out_img_path', in_img_path)
-        with open(out_txt_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(boxes))
-
-
-class DatasetSplitProcessor(BaseProcessor):
+class DatasetSplitter(BaseProcessor):
     """[处理算子]负责依据规则将数据划分到训练集或验证集"""
 
     def required_inputs(self) -> list:
@@ -523,106 +411,199 @@ class DatasetSplitProcessor(BaseProcessor):
             ctx.val_list.append(out_img_path)
 
 
-class FinalizeDatasetProcessor(BaseProcessor):
-    """[后置算子]收尾工作:写出 yaml 配置文件和汇总报告"""
+class DirectoryIteratorForPointTask(BaseProcessor):
+    """根据 det_anns 裁剪出目标图像, 保存并执行单图处理流水线. 子流程使用新的 Payload 包裹"""
+
+    def __init__(self, sub_pipeline: Pipeline):
+        self.sub_pipeline = sub_pipeline
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'current_dir', 'current_idx', 'det_anns', 'seg_anns', 'matched_map']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
-        # 写入 txt 和 yaml
-        with open(ctx.get_train_list_path(), 'w', encoding='utf-8') as f:
-            f.write('\n'.join(ctx.train_list))
-        with open(ctx.get_val_list_path(), 'w', encoding='utf-8') as f:
-            f.write('\n'.join(ctx.val_list))
+        in_img_path = payload.get('in_img_path')
+        det_anns = payload.get('det_anns')
+        seg_anns = payload.get('seg_anns')
+        matched_map = payload.get('matched_map')
+        output_path = payload.get('output_path')
+        current_dir = payload.get('current_dir')
+        current_idx = payload.get('current_idx')
+        # crop images and generate anns
+        for idx, (dkey, skeys) in enumerate(matched_map.items()):
+            sub_output_path = f'{output_path}_{idx}'
+            sub_in_img_path = f'{output_path}_{idx}.jpg'
+            #
+            parent = det_anns[dkey]
+            bbox = parent.bbox
+            label = parent.label
+            # crop image and save
+            img = PIL.Image.open(in_img_path)
+            cimg = img.crop(bbox)
+            if cimg.mode != 'RGB':
+                cimg = cimg.convert('RGB')
+            cimg.save(sub_in_img_path)
+            #
+            sub_seg_anns = dict()
+            for skey in skeys:  # 将坐标转换为相对于裁剪后图像的坐标
+                sub_seg_anns[skey] = seg_anns[skey].translate(-bbox[0], -bbox[1])
+            # create new payload for sub pipeline
+            sub_payload = TaskPayload()  # 每张图片流转前,创建全新的包裹,杜绝脏数据累积
+            self.set(sub_payload, 'current_dir', current_dir)
+            self.set(sub_payload, 'current_idx', current_idx)
+            self.set(sub_payload, 'img_size', (bbox[2] - bbox[0], bbox[3] - bbox[1]))
+            self.set(sub_payload, 'in_img_path', sub_in_img_path)
+            self.set(sub_payload, 'output_path', sub_output_path)
+            self.set(sub_payload, 'seg_anns', sub_seg_anns)
+            self.set(sub_payload, 'parent_label', label)
+            self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
 
-        # detect
-        content = f'path: {ctx.root_path}\ntrain: train.txt\nval: val.txt\n\nnames:\n'
-        for i, name in enumerate(ctx.label_list):
-            content += f'  {i}: {name}\n'
-        # pose
-        if ctx.task_type == 'pose':
-            content += f'\nkpt_shape: [{len(ctx.sub_label_list)}, 3]\nkpt_names:\n  0:\n'
-            for i, name in enumerate(ctx.sub_label_list):
-                content += f'    - {name}\n'
-        # 写入 dataset.yaml
-        with open(ctx.get_dataset_yaml_path(), 'w', encoding='utf-8') as f:
-            f.write(content)
+
+class PoseAnnsGeneratorForPointTask(BaseProcessor):
+    """从 line 标注生成 det + pose 标注"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'img_size', 'seg_anns', 'parent_label']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        assert len(ctx.label_list) == 2, '子标签列表, 应当有且仅有两个标签, 分别代表线的起点和终点'
+        # outputs: ann_count, out_img_path
+        in_img_path = payload.get('in_img_path')
+        width, height = payload.get('img_size')
+        seg_anns = payload.get('seg_anns')
+        out_txt_path = f'{payload.get("output_path")}.txt'
+        parent_label_id = ctx.label_list.index(payload.get('parent_label'))
+        boxes = []
+        for key, val in seg_anns.items():
+            if val.type != ShapeType.LINE or len(val.points) != 4:
+                raise ValueError(f'标注类型错误: {in_img_path} 中的 {val} 不是 line 类型')
+            # box: [xmin, ymin, xmax, ymax]
+            xmin = min(val.points[0], val.points[2])
+            xmax = max(val.points[0], val.points[2])
+            ymin = min(val.points[1], val.points[3])
+            ymax = max(val.points[1], val.points[3])
+            x = (xmin + xmax) / 2.0 / width
+            y = (ymin + ymax) / 2.0 / height
+            w = (xmax - xmin) / width
+            h = (ymax - ymin) / height
+            # 如果父标签是第一个类别, 则 p[0] 是起点, p[1] 是终点
+            x0 = val.points[0] / width
+            y0 = val.points[1] / height
+            x1 = val.points[2] / width
+            y1 = val.points[3] / height
+            if parent_label_id != 0:
+                x0, y0, x1, y1 = x1, y1, x0, y0
+            # pose 标注格式: 类别ID + det框信息 + 关键点坐标 (带可见性 2-可见不遮挡 1-遮挡 0-没有点)
+            # <class-index> <x> <y> <width> <height> <px1> <py1> <p1-visibility> ... <pxn> <pyn> <pn-visibility>
+            boxes.append(f'{parent_label_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f} {x0:.6f} {y0:.6f} 2 {x1:.6f} {y1:.6f} 2')
+        self.set(payload, 'ann_count', len(boxes))
+        self.set(payload, 'out_img_path', in_img_path)
+        with open(out_txt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(boxes))
+
+
+class SegmentAnnsGeneratorForPointTask(BaseProcessor):
+    """从 line 标注生成 det + seg 标注"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'img_size', 'seg_anns', 'parent_label']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        # outputs: ann_count, out_img_path
+        in_img_path = payload.get('in_img_path')
+        width, height = payload.get('img_size')
+        seg_anns = payload.get('seg_anns')
+        out_txt_path = f'{payload.get("output_path")}.txt'
+        parent_label_id = ctx.label_list.index(payload.get('parent_label'))
+        line_thickness = 6.0  # 定义线段加粗的宽度(像素单位)
+        boxes = []
+        for key, val in seg_anns.items():
+            if val.type != ShapeType.LINE or len(val.points) != 4:
+                raise ValueError(f'标注类型错误: {in_img_path} 中的 {val} 不是 line 类型')
+            # line to roatated box
+            p1 = np.array([val.points[0], val.points[1]], dtype=np.float32)  # 起点
+            p2 = np.array([val.points[2], val.points[3]], dtype=np.float32)  # 终点
+            vec = p2 - p1  # 线段方向向量
+            length = np.linalg.norm(vec)  # 线段长度
+            unit_vec = np.array([1, 0]) if length == 0 else vec / length  # 线段单位方向向量
+            normal_vec = np.array([-unit_vec[1], unit_vec[0]])  # 线段的法向量 (垂直于线段的方向)
+            half_t = line_thickness / 2.0  # 线段加粗后, 法向量的长度为半个线宽
+            # 将线段表示为一个矩形的四个顶点坐标, 这里直接生成一个三角形(起点的两个顶点 + 终点), 以保持尖头效果
+            corners = [
+                p1 + half_t * normal_vec,  # 左上
+                p1 - half_t * normal_vec,  # 右上
+                # p2 - half_t * normal_vec,  # 右下
+                # p2 + half_t * normal_vec,  # 左下
+                p2,  # 线段终点 (不加法向量, 保持尖头效果)
+            ]
+            # seg 标注格式: 类别ID + mask shape 每个点的坐标, 不需要 det 框信息, 训练时自动取 bounding box
+            # <class-index> <x1> <y1> <x2> <y2> ... <xn> <yn>
+            result = f'{parent_label_id}'
+            for pt in corners:
+                norm_x = pt[0] / width
+                norm_y = pt[1] / height
+                # 限制在 [0, 1] 范围内
+                norm_x = max(0.0, min(1.0, norm_x))
+                norm_y = max(0.0, min(1.0, norm_y))
+                result += f' {norm_x:.6f} {norm_y:.6f}'
+            boxes.append(result)
+        self.set(payload, 'ann_count', len(boxes))
+        self.set(payload, 'out_img_path', in_img_path)
+        with open(out_txt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(boxes))
 
 
 def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
-    if task_type not in ['detect', 'pose', 'segment']:
-        raise ValueError(f'Unsupported task type: {task_type}')
 
-    # 单步 det 标签, 训练 detect 模型
-    det_pipeline = Pipeline(
-        [
-            ReadImageMetaProcessor(),  # 1. 读图片获取宽高
-            ParseDetectAnnsProcessor(),  # 2. 解析 XML
-            GenerateDetectYoloAnnsProcessor(),  # 3. 转换坐标并保存 TXT
-            DatasetSplitProcessor(),  # 4. 统计并决定划入Train还是Val
-        ]
-    )
+    # 标准检测子流水线
+    standard_detect_pipe = [ImageSizeParser(), DetectAnnsParser(), DetectAnnsGenerator(), DatasetSplitter()]
+    # 标准姿态子流水线
+    standard_pose_pipe = [
+        ImageSizeParser(),
+        DetectAnnsParser(),
+        PoseAnnsParser(),
+        DetectAndSegAnnsMatcher(),
+        PoseAnnsGenerator(),
+        DatasetSplitter(),
+    ]
+    # 标准分割子流水线
+    standard_segment_pipe = [
+        ImageSizeParser(),
+        DetectAnnsParser(),
+        SegmentAnnsParser(),
+        DetectAndSegAnnsMatcher(),
+        SegmentAnnsGenerator(),
+        DatasetSplitter(),
+    ]
 
-    # 两步 det + pose 标签, 训练 pose 模型
-    pose_pipeline = Pipeline(
-        [
-            ReadImageMetaProcessor(),  # 1. 读图片获取宽高
-            ParseDetectAnnsProcessor(),  # 2. 解析 XML
-            ParsePoseAnnsProcessor(),  # 3. 解析 Pose JSON
-            GeneratePoseYoloAnnsProcessor(),  # 4. 转换坐标并保存 TXT
-            DatasetSplitProcessor(),  # 5. 统计并决定划入Train还是Val
-        ]
-    )
-
-    # 两步 det + pose 标签, 在 det 裁剪图上训练 pose 模型, 其中 pose 的 bbox 由关键点标注生成
-    det_pose_pose_sub_pipeline = Pipeline(
-        [
-            GenerateYoloPoseAnnsByCropPoseProcessor(),  # 4. 转换坐标并保存 TXT
-            DatasetSplitProcessor(),  # 5. 统计并决定划入Train还是Val
-        ]
-    )
-    det_pose_pose_pipeline = Pipeline(
-        [
-            ReadImageMetaProcessor(),  # 1. 读图片获取宽高
-            ParseDetectAnnsProcessor(),  # 2. 解析 XML
-            ParsePoseAnnsProcessor(),  # 3. 解析 Pose JSON
-            CropImageByDetectByPoseAnnsIteratorProcessor(det_pose_pose_sub_pipeline),
-        ]
-    )
-
-    # 两步 det + pose 标签, 在 det 裁剪图上训练 seg 模型, 其中 seg 标签由 pose 标注生成
-    det_pose_seg_sub_pipeline = Pipeline(
-        [
-            GenerateYoloSegAnnsByCropPoseProcessor(),  # 4. 转换坐标并保存 TXT
-            DatasetSplitProcessor(),  # 5. 统计并决定划入Train还是Val
-        ]
-    )
-    det_pose_seg_pipeline = Pipeline(
-        [
-            ReadImageMetaProcessor(),  # 1. 读图片获取宽高
-            ParseDetectAnnsProcessor(),  # 2. 解析 XML
-            ParsePoseAnnsProcessor(),  # 3. 解析 Pose JSON
-            CropImageByDetectByPoseAnnsIteratorProcessor(det_pose_seg_sub_pipeline),
-        ]
-    )
-
-    # 主流水线
     if task_type == 'detect':
-        sub_pipeline = det_pipeline
-    elif task_type == 'pose':
-        sub_pipeline = pose_pipeline
-    elif task_type == 'pose_by_crop':
-        sub_pipeline = det_pose_pose_pipeline
-    elif task_type == 'segment':  # segment_by_crop
-        sub_pipeline = det_pose_seg_pipeline
+        pipeline = Pipeline([DirectoryIterator(Pipeline(standard_detect_pipe))])
+    elif task_type.startswith('point'):
+        # 指针仪表识别任务 = detect + classify + segment
+        # 数据集特殊约定:
+        #    1. detect 标注的任何标签都被视为同一种类别, 训练时不区分不同标签的 detect 框, 只关注框的位置和大小
+        #    2. classify 使用 detect 的框类别标签, 不专门做标注
+        #    3. segment 的标注为 line 类型, 且每个 detect 框内必须有至少一个 line, 分别代表指针的起点和终点
+        if task_type.endswith('detect'):
+            pipe = [ImageSizeParser(), DetectAnnsParser(), DetectAnnsGeneratorForPointTask(), DatasetSplitter()]
+        elif task_type.endswith('classify'):
+            pipe = [ImageSizeParser(), DetectAnnsParser(), ClassifyAnnsGeneratorForPointTask(), DatasetSplitter()]
+        elif task_type.endswith('segment'):
+            subpipe = [SegmentAnnsGeneratorForPointTask(), DatasetSplitter()]
+            pipe = [
+                ImageSizeParser(),
+                DetectAnnsParser(),
+                SegmentAnnsParser(),
+                DetectAndSegAnnsMatcher(),
+                DirectoryIteratorForPointTask(Pipeline(subpipe)),
+            ]
+        else:
+            raise ValueError(f'Unsupported task type: {task_type}')
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     else:
         raise ValueError(f'Unsupported task type: {task_type}')
-    main_pipeline = Pipeline(
-        [
-            DirectoryIteratorProcessor(sub_pipeline),  # 2. 遍历图片,丢进子流水线
-            FinalizeDatasetProcessor(),  # 3. 收尾生成 yaml 文件
-        ]
-    )
 
-    # 赋予上下文,启动
+    # 初始化上下文并启动流水线
     ctx = GlobalContext(task_type, root_path, split, reserve_no_label)
-    main_pipeline.process(ctx, TaskPayload())
+    pipeline.process(ctx, TaskPayload())
+    ctx.dataset_finalize()
     ctx.print_summary()

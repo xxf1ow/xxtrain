@@ -158,13 +158,16 @@ def export_model_to_onnx(root_path, model_name, best_model_path):
         return
 
 
-def process(root_path, model_version='v8', model_scale='n', task_type='detect', split=10, reserve_no_label=True):
+def process(
+    root_path, model_version='v8', model_scale='n', task_type='detect', split=10, reserve_no_label=True, validate=False
+):
     # process dataset and generate dataset.yaml, generate model.yaml, download pretrained weights
     convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
     model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
     download_pretrained(model_name)
     best_model_path = train_model(root_path, model_name)
-    validate_model(root_path, model_name, best_model_path)
+    if validate:
+        validate_model(root_path, model_name, best_model_path)
     export_model_to_onnx(root_path, model_name, best_model_path)
 
 
@@ -176,6 +179,7 @@ if __name__ == '__main__':
     parser.add_argument('--task_type', type=str, default='detect', help='Task type (e.g. detect)')
     parser.add_argument('--split', type=int, default=10, help='Split ratio for test set')
     parser.add_argument('--reserve_no_label', action='store_true', help='Whether to keep images without labels')
+    parser.add_argument('--validate', type=bool, default=False, help='Whether to run validation after training')
     args = parser.parse_args()
 
     # # only export ONNX model without training
