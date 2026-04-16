@@ -27,6 +27,7 @@
 
 import os
 
+import numpy as np
 import PIL.Image
 from tqdm import tqdm
 
@@ -387,6 +388,8 @@ class CropImageByDetectByPoseAnnsIteratorProcessor(BaseProcessor):
             # crop image and save
             img = PIL.Image.open(in_img_path)
             cimg = img.crop(box)
+            if cimg.mode != 'RGB':
+                cimg = cimg.convert('RGB')
             cimg.save(sub_in_img_path)
             # create new payload for sub pipeline
             sub_payload = TaskPayload()  # 每张图片流转前,创建全新的包裹,杜绝脏数据累积
@@ -400,7 +403,7 @@ class CropImageByDetectByPoseAnnsIteratorProcessor(BaseProcessor):
             self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
 
 
-class GenerateLinePoseYoloAnnsByCropProcessor(BaseProcessor):
+class GenerateYoloPoseAnnsByCropPoseProcessor(BaseProcessor):
     """根据 pose_anns line 标注生成 YOLO 格式的标注并保存 Txt, 其中检测标注由 line 标注生成"""
 
     def required_inputs(self) -> list:
@@ -436,6 +439,58 @@ class GenerateLinePoseYoloAnnsByCropProcessor(BaseProcessor):
             if parent_label_id != 0:
                 x0, y0, x1, y1 = x1, y1, x0, y0
             boxes.append(f'0 {x:.6f} {y:.6f} {w:.6f} {h:.6f} {x0:.6f} {y0:.6f} 2 {x1:.6f} {y1:.6f} 2')
+        self.set(payload, 'ann_count', len(boxes))
+        self.set(payload, 'out_img_path', in_img_path)
+        with open(out_txt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(boxes))
+
+
+class GenerateYoloSegAnnsByCropPoseProcessor(BaseProcessor):
+    """根据 pose_anns line 标注生成 YOLO 格式的标注并保存 Txt, 其中检测标注由 line 标注生成"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'img_size', 'pose_anns', 'parent_label']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        # outputs: ann_count, out_img_path
+        in_img_path = payload.get('in_img_path')
+        width, height = payload.get('img_size')
+        pose_anns = payload.get('pose_anns')
+        out_txt_path = f'{payload.get("output_path")}.txt'
+        boxes = []
+        line_thickness = 6.0  # 定义线段加粗的宽度(像素单位)
+        for instance, line in pose_anns.items():
+            shape_type = instance[1]
+            if shape_type != 'line' or len(line) != 4:
+                raise ValueError(f'标注类型错误: {in_img_path} 中的 {instance} 不是 line 类型')
+            # line to roatated box
+            p1 = np.array([line[0], line[1]], dtype=np.float32)  # 起点
+            p2 = np.array([line[2], line[3]], dtype=np.float32)  # 终点
+            vec = p2 - p1  # 线段方向向量
+            length = np.linalg.norm(vec)  # 线段长度
+            unit_vec = np.array([1, 0]) if length == 0 else vec / length  # 线段单位方向向量
+            normal_vec = np.array([-unit_vec[1], unit_vec[0]])  # 线段的法向量 (垂直于线段的方向)
+            half_t = line_thickness / 2.0  # 线段加粗后, 法向量的长度为半个线宽
+            # corners = [
+            #     p1 + half_t * normal_vec,  # 左上
+            #     p1 - half_t * normal_vec,  # 右上
+            #     p2 - half_t * normal_vec,  # 右下
+            #     p2 + half_t * normal_vec,  # 左下
+            # ]
+            corners = [  # 起点变成两个点, 终点保持尖头, 形成三角形
+                p1 + half_t * normal_vec,  # 左上
+                p1 - half_t * normal_vec,  # 右上
+                p2,  # 线段终点 (不加法向量)
+            ]
+            result = '0'
+            for pt in corners:
+                norm_x = pt[0] / width
+                norm_y = pt[1] / height
+                # 限制在 [0, 1] 范围内
+                norm_x = max(0.0, min(1.0, norm_x))
+                norm_y = max(0.0, min(1.0, norm_y))
+                result += f' {norm_x:.6f} {norm_y:.6f}'
+            boxes.append(result)
         self.set(payload, 'ann_count', len(boxes))
         self.set(payload, 'out_img_path', in_img_path)
         with open(out_txt_path, 'w', encoding='utf-8') as f:
@@ -493,7 +548,7 @@ class FinalizeDatasetProcessor(BaseProcessor):
 
 
 def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
-    if task_type not in ['detect', 'pose']:
+    if task_type not in ['detect', 'pose', 'segment']:
         raise ValueError(f'Unsupported task type: {task_type}')
 
     # 单步 det 标签, 训练 detect 模型
@@ -518,23 +573,48 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
     )
 
     # 两步 det + pose 标签, 在 det 裁剪图上训练 pose 模型, 其中 pose 的 bbox 由关键点标注生成
-    det_pose_sub_pipeline = Pipeline(
+    det_pose_pose_sub_pipeline = Pipeline(
         [
-            GenerateLinePoseYoloAnnsByCropProcessor(),  # 4. 转换坐标并保存 TXT
+            GenerateYoloPoseAnnsByCropPoseProcessor(),  # 4. 转换坐标并保存 TXT
             DatasetSplitProcessor(),  # 5. 统计并决定划入Train还是Val
         ]
     )
-    det_pose_pipeline = Pipeline(
+    det_pose_pose_pipeline = Pipeline(
         [
             ReadImageMetaProcessor(),  # 1. 读图片获取宽高
             ParseDetectAnnsProcessor(),  # 2. 解析 XML
             ParsePoseAnnsProcessor(),  # 3. 解析 Pose JSON
-            CropImageByDetectByPoseAnnsIteratorProcessor(det_pose_sub_pipeline),
+            CropImageByDetectByPoseAnnsIteratorProcessor(det_pose_pose_sub_pipeline),
+        ]
+    )
+
+    # 两步 det + pose 标签, 在 det 裁剪图上训练 seg 模型, 其中 seg 标签由 pose 标注生成
+    det_pose_seg_sub_pipeline = Pipeline(
+        [
+            GenerateYoloSegAnnsByCropPoseProcessor(),  # 4. 转换坐标并保存 TXT
+            DatasetSplitProcessor(),  # 5. 统计并决定划入Train还是Val
+        ]
+    )
+    det_pose_seg_pipeline = Pipeline(
+        [
+            ReadImageMetaProcessor(),  # 1. 读图片获取宽高
+            ParseDetectAnnsProcessor(),  # 2. 解析 XML
+            ParsePoseAnnsProcessor(),  # 3. 解析 Pose JSON
+            CropImageByDetectByPoseAnnsIteratorProcessor(det_pose_seg_sub_pipeline),
         ]
     )
 
     # 主流水线
-    sub_pipeline = pose_pipeline if task_type == 'pose' else det_pipeline
+    if task_type == 'detect':
+        sub_pipeline = det_pipeline
+    elif task_type == 'pose':
+        sub_pipeline = pose_pipeline
+    elif task_type == 'pose_by_crop':
+        sub_pipeline = det_pose_pose_pipeline
+    elif task_type == 'segment':  # segment_by_crop
+        sub_pipeline = det_pose_seg_pipeline
+    else:
+        raise ValueError(f'Unsupported task type: {task_type}')
     main_pipeline = Pipeline(
         [
             DirectoryIteratorProcessor(sub_pipeline),  # 2. 遍历图片,丢进子流水线

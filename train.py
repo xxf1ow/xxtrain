@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 
 import ultralytics
 from ruamel.yaml import YAML
@@ -105,7 +106,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
     return model_name
 
 
-def download_pretrained(root_path, model_name):
+def download_pretrained(model_name):
     # download pretrained weights if not exist
     pretrained_weights = f'{model_name}.pt'
     pretrained_weights_path = get_pretrained_weights_path(model_name)
@@ -119,20 +120,18 @@ def download_pretrained(root_path, model_name):
     print(f'✅ Pretrained weights downloaded: {pretrained_weights_path}\n')
 
 
-def process(root_path, model_version='v8', model_scale='n', task_type='detect', split=10, reserve_no_label=True):
-    # process dataset and generate dataset.yaml, generate model.yaml, download pretrained weights
-    convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
-    model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
-    download_pretrained(root_path, model_name)
-
+def train_model(root_path, model_name):
     # Train the model
     print(f'🚀 Starting training for model: {model_name} ...')
     model = YOLO(get_model_yaml_path(root_path, model_name))
     model.load(get_pretrained_weights_path(model_name))
-    model.train(data=get_dataset_yaml_path(root_path), epochs=10, batch=8, imgsz=128, device='cpu')
+    model.train(data=get_dataset_yaml_path(root_path), epochs=100, batch=64, imgsz=640, device=0)
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
     print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
+    return best_model_path
 
+
+def validate_model(root_path, model_name, best_model_path):
     # Validate the model using the best checkpoint
     print(f'🚀 Running inference on validation set using best model: {best_model_path} ...')
     if not os.path.isfile(best_model_path):
@@ -144,24 +143,29 @@ def process(root_path, model_version='v8', model_scale='n', task_type='detect', 
     model.predict(source=val_path, save=True, conf=0.25, project=save_path, name=model_name, exist_ok=True)
     print(f'✅ Inference completed! Results saved at: {save_path}\n')
 
+
+def export_model_to_onnx(root_path, model_name, best_model_path):
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
-        import onnx
-        import onnxsim
-
         print('🚀 Exporting best model to ONNX format ...')
         onnx_path = os.path.join(root_path, f'{model_name}.onnx')
-        model.export(format='onnx', path=onnx_path)
+        model = YOLO(best_model_path)
+        temp_onnx_path = model.export(format='onnx', simplify=True)
+        shutil.move(temp_onnx_path, onnx_path)
         print(f'✅ Model exported to ONNX format: {onnx_path}')
-
-        onnxsim_path = os.path.join(root_path, f'{model_name}.sim.onnx')
-        model_simplified, check = onnxsim.simplify(onnx.load(onnx_path))
-        if check:
-            onnx.save(model_simplified, onnxsim_path)
-        print(f'✅ Simplified ONNX model saved to: {onnxsim_path}\n')
     except Exception as e:
         print(f'❌ Failed to export model to ONNX format: {e}')
         return
+
+
+def process(root_path, model_version='v8', model_scale='n', task_type='detect', split=10, reserve_no_label=True):
+    # process dataset and generate dataset.yaml, generate model.yaml, download pretrained weights
+    convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
+    model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
+    download_pretrained(model_name)
+    best_model_path = train_model(root_path, model_name)
+    validate_model(root_path, model_name, best_model_path)
+    export_model_to_onnx(root_path, model_name, best_model_path)
 
 
 if __name__ == '__main__':
@@ -173,4 +177,10 @@ if __name__ == '__main__':
     parser.add_argument('--split', type=int, default=10, help='Split ratio for test set')
     parser.add_argument('--reserve_no_label', action='store_true', help='Whether to keep images without labels')
     args = parser.parse_args()
+
+    # # only export ONNX model without training
+    # best_model_path = '/home/lxx/ultralytics/xxtrain/runs/pose/train/weights/best.pt'
+    # model_name = get_model_name(args.model_version, args.model_scale, args.task_type)
+    # export_model_to_onnx(args.root_path, model_name, get_pretrained_weights_path(model_name))
+
     process(args.root_path, args.model_version, args.model_scale, args.task_type, args.split, args.reserve_no_label)
