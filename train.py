@@ -6,7 +6,7 @@ import ultralytics
 from ruamel.yaml import YAML
 from ultralytics.models import YOLO
 
-from annconverter import annconverter
+import annconverter
 
 suffix_switcher = {'classify': '-cls', 'detect': '', 'obb': '-obb', 'pose': '-pose', 'segment': '-seg'}
 
@@ -126,7 +126,8 @@ def train_model(root_path, model_name, task_type):
     model = YOLO(get_model_yaml_path(root_path, model_name))
     model.load(get_pretrained_weights_path(model_name))
     data = get_dataset_yaml_path(root_path) if not task_type.endswith('classify') else os.path.join(root_path, 'labels')
-    model.train(data=data, epochs=100, batch=64, imgsz=640)
+    imgsz = 640 if not task_type.endswith('classify') else 224
+    model.train(data=data, epochs=100, batch=32, imgsz=imgsz)
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
     print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
     return best_model_path
@@ -145,11 +146,11 @@ def validate_model(root_path, model_name, best_model_path):
     print(f'✅ Inference completed! Results saved at: {save_path}\n')
 
 
-def export_model_to_onnx(root_path, model_name, best_model_path):
+def export_model_to_onnx(best_model_path, root_path, task_type):
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
         print('🚀 Exporting best model to ONNX format ...')
-        onnx_path = os.path.join(root_path, f'{model_name}.onnx')
+        onnx_path = os.path.join(root_path, f'{task_type}.onnx')
         model = YOLO(best_model_path)
         temp_onnx_path = model.export(format='onnx', simplify=True)
         shutil.move(temp_onnx_path, onnx_path)
@@ -169,7 +170,7 @@ def process(
     best_model_path = train_model(root_path, model_name, task_type)
     if validate:
         validate_model(root_path, model_name, best_model_path)
-    export_model_to_onnx(root_path, model_name, best_model_path)
+    export_model_to_onnx(best_model_path, root_path, task_type)
 
 
 if __name__ == '__main__':

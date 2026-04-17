@@ -1,37 +1,10 @@
-#  Repositories : https://github.com/ultralytics/ultralytics
-#     Task type : Common Object Detection
-# Preprocessing : object_detection_voc2coco.py
-#  Model Define : ultralytics/cfg/models/v8/yolov8.yaml
-#     Reference : https://docs.ultralytics.com/zh/guides/model-yaml-config/
-#                 https://docs.ultralytics.com/zh/datasets/detect/
-
-# 数据集目录约定:
-#   root_path/
-#   ├── images/
-#   │   ├── dir1/
-#   │   │   ├── imgs/       # 存放图片文件
-#   │   │   ├── anns/       # 存放检测标注 (labelimg, xml 格式)
-#   │   │   ├── anns_seg/   # 存放分割标注 (json 格式, 实例分割任务可选)
-#   │   │   ├── anns_obb/   # 存放旋转标注 (json 格式, 旋转目标检测可选)
-#   │   │   └── anns_pose/  # 存放骨骼标注 (json 格式, 骨骼关键点检测可选)
-#   │   ├── dir2/
-#   │   │   ├── imgs/
-#   │   │   ├── anns/
-#   │   │   └── ...
-#   │   └── ...
-#   ├── labels.txt
-#   ├── train.txt
-#   ├── val.txt
-#   └── dataset.yaml
-
-
 import os
 
 import numpy as np
 import PIL.Image
 from tqdm import tqdm
 
-from .annparser import (
+from annparser import (
     ShapeType,
     TaskType,
     find_dir,
@@ -645,68 +618,3 @@ class SegmentAnnsGeneratorForPointTask(BaseProcessor):
         self.set(payload, 'out_img_path', in_img_path)
         with open(out_txt_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(boxes))
-
-
-def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
-
-    # 标准检测子流水线
-    standard_detect_pipe = [ImageSizeParser(), DetectAnnsParser(), DetectAnnsGenerator(), DatasetSplitter()]
-    # 标准分割子流水线
-    standard_segment_pipe = [ImageSizeParser(), SegmentAnnsParser(), SegmentAnnsGenerator(), DatasetSplitter()]
-    # 标准姿态子流水线
-    standard_pose_pipe = [
-        ImageSizeParser(),
-        DetectAnnsParser(),
-        PoseAnnsParser(),
-        DetectAndSegAnnsMatcher(),
-        PoseAnnsGenerator(),
-        DatasetSplitter(),
-    ]
-
-    label_list = []
-    if task_type == 'detect':
-        pipeline = Pipeline([DirectoryIterator(Pipeline(standard_detect_pipe))])
-    elif task_type.startswith('point'):
-        # 指针仪表识别任务 = detect + classify + segment
-        # 数据集特殊约定:
-        #    1. detect 标注的任何标签都被视为同一种类别, 训练时不区分不同标签的 detect 框, 只关注框的位置和大小
-        #    2. classify 使用 detect 的框类别标签, 不专门做标注
-        #    3. segment 的标注为 line 类型, 且每个 detect 框内必须有至少一个 line, 分别代表指针的起点和终点
-        det_labels = ['tl', 'tc', 'cl', 'cc']
-        seg_labels = ['1']
-        if task_type.endswith('detect'):
-            # python3 train.py --task_type point_detect --root_path data/point
-            label_list = ['Point']
-            pipe = [
-                ImageSizeParser(),
-                DetectAnnsParser(det_labels),
-                DetectAnnsConverterForPointTask(label_list[0]),
-                DetectAnnsGenerator(),
-                DatasetSplitter(),
-            ]
-        elif task_type.endswith('classify'):
-            # python3 train.py --task_type point_classify --root_path data/point
-            label_list = det_labels
-            pipe = [ImageSizeParser(), DetectAnnsParser(det_labels), ClassifyAnnsGeneratorForPointTask()]
-        elif task_type.endswith('segment'):
-            # python3 train.py --task_type point_segment --root_path data/point
-            label_list = ['Point']
-            subpipe = [SegmentAnnsGeneratorForPointTask(), DatasetSplitter()]
-            pipe = [
-                ImageSizeParser(),
-                DetectAnnsParser(det_labels),
-                SegmentAnnsParser(seg_labels),
-                DetectAndSegAnnsMatcher(),
-                DirectoryIteratorForPointTask(Pipeline(subpipe)),
-            ]
-        else:
-            raise ValueError(f'Unsupported task type: {task_type}')
-        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
-    else:
-        raise ValueError(f'Unsupported task type: {task_type}')
-
-    # 初始化上下文并启动流水线
-    ctx = GlobalContext(task_type, root_path, split, label_list, reserve_no_label)
-    pipeline.process(ctx, TaskPayload())
-    ctx.dataset_finalize()
-    ctx.print_summary()
