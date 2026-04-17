@@ -43,12 +43,14 @@ from .annparser import (
 
 
 class GlobalContext:
-    def __init__(self, task_type: str, root_path: str, split: int, reserve_no_label: bool):
+    def __init__(
+        self, task_type: str, root_path: str, split: int, label_list: 'list[str]' = [], reserve_no_label: bool = True
+    ):
         self.task_type = task_type
         self.root_path = root_path
         self.split = split
+        self.label_list = label_list
         self.reserve_no_label = reserve_no_label
-        self.label_list = []
 
         # ---------------------- 全局统计与状态 ----------------------
         self.train_list = []
@@ -64,11 +66,12 @@ class GlobalContext:
         work_path = self.get_images_path()
         assert os.path.isdir(work_path), f'数据集不存在: {work_path}'
         # 读取标签列表
-        label_path = self.get_labels_list_path()
-        assert os.path.isfile(label_path), f'标签列表不存在: {label_path}'
-        with open(label_path, encoding='utf-8') as f:
-            self.label_list = [line.strip() for line in f.readlines()]
-        assert len(self.label_list) > 0, f'标签列表为空: {label_path}'
+        if len(label_list) == 0:
+            label_path = self.get_labels_list_path()
+            assert os.path.isfile(label_path), f'标签列表不存在: {label_path}'
+            with open(label_path, encoding='utf-8') as f:
+                self.label_list = [line.strip() for line in f.readlines()]
+            assert len(self.label_list) > 0, f'标签列表为空: {label_path}'
 
     def get_images_path(self):
         return os.path.join(self.root_path, 'images')
@@ -236,6 +239,9 @@ class ImageSizeParser(BaseProcessor):
 
 
 class DetectAnnsParser(BaseProcessor):
+    def __init__(self, label_list: 'list[str]' = []):
+        self.label_list = label_list
+
     def required_inputs(self) -> list:
         return ['in_img_path', 'in_det_path', 'img_size']
 
@@ -245,7 +251,7 @@ class DetectAnnsParser(BaseProcessor):
         width, height = payload.get('img_size')
         det_anns = parse_det_anns_from_labelimg(in_det_path, width, height)
         # remove anns whose labels are not in label_list, and mark the file to be skipped
-        labelset = set(ctx.label_list)
+        labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in det_anns.items() if val.label not in labelset]
         if invalid_instance:
             ctx.skip_files.add(payload.get('in_img_path'))
@@ -257,6 +263,9 @@ class DetectAnnsParser(BaseProcessor):
 
 
 class SegmentAnnsParser(BaseProcessor):
+    def __init__(self, label_list: 'list[str]' = []):
+        self.label_list = label_list
+
     def required_inputs(self) -> list:
         return ['in_img_path', 'in_seg_path', 'img_size']
 
@@ -266,7 +275,7 @@ class SegmentAnnsParser(BaseProcessor):
         width, height = payload.get('img_size')
         seg_anns = parse_seg_anns_from_labelme(in_seg_path, width, height, TaskType.SEGMENT)
         # remove anns whose labels are not in label_list, and mark the file to be skipped
-        labelset = set(ctx.label_list)
+        labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]
         if invalid_instance:
             ctx.skip_files.add(payload.get('in_img_path'))
@@ -278,6 +287,9 @@ class SegmentAnnsParser(BaseProcessor):
 
 
 class PoseAnnsParser(BaseProcessor):
+    def __init__(self, label_list: 'list[str]' = []):
+        self.label_list = label_list
+
     def required_inputs(self) -> list:
         return ['in_img_path', 'in_pose_path', 'img_size']
 
@@ -287,7 +299,7 @@ class PoseAnnsParser(BaseProcessor):
         width, height = payload.get('img_size')
         seg_anns = parse_seg_anns_from_labelme(in_pose_path, width, height, TaskType.POSE)
         # remove anns whose labels are not in label_list, and mark the file to be skipped
-        labelset = set(ctx.label_list)
+        labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]
         if invalid_instance:
             ctx.skip_files.add(payload.get('in_img_path'))
@@ -358,7 +370,7 @@ class PoseAnnsGenerator(BaseProcessor):
             points = dict()
             for skey in skeys:
                 sval = seg_anns[skey]
-                if sval.type != ShapeType.POINT or len(sval.points) != 2:
+                if sval.type != ShapeType.POINT or sval.points.shape[0] != 1:
                     raise ValueError(f'骨骼标注必须是点类型: {in_img_path}, {sval}')
                 points[sval.label] = sval.points  # 骨骼点坐标, {label: [x, y]}
             if len(points) != len(ctx.label_list):
@@ -372,12 +384,49 @@ class PoseAnnsGenerator(BaseProcessor):
             h_norm = (bbox[3] - bbox[1]) / height
             # pose 标注格式: 类别ID + det框信息 + 关键点坐标 (带可见性 2-可见不遮挡 1-遮挡 0-没有点)
             # <class-index> <x> <y> <width> <height> <px1> <py1> <p1-visibility> ... <pxn> <pyn> <pn-visibility>
+            assert 0 <= x_center <= 1 and 0 <= y_center <= 1 and 0 <= w_norm <= 1 and 0 <= h_norm <= 1
             result = f'{label_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}'
             for cls in ctx.label_list:
-                px = points[cls][0] / width if cls in points else 0
-                py = points[cls][1] / height if cls in points else 0
-                visibility = 2 if cls in points else 0
+                if cls not in points:
+                    px = py = visibility = 0
+                else:
+                    px = points[cls][0][0] / width
+                    py = points[cls][0][1] / height
+                    visibility = 2
+                assert 0 <= px <= 1 and 0 <= py <= 1
                 result += f' {px:.6f} {py:.6f} {visibility}'
+            boxes.append(result)
+        self.set(payload, 'ann_count', len(boxes))
+        self.set(payload, 'out_img_path', in_img_path)
+        with open(out_txt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(boxes))
+
+
+class SegmentAnnsGenerator(BaseProcessor):
+    """将 det_anns & seg_anns 转为 YOLO 格式并保存 Txt"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'img_size', 'seg_anns']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        # outputs: ann_count, out_img_path
+        in_img_path = payload.get('in_img_path')
+        width, height = payload.get('img_size')
+        seg_anns = payload.get('seg_anns')
+        out_txt_path = f'{payload.get("output_path")}.txt'
+        boxes = []
+        for key, val in seg_anns.items():
+            if val.type != ShapeType.POLYGON or val.points.shape[0] < 3:
+                raise ValueError(f'分割标注必须是至少三点的多边形: {in_img_path}, {val}')
+            # seg 标注格式: 类别ID + mask shape 每个点的坐标, 不需要 det 框信息, 训练时自动取 bounding box
+            # <class-index> <x1> <y1> <x2> <y2> ... <xn> <yn>
+            label_id = ctx.label_list.index(val.label)
+            result = f'{label_id}'
+            for pt in val.points:
+                norm_x = pt[0] / width
+                norm_y = pt[1] / height
+                assert 0 <= norm_x <= 1 and 0 <= norm_y <= 1
+                result += f' {norm_x:.6f} {norm_y:.6f}'
             boxes.append(result)
         self.set(payload, 'ann_count', len(boxes))
         self.set(payload, 'out_img_path', in_img_path)
@@ -458,6 +507,56 @@ class DirectoryIteratorForPointTask(BaseProcessor):
             self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
 
 
+class ClassifyAnnsGeneratorForPointTask(BaseProcessor):
+    """根据 det_anns 裁剪出目标图像, 保存并生成分类标注 (不支持复合类别)"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'current_dir', 'current_idx', 'det_anns']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        in_img_path = payload.get('in_img_path')
+        det_anns = payload.get('det_anns')
+        current_dir = payload.get('current_dir')
+        current_idx = payload.get('current_idx')
+        save_path = ctx.get_labels_path()
+        for idx, (_, val) in enumerate(det_anns.items()):
+            label = val.label
+            out_img_path = ''
+            if ctx.split <= 0 or current_idx % ctx.split != 0:  # 训练集
+                out_img_path = f'{save_path}/train/{label}/{current_dir}_{current_idx}_{idx}.jpg'
+                ctx.images_count[0] += 1
+                ctx.labels_count[0] += 1
+                ctx.train_list.append(out_img_path)
+            if ctx.split <= 0 or current_idx % ctx.split == 0:  # 验证集
+                out_img_path = f'{save_path}/test/{label}/{current_dir}_{current_idx}_{idx}.jpg'
+                ctx.images_count[1] += 1
+                ctx.labels_count[1] += 1
+                ctx.val_list.append(out_img_path)
+            assert out_img_path != '', '输出路径不能为空'
+            # create output directory if not exists
+            out_dirname = os.path.dirname(out_img_path)
+            if not os.path.exists(out_dirname):
+                os.makedirs(out_dirname, exist_ok=True)
+            # crop image and save
+            img = PIL.Image.open(in_img_path)
+            cimg = img.crop(val.bbox)
+            if cimg.mode != 'RGB':
+                cimg = cimg.convert('RGB')
+            cimg.save(out_img_path)
+
+
+class DetectAnnsConverterForPointTask(BaseProcessor):
+    """将 det_anns 标签全部转为同一个类别, 以适配 PointTask 任务"""
+
+    def __init__(self, target_label: str):
+        self.target_label = target_label
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        det_anns = payload.get('det_anns')
+        for key, val in det_anns.items():
+            val.label = self.target_label  # 将所有检测标签转换为同一个类别
+
+
 class PoseAnnsGeneratorForPointTask(BaseProcessor):
     """从 line 标注生成 det + pose 标注"""
 
@@ -474,26 +573,24 @@ class PoseAnnsGeneratorForPointTask(BaseProcessor):
         parent_label_id = ctx.label_list.index(payload.get('parent_label'))
         boxes = []
         for key, val in seg_anns.items():
-            if val.type != ShapeType.LINE or len(val.points) != 4:
+            if val.type != ShapeType.LINE or val.points.shape[0] != 2:
                 raise ValueError(f'标注类型错误: {in_img_path} 中的 {val} 不是 line 类型')
             # box: [xmin, ymin, xmax, ymax]
-            xmin = min(val.points[0], val.points[2])
-            xmax = max(val.points[0], val.points[2])
-            ymin = min(val.points[1], val.points[3])
-            ymax = max(val.points[1], val.points[3])
-            x = (xmin + xmax) / 2.0 / width
-            y = (ymin + ymax) / 2.0 / height
-            w = (xmax - xmin) / width
-            h = (ymax - ymin) / height
+            x = (val.bbox[0] + val.bbox[2]) / 2.0 / width
+            y = (val.bbox[1] + val.bbox[3]) / 2.0 / height
+            w = (val.bbox[2] - val.bbox[0]) / width
+            h = (val.bbox[3] - val.bbox[1]) / height
             # 如果父标签是第一个类别, 则 p[0] 是起点, p[1] 是终点
-            x0 = val.points[0] / width
-            y0 = val.points[1] / height
-            x1 = val.points[2] / width
-            y1 = val.points[3] / height
+            x0 = val.points[0][0] / width
+            y0 = val.points[0][1] / height
+            x1 = val.points[1][0] / width
+            y1 = val.points[1][1] / height
             if parent_label_id != 0:
                 x0, y0, x1, y1 = x1, y1, x0, y0
             # pose 标注格式: 类别ID + det框信息 + 关键点坐标 (带可见性 2-可见不遮挡 1-遮挡 0-没有点)
             # <class-index> <x> <y> <width> <height> <px1> <py1> <p1-visibility> ... <pxn> <pyn> <pn-visibility>
+            assert 0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1
+            assert 0 <= x0 <= 1 and 0 <= y0 <= 1 and 0 <= x1 <= 1 and 0 <= y1 <= 1
             boxes.append(f'{parent_label_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f} {x0:.6f} {y0:.6f} 2 {x1:.6f} {y1:.6f} 2')
         self.set(payload, 'ann_count', len(boxes))
         self.set(payload, 'out_img_path', in_img_path)
@@ -513,15 +610,15 @@ class SegmentAnnsGeneratorForPointTask(BaseProcessor):
         width, height = payload.get('img_size')
         seg_anns = payload.get('seg_anns')
         out_txt_path = f'{payload.get("output_path")}.txt'
-        parent_label_id = ctx.label_list.index(payload.get('parent_label'))
+        parent_label_id = 0  # PointTask 任务只有一个类别, 直接设置为 0
         line_thickness = 6.0  # 定义线段加粗的宽度(像素单位)
         boxes = []
         for key, val in seg_anns.items():
-            if val.type != ShapeType.LINE or len(val.points) != 4:
+            if val.type != ShapeType.LINE or val.points.shape[0] != 2:
                 raise ValueError(f'标注类型错误: {in_img_path} 中的 {val} 不是 line 类型')
             # line to roatated box
-            p1 = np.array([val.points[0], val.points[1]], dtype=np.float32)  # 起点
-            p2 = np.array([val.points[2], val.points[3]], dtype=np.float32)  # 终点
+            p1 = val.points[0]  # 起点
+            p2 = val.points[1]  # 终点
             vec = p2 - p1  # 线段方向向量
             length = np.linalg.norm(vec)  # 线段长度
             unit_vec = np.array([1, 0]) if length == 0 else vec / length  # 线段单位方向向量
@@ -541,9 +638,7 @@ class SegmentAnnsGeneratorForPointTask(BaseProcessor):
             for pt in corners:
                 norm_x = pt[0] / width
                 norm_y = pt[1] / height
-                # 限制在 [0, 1] 范围内
-                norm_x = max(0.0, min(1.0, norm_x))
-                norm_y = max(0.0, min(1.0, norm_y))
+                assert 0 <= norm_x <= 1 and 0 <= norm_y <= 1
                 result += f' {norm_x:.6f} {norm_y:.6f}'
             boxes.append(result)
         self.set(payload, 'ann_count', len(boxes))
@@ -556,6 +651,8 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
 
     # 标准检测子流水线
     standard_detect_pipe = [ImageSizeParser(), DetectAnnsParser(), DetectAnnsGenerator(), DatasetSplitter()]
+    # 标准分割子流水线
+    standard_segment_pipe = [ImageSizeParser(), SegmentAnnsParser(), SegmentAnnsGenerator(), DatasetSplitter()]
     # 标准姿态子流水线
     standard_pose_pipe = [
         ImageSizeParser(),
@@ -565,16 +662,8 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
         PoseAnnsGenerator(),
         DatasetSplitter(),
     ]
-    # 标准分割子流水线
-    standard_segment_pipe = [
-        ImageSizeParser(),
-        DetectAnnsParser(),
-        SegmentAnnsParser(),
-        DetectAndSegAnnsMatcher(),
-        SegmentAnnsGenerator(),
-        DatasetSplitter(),
-    ]
 
+    label_list = []
     if task_type == 'detect':
         pipeline = Pipeline([DirectoryIterator(Pipeline(standard_detect_pipe))])
     elif task_type.startswith('point'):
@@ -583,16 +672,30 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
         #    1. detect 标注的任何标签都被视为同一种类别, 训练时不区分不同标签的 detect 框, 只关注框的位置和大小
         #    2. classify 使用 detect 的框类别标签, 不专门做标注
         #    3. segment 的标注为 line 类型, 且每个 detect 框内必须有至少一个 line, 分别代表指针的起点和终点
+        det_labels = ['tl', 'tc', 'cl', 'cc']
+        seg_labels = ['1']
         if task_type.endswith('detect'):
-            pipe = [ImageSizeParser(), DetectAnnsParser(), DetectAnnsGeneratorForPointTask(), DatasetSplitter()]
+            # python3 train.py --task_type point_detect --root_path data/points
+            label_list = ['Point']
+            pipe = [
+                ImageSizeParser(),
+                DetectAnnsParser(det_labels),
+                DetectAnnsConverterForPointTask(label_list[0]),
+                DetectAnnsGenerator(),
+                DatasetSplitter(),
+            ]
         elif task_type.endswith('classify'):
-            pipe = [ImageSizeParser(), DetectAnnsParser(), ClassifyAnnsGeneratorForPointTask(), DatasetSplitter()]
+            # python3 train.py --task_type point_classify --root_path data/points
+            label_list = det_labels
+            pipe = [ImageSizeParser(), DetectAnnsParser(det_labels), ClassifyAnnsGeneratorForPointTask()]
         elif task_type.endswith('segment'):
+            # python3 train.py --task_type point_segment --root_path data/points
+            label_list = ['Point']
             subpipe = [SegmentAnnsGeneratorForPointTask(), DatasetSplitter()]
             pipe = [
                 ImageSizeParser(),
-                DetectAnnsParser(),
-                SegmentAnnsParser(),
+                DetectAnnsParser(det_labels),
+                SegmentAnnsParser(seg_labels),
                 DetectAndSegAnnsMatcher(),
                 DirectoryIteratorForPointTask(Pipeline(subpipe)),
             ]
@@ -603,7 +706,7 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
         raise ValueError(f'Unsupported task type: {task_type}')
 
     # 初始化上下文并启动流水线
-    ctx = GlobalContext(task_type, root_path, split, reserve_no_label)
+    ctx = GlobalContext(task_type, root_path, split, label_list, reserve_no_label)
     pipeline.process(ctx, TaskPayload())
     ctx.dataset_finalize()
     ctx.print_summary()

@@ -37,28 +37,28 @@ class Annotation:
 
     label: str
     type: ShapeType
-    parts: 'list[list[float]]' = field(default_factory=list)  # [x1, y1, x2, y2, ...] (可能多个形状是一个实例的不同部分)
+    parts: 'list[np.ndarray]' = field(default_factory=list)  # [[[x1, y1], [x2, y2], ...]]
     instance: Union[tuple, UUID] = field(default_factory=uuid1)  # noqa: UP007, UP045, group id 仅在语义分割标注中使用
     mask: Optional[np.ndarray] = None  # noqa: UP007, UP045, 掩码图像, 部分分割标注中使用
 
     @property
-    def points(self) -> 'list[float]':
+    def points(self) -> np.ndarray:
         """返回 parts[0], 不适用 group id 的任务使用"""
-        return self.parts[0] if self.parts else []
+        return self.parts[0] if self.parts else np.empty((0, 2))
 
     @property
     def bbox(self) -> 'list[float]':
         """根据 points 自动计算外接矩形 [xmin, ymin, xmax, ymax]"""
-        if not self.points:
+        if self.points.size == 0:
             return [0.0, 0.0, 0.0, 0.0]
-        xs = self.points[0::2]
-        ys = self.points[1::2]
-        return [min(xs), min(ys), max(xs), max(ys)]
+        # NumPy 矢量化获取极值
+        xmin, ymin = self.points.min(axis=0)
+        xmax, ymax = self.points.max(axis=0)
+        return [float(xmin), float(ymin), float(xmax), float(ymax)]
 
     def translate(self, dx: float, dy: float) -> 'Annotation':
         """返回平移后的新对象"""
-        new_parts = [[(p + dx if i % 2 == 0 else p + dy) for i, p in enumerate(part)] for part in self.parts]
-        return replace(self, parts=new_parts)
+        return replace(self, parts=[part + np.array([dx, dy]) for part in self.parts])
 
 
 # 判断点 point 是否在矩形 rect 内部. rect: [xmin, ymin, xmax, ymax]
@@ -72,18 +72,17 @@ def rectangle_include_point_wide(r: 'list[float]', p: 'list[float]', w: float) -
 
 
 # 判断一个 shape 是否完全在矩形 rect 内部, 宽松版本. rect: [xmin, ymin, xmax, ymax], shape_points: [x1, y1, x2, y2, ...]
-def rectangle_include_shape(rect: 'list[float]', shape_points: 'list[float]', shape_type=None) -> bool:
+def rectangle_include_shape(rect: 'list[float]', shape_points: np.ndarray, shape_type=None) -> bool:
     w = 10  # 宽松版本的宽度, 用于容忍标注误差.
     if shape_type == 'circle':
-        assert len(shape_points) == 4, 'Shape of shape_type=circle must have 4 points'
-        (cx, cy), (px, py) = shape_points[:2], shape_points[2:]
+        assert shape_points.shape == (2, 2), 'Shape of shape_type=circle must have 2 points with shape (2, 2)'
+        (cx, cy), (px, py) = shape_points[0], shape_points[1]
         r = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
         return rectangle_include_point_wide(rect, [cx, cy], r + w)
     else:
-        for i in range(0, len(shape_points), 2):
-            if not rectangle_include_point_wide(rect, [shape_points[i], shape_points[i + 1]], w):
-                return False
-        return True
+        mins = np.min(shape_points, axis=0)  # rect: [xmin, ymin, xmax, ymax]
+        maxs = np.max(shape_points, axis=0)  # shape_points: (N, 2)
+        return mins[0] >= rect[0] - w and mins[1] >= rect[1] - w and maxs[0] <= rect[2] + w and maxs[1] <= rect[3] + w
 
 
 # box (list): [xmin, ymin, xmax, ymax]
@@ -99,7 +98,7 @@ def calculate_iou(box1: 'list[float]', box2: 'list[float]') -> float:
     return intersection / union if union > 0 else 0
 
 
-# nms
+# todo: fix it
 def calculate_nms(bboxes: dict, iou_threshold: float = 0.25):
     sorted_bboxes = sorted(bboxes.items(), key=lambda x: x[1][2] * x[1][3], reverse=True)
     selected_bboxes = {}
@@ -142,7 +141,7 @@ def find_img(path: str) -> 'list[str]':
 
 
 # 取出 xml 单项 (length 预期长度, 为 0 则不检查)
-def get_xml_value(root: 'ET.Element[str]', name: str) -> ET.Element[str]:
+def get_xml_value(root: 'ET.Element[str]', name: str) -> 'ET.Element[str]':
     XmlValue = root.findall(name)
     if XmlValue is None:
         raise Exception(f'Cannot find {name} in XML file.')
@@ -196,7 +195,7 @@ def parse_det_anns_from_labelimg(
             xmax = get_xml_float_value(bndbox, 'xmax')
             ymax = get_xml_float_value(bndbox, 'ymax')
             assert xmax > xmin and ymax > ymin and xmax <= img_width and ymax <= img_height, f'{det_path}'
-            points = [xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax]  # 矩形转多边形点集
+            points = np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]])
             instances_map[uuid1()] = Annotation(label=name, parts=[points], type=ShapeType.RECTANGLE)
 
         # todo: fix it ...
@@ -210,6 +209,7 @@ def parse_det_anns_from_labelimg(
         raise Exception(f'Failed to parse annotation: {det_path}, {e}')
 
 
+# todo: fix it
 def create_labelimg(xml_path: str, image_name: str, width: int, height: int, bbox_dict: dict):
     # 创建根元素 <annotation>
     root = ET.Element('annotation')
@@ -245,7 +245,7 @@ def create_labelimg(xml_path: str, image_name: str, width: int, height: int, bbo
         f.write(pretty_xml_str)
 
 
-# shape_to_mask
+# todo: fix it
 def shape_to_mask(img_shape, points, shape_type=None, line_width=10, point_size=5):
     mask = np.zeros(img_shape[:2], dtype=np.uint8)
     mask = PIL.Image.fromarray(mask)
@@ -300,9 +300,9 @@ class TaskProcessor:
     }
 
     @staticmethod
-    def circle_to_polygon(points: 'list[float]') -> 'list[float]':
-        assert len(points) == 4, 'Shape of shape_type=circle must have 2 points'
-        x1, y1, x2, y2 = points
+    def circle_to_polygon(points: np.ndarray) -> np.ndarray:
+        assert points.shape == (2, 2), 'Shape of shape_type=circle must have 2 points with shape (2, 2)'
+        (x1, y1), (x2, y2) = points[0], points[1]
         r = np.linalg.norm([x2 - x1, y2 - y1])
         # r(1-cos(a/2))<x, a=2*pi/N => N>pi/arccos(1-x/r)
         # x: tolerance of the gap between the arc and the line segment
@@ -310,20 +310,20 @@ class TaskProcessor:
         i = np.arange(n_points_circle)
         x = x1 + r * np.sin(2 * np.pi / n_points_circle * i)
         y = y1 + r * np.cos(2 * np.pi / n_points_circle * i)
-        return np.stack((x, y), axis=1).flatten().tolist()
+        return np.stack((x, y), axis=1)
 
     @staticmethod
-    def transform(task_type: TaskType, shape_type: ShapeType, points: 'list[float]') -> 'list[float]':
+    def transform(task_type: TaskType, shape_type: ShapeType, points: np.ndarray) -> np.ndarray:
         if shape_type not in TaskProcessor.RULES[task_type]:
             raise Exception(f"[Warning] Task {task_type.value} usually doesn't use {shape_type}")
         if task_type == TaskType.SEGMENT:
             if shape_type == ShapeType.RECTANGLE:
-                assert len(points) == 4 or len(points) == 8, 'Shape of rectangle must have 2 or 4 points'
-                if len(points) == 2:
-                    x1, y1, x2, y2 = points
+                assert points.shape == (2, 2) or points.shape == (4, 2), 'Shape of rectangle must have 2 or 4 points'
+                if points.shape == (2, 2):
+                    (x1, y1), (x2, y2) = points
                     x1, x2 = sorted([x1, x2])
                     y1, y2 = sorted([y1, y2])
-                    return [x1, y1, x2, y1, x2, y2, x1, y2]
+                    return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
             elif shape_type == ShapeType.CIRCLE:
                 return TaskProcessor.circle_to_polygon(points)
             return points
@@ -356,7 +356,7 @@ def parse_seg_anns_from_labelme(
             label = shape['label']
             group_id = shape.get('group_id')
             shape_type = shape['shape_type']
-            raw_points = np.array(shape['points']).flatten().tolist()
+            raw_points = np.array(shape['points'])
             instance_key = uuid1() if group_id is None else (label, group_id)
             # create or get instance
             if instance_key not in instances_map:
@@ -365,13 +365,14 @@ def parse_seg_anns_from_labelme(
             processed_points = TaskProcessor.transform(task, shape_type, raw_points)
             # add points to instance
             instances_map[instance_key].parts.append(processed_points)
-            # if need_mask, convert shape to mask and add to instance mask (only for segment task)
-            if need_mask and task == TaskType.SEGMENT:
-                new_mask = shape_to_mask([img_height, img_width], raw_points, shape_type)
-                if instances_map[instance_key].mask is None:
-                    instances_map[instance_key].mask = new_mask
-                else:
-                    instances_map[instance_key].mask |= new_mask
+            # todo: fix it ...
+            # # if need_mask, convert shape to mask and add to instance mask (only for segment task)
+            # if need_mask and task == TaskType.SEGMENT:
+            #     new_mask = shape_to_mask([img_height, img_width], raw_points, shape_type)
+            #     if instances_map[instance_key].mask is None:
+            #         instances_map[instance_key].mask = new_mask
+            #     else:
+            #         instances_map[instance_key].mask |= new_mask
         # return result
         return instances_map
     except Exception as e:

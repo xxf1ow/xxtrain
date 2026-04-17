@@ -8,23 +8,23 @@ from ultralytics.models import YOLO
 
 from annconverter import annconverter
 
+suffix_switcher = {'classify': '-cls', 'detect': '', 'obb': '-obb', 'pose': '-pose', 'segment': '-seg'}
+
 
 def get_template_name(model_version='v8', task_type='detect'):
-    suffix_switcher = {'classify': '-cls', 'detect': '', 'obb': '-obb', 'pose': '-pose', 'segment': '-seg'}
-    suffix = suffix_switcher.get(task_type)
-    if suffix is None:
-        return None
-    return f'yolo{model_version}{suffix}.yaml'
+    for task, suffix in suffix_switcher.items():
+        if task_type.endswith(task):
+            return f'yolo{model_version}{suffix}.yaml'
+    return None
 
 
 def get_model_name(model_version='v8', model_scale='n', task_type='detect'):
     if model_scale not in ['n', 's', 'm', 'l', 'x']:
         return None
-    suffix_switcher = {'classify': '-cls', 'detect': '', 'obb': '-obb', 'pose': '-pose', 'segment': '-seg'}
-    suffix = suffix_switcher.get(task_type)
-    if suffix is None:
-        return None
-    return f'yolo{model_version}{model_scale}{suffix}'
+    for task, suffix in suffix_switcher.items():
+        if task_type.endswith(task):
+            return f'yolo{model_version}{model_scale}{suffix}'
+    return None
 
 
 def get_dataset_yaml_path(root_path):
@@ -89,7 +89,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
         model['nc'] = num_classes
 
         # set kpt_shape in model.yaml content if pose task
-        if task_type == 'pose':
+        if task_type.endswith('pose'):
             if 'kpt_shape' not in dataset:
                 raise KeyError("❌ 'kpt_shape' missing in dataset.yaml for pose task")
             model['kpt_shape'] = dataset['kpt_shape']
@@ -120,12 +120,13 @@ def download_pretrained(model_name):
     print(f'✅ Pretrained weights downloaded: {pretrained_weights_path}\n')
 
 
-def train_model(root_path, model_name):
+def train_model(root_path, model_name, task_type):
     # Train the model
     print(f'🚀 Starting training for model: {model_name} ...')
     model = YOLO(get_model_yaml_path(root_path, model_name))
     model.load(get_pretrained_weights_path(model_name))
-    model.train(data=get_dataset_yaml_path(root_path), epochs=100, batch=64, imgsz=640, device=0)
+    data = get_dataset_yaml_path(root_path) if not task_type.endswith('classify') else os.path.join(root_path, 'labels')
+    model.train(data=data, epochs=100, batch=64, imgsz=640)
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
     print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
     return best_model_path
@@ -165,7 +166,7 @@ def process(
     convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
     model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
     download_pretrained(model_name)
-    best_model_path = train_model(root_path, model_name)
+    best_model_path = train_model(root_path, model_name, task_type)
     if validate:
         validate_model(root_path, model_name, best_model_path)
     export_model_to_onnx(root_path, model_name, best_model_path)
