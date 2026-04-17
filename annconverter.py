@@ -675,7 +675,7 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
         det_labels = ['tl', 'tc', 'cl', 'cc']
         seg_labels = ['1']
         if task_type.endswith('detect'):
-            # python3 train.py --task_type point_detect --root_path data/points
+            # python3 train.py --task_type point_detect --root_path data/point
             label_list = ['Point']
             pipe = [
                 ImageSizeParser(),
@@ -685,11 +685,11 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
                 DatasetSplitter(),
             ]
         elif task_type.endswith('classify'):
-            # python3 train.py --task_type point_classify --root_path data/points
+            # python3 train.py --task_type point_classify --root_path data/point
             label_list = det_labels
             pipe = [ImageSizeParser(), DetectAnnsParser(det_labels), ClassifyAnnsGeneratorForPointTask()]
         elif task_type.endswith('segment'):
-            # python3 train.py --task_type point_segment --root_path data/points
+            # python3 train.py --task_type point_segment --root_path data/point
             label_list = ['Point']
             subpipe = [SegmentAnnsGeneratorForPointTask(), DatasetSplitter()]
             pipe = [
