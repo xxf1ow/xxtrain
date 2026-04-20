@@ -73,7 +73,7 @@ def rectangle_include_point_wide(r: 'list[float]', p: 'list[float]', w: float) -
 
 # 判断一个 shape 是否完全在矩形 rect 内部, 宽松版本. rect: [xmin, ymin, xmax, ymax], shape_points: [x1, y1, x2, y2, ...]
 def rectangle_include_shape(rect: 'list[float]', shape_points: np.ndarray, shape_type=None) -> bool:
-    w = 10  # 宽松版本的宽度, 用于容忍标注误差.
+    w = max(rect[2] - rect[0], rect[3] - rect[1]) * 0.15  # 宽松版本的宽度, 用于容忍标注误差.
     if shape_type == 'circle':
         assert shape_points.shape == (2, 2), 'Shape of shape_type=circle must have 2 points with shape (2, 2)'
         (cx, cy), (px, py) = shape_points[0], shape_points[1]
@@ -315,7 +315,7 @@ class TaskProcessor:
     @staticmethod
     def transform(task_type: TaskType, shape_type: ShapeType, points: np.ndarray) -> np.ndarray:
         if shape_type not in TaskProcessor.RULES[task_type]:
-            raise Exception(f"[Warning] Task {task_type.value} usually doesn't use {shape_type}")
+            raise Exception(f"[Error] Task {task_type.value} usually doesn't use {shape_type}")
         if task_type == TaskType.SEGMENT:
             if shape_type == ShapeType.RECTANGLE:
                 assert points.shape == (2, 2) or points.shape == (4, 2), 'Shape of rectangle must have 2 or 4 points'
@@ -355,7 +355,7 @@ def parse_seg_anns_from_labelme(
             # read shape info
             label = shape['label']
             group_id = shape.get('group_id')
-            shape_type = shape['shape_type']
+            shape_type = ShapeType(shape['shape_type'])
             raw_points = np.array(shape['points'])
             instance_key = uuid1() if group_id is None else (label, group_id)
             # create or get instance
@@ -379,27 +379,28 @@ def parse_seg_anns_from_labelme(
         raise Exception(f'Failed to parse annotation: {seg_path}, {e}')
 
 
-def map_parent_child_annotations(parents: 'dict[Any, Annotation]', children: 'dict[Any, Annotation]'):
+def map_parent_child_annotations(
+    parents: 'dict[Any, Annotation]', children: 'dict[Any, Annotation]', img_path: str = '', strict: bool = True
+) -> 'dict[Any, list[Any]]':
     # 计算 parent 和 children 之间的匹配关系, 返回一个 dict
     # key 是 parent 的 instance, value 是一个 list 包含所有匹配的 cheren instance
-    mapping = {pkey: [] for pkey, _ in parents.items()}
+    mapping = dict()
     # 遍历每个子标注，寻找其唯一的父标注
     for ckey, cval in children.items():
         # 找到所有包含 child 的 parent
-        matched_parents = []
-        for pkey, pval in parents.items():
-            if rectangle_include_shape(pval.bbox, cval.points, cval.type):
-                matched_parents.append(pkey)
+        matched_parents = [pk for pk, pv in parents.items() if rectangle_include_shape(pv.bbox, cval.points, cval.type)]
         # 约束检查：不允许一个 child 没有 parent, 或一个 child 匹配多个 parent
-        if not matched_parents:
-            raise ValueError(f'Child annotation (id: {ckey}, bbox: {cval.bbox}) does not belong to any parent.')
+        if strict and not matched_parents:
+            raise ValueError(f'Child annotation (path: {img_path}, bbox: {cval.bbox}) does not belong to any parent.')
         if len(matched_parents) > 1:
-            pkeys = [pkey for pkey in matched_parents]
-            raise ValueError(f'Child annotation (id: {ckey}) is ambiguous: it matches multiple parents: {pkeys}')
+            raise ValueError(f'Child annotation (path: {img_path}) is ambiguous: it matches multiple parents')
         # 记录匹配关系
-        mapping[matched_parents[0]].append(ckey)
+        if matched_parents:
+            pkey = matched_parents[0]
+            mapping.setdefault(pkey, []).append(ckey)
     # 约束检查：如果有 parent 没有匹配的 child，则抛出异常
-    for pkey, linked_children in mapping.items():
-        if not linked_children:
-            raise ValueError(f'Parent annotation (id: {pkey}) has no matching children.')
+    if strict:
+        for pkey, _ in parents.items():
+            if pkey not in mapping:
+                raise ValueError(f'Parent annotation (path: {img_path}) has no matching children.')
     return mapping

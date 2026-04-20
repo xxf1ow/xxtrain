@@ -313,13 +313,17 @@ class DetectAnnsGenerator(BaseProcessor):
 
 
 class DetectAndSegAnnsMatcher(BaseProcessor):
+    def __init__(self, strict: bool = True):
+        self.strict = strict
+
     def required_inputs(self) -> list:
-        return ['det_anns', 'seg_anns']
+        return ['in_img_path', 'det_anns', 'seg_anns']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
+        in_img_path = payload.get('in_img_path')
         det_anns = payload.get('det_anns')
         seg_anns = payload.get('seg_anns')
-        matched_map = map_parent_child_annotations(det_anns, seg_anns)
+        matched_map = map_parent_child_annotations(det_anns, seg_anns, in_img_path, self.strict)
         self.set(payload, 'matched_map', matched_map)
 
 
@@ -389,7 +393,7 @@ class SegmentAnnsGenerator(BaseProcessor):
         out_txt_path = f'{payload.get("output_path")}.txt'
         boxes = []
         for key, val in seg_anns.items():
-            if val.type != ShapeType.POLYGON or val.points.shape[0] < 3:
+            if val.points.shape[0] < 3:
                 raise ValueError(f'分割标注必须是至少三点的多边形: {in_img_path}, {val}')
             # seg 标注格式: 类别ID + mask shape 每个点的坐标, 不需要 det 框信息, 训练时自动取 bounding box
             # <class-index> <x1> <y1> <x2> <y2> ... <xn> <yn>
@@ -433,7 +437,7 @@ class DatasetSplitter(BaseProcessor):
             ctx.val_list.append(out_img_path)
 
 
-class DirectoryIteratorForPointTask(BaseProcessor):
+class DetectBboxCropIterator(BaseProcessor):
     """根据 det_anns 裁剪出目标图像, 保存并执行单图处理流水线. 子流程使用新的 Payload 包裹"""
 
     def __init__(self, sub_pipeline: Pipeline):
@@ -611,6 +615,38 @@ class SegmentAnnsGeneratorForPointTask(BaseProcessor):
             for pt in corners:
                 norm_x = pt[0] / width
                 norm_y = pt[1] / height
+                assert 0 <= norm_x <= 1 and 0 <= norm_y <= 1
+                result += f' {norm_x:.6f} {norm_y:.6f}'
+            boxes.append(result)
+        self.set(payload, 'ann_count', len(boxes))
+        self.set(payload, 'out_img_path', in_img_path)
+        with open(out_txt_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(boxes))
+
+
+class SegmentAnnsGeneratorForKnobTask(BaseProcessor):
+    """从 seg 标注生成 det + seg 标注"""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'output_path', 'img_size', 'seg_anns', 'parent_label']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        # outputs: ann_count, out_img_path
+        in_img_path = payload.get('in_img_path')
+        width, height = payload.get('img_size')
+        seg_anns = payload.get('seg_anns')
+        out_txt_path = f'{payload.get("output_path")}.txt'
+        parent_label_id = ctx.label_list.index(payload.get('parent_label'))
+        boxes = []
+        for key, val in seg_anns.items():
+            # seg 标注格式: 类别ID + mask shape 每个点的坐标, 不需要 det 框信息, 训练时自动取 bounding box
+            # <class-index> <x1> <y1> <x2> <y2> ... <xn> <yn>
+            result = f'{parent_label_id}'
+            for pt in val.points:
+                norm_x = pt[0] / width
+                norm_y = pt[1] / height
+                norm_x = max(0.0, min(1.0, norm_x))
+                norm_y = max(0.0, min(1.0, norm_y))
                 assert 0 <= norm_x <= 1 and 0 <= norm_y <= 1
                 result += f' {norm_x:.6f} {norm_y:.6f}'
             boxes.append(result)

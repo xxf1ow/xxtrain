@@ -146,11 +146,11 @@ def validate_model(root_path, model_name, best_model_path):
     print(f'✅ Inference completed! Results saved at: {save_path}\n')
 
 
-def export_model_to_onnx(best_model_path, root_path, task_type):
+def export_model_to_onnx(best_model_path, root_path, model_name):
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
         print('🚀 Exporting best model to ONNX format ...')
-        onnx_path = os.path.join(root_path, f'{task_type}.onnx')
+        onnx_path = os.path.join(root_path, 'weights', f'{model_name}.onnx')
         model = YOLO(best_model_path)
         temp_onnx_path = model.export(format='onnx', simplify=True)
         shutil.move(temp_onnx_path, onnx_path)
@@ -170,7 +170,7 @@ def process(
     best_model_path = train_model(root_path, model_name, task_type)
     if validate:
         validate_model(root_path, model_name, best_model_path)
-    export_model_to_onnx(best_model_path, root_path, task_type)
+    export_model_to_onnx(best_model_path, root_path, model_name)
 
 
 if __name__ == '__main__':
