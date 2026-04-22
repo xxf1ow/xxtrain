@@ -47,28 +47,22 @@ class GlobalContext:
             assert len(self.label_list) > 0, f'标签列表为空: {label_path}'
 
     def get_images_path(self):
-        return os.path.join(self.root_path, 'images')
+        return os.path.join(self.root_path, 'src')
 
     def get_labels_list_path(self):
         return os.path.join(self.get_images_path(), 'labels.txt')
 
-    def get_sub_labels_list_path(self):
-        return os.path.join(self.get_images_path(), 'sub_labels.txt')
-
     def get_labels_path(self):
-        return os.path.join(self.root_path, 'labels')
-
-    def get_cropped_images_path(self):
-        return os.path.join(self.get_labels_path(), 'cropped_images')
+        return os.path.join(self.root_path, self.task_type)
 
     def get_train_list_path(self):
-        return os.path.join(self.root_path, 'train.txt')
+        return os.path.join(self.get_labels_path(), 'train.txt')
 
     def get_val_list_path(self):
-        return os.path.join(self.root_path, 'val.txt')
+        return os.path.join(self.get_labels_path(), 'val.txt')
 
     def get_dataset_yaml_path(self):
-        return os.path.join(self.root_path, 'dataset.yaml')
+        return os.path.join(self.get_labels_path(), 'dataset.yaml')
 
     def dataset_finalize(self):
         # 写入 txt 和 yaml
@@ -77,7 +71,10 @@ class GlobalContext:
         with open(self.get_val_list_path(), 'w', encoding='utf-8') as f:
             f.write('\n'.join(self.val_list))
         # detect
-        content = f'path: {self.root_path}\ntrain: train.txt\nval: val.txt\n\nnames:\n'
+        content = f'path: {os.path.abspath(self.root_path)}\n'
+        content += f'train: {self.task_type}/train.txt\n'
+        content += f'val: {self.task_type}/val.txt\n'
+        content += 'names:\n'
         for i, name in enumerate(self.label_list):
             content += f'  {i}: {name}\n'
         # pose
@@ -170,8 +167,9 @@ class Pipeline(BaseProcessor):
 class DirectoryIterator(BaseProcessor):
     """遍历所有子目录和图片, 并执行单图处理流水线. 子流程使用新的 Payload 包裹"""
 
-    def __init__(self, sub_pipeline: Pipeline):
+    def __init__(self, sub_pipeline: Pipeline, no_symlink: bool = False):
         self.sub_pipeline = sub_pipeline
+        self.no_symlink = no_symlink
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         work_path = ctx.get_images_path()
@@ -181,17 +179,25 @@ class DirectoryIterator(BaseProcessor):
             imgs_dir_path = os.path.join(work_path, dir_name, 'imgs')
             if not os.path.isdir(imgs_dir_path):
                 continue
+            sub_save_path = os.path.join(save_path, dir_name)
+            os.makedirs(sub_save_path, exist_ok=True)
             img_list = find_img(imgs_dir_path)
-            os.makedirs(os.path.join(save_path, dir_name, 'imgs'), exist_ok=True)
             for num, file in enumerate(tqdm(img_list, desc=f'{dir_name}\t', leave=True, ncols=100, colour='CYAN')):
                 sub_payload = TaskPayload()  # 每张图片流转前,创建全新的包裹,杜绝脏数据累积
-                raw_name, extension = os.path.splitext(file)
+                raw_name, _ = os.path.splitext(file)
+                raw_img_path = os.path.abspath(os.path.join(imgs_dir_path, file))
+                output_path = os.path.join(sub_save_path, raw_name)
+                if self.no_symlink:
+                    in_img_path = raw_img_path
+                else:
+                    in_img_path = os.path.join(sub_save_path, file)
+                    os.symlink(raw_img_path, in_img_path)
                 self.set(sub_payload, 'current_dir', dir_name)
                 self.set(sub_payload, 'current_idx', num)
-                self.set(sub_payload, 'in_img_path', f'{work_path}/{dir_name}/imgs/{raw_name}{extension}')
+                self.set(sub_payload, 'in_img_path', in_img_path)
+                self.set(sub_payload, 'output_path', output_path)
                 self.set(sub_payload, 'in_det_path', f'{work_path}/{dir_name}/anns/{raw_name}.xml')
                 self.set(sub_payload, 'in_seg_path', f'{work_path}/{dir_name}/anns_seg/{raw_name}.json')
-                self.set(sub_payload, 'output_path', f'{save_path}/{dir_name}/imgs/{raw_name}')
                 self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
 
 
@@ -313,7 +319,8 @@ class DetectAnnsGenerator(BaseProcessor):
 
 
 class DetectAndSegAnnsMatcher(BaseProcessor):
-    def __init__(self, strict: bool = True):
+    def __init__(self, wide: float = 0, strict: bool = True):
+        self.wide = wide
         self.strict = strict
 
     def required_inputs(self) -> list:
@@ -323,7 +330,7 @@ class DetectAndSegAnnsMatcher(BaseProcessor):
         in_img_path = payload.get('in_img_path')
         det_anns = payload.get('det_anns')
         seg_anns = payload.get('seg_anns')
-        matched_map = map_parent_child_annotations(det_anns, seg_anns, in_img_path, self.strict)
+        matched_map = map_parent_child_annotations(det_anns, seg_anns, in_img_path, self.wide, self.strict)
         self.set(payload, 'matched_map', matched_map)
 
 

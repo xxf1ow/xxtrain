@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+from datetime import datetime
 
 import ultralytics
 from ruamel.yaml import YAML
@@ -27,12 +28,18 @@ def get_model_name(model_version='v8', model_scale='n', task_type='detect'):
     return None
 
 
-def get_dataset_yaml_path(root_path):
-    return os.path.join(root_path, 'dataset.yaml')
+def get_dataset_yaml_path(root_path, task_type):
+    return os.path.join(root_path, task_type, 'dataset.yaml')
 
 
-def get_model_yaml_path(root_path, model_name):
-    return os.path.join(root_path, f'{model_name}.yaml')
+def get_train_dataset(root_path, task_type):
+    if not task_type.endswith('classify'):
+        return get_dataset_yaml_path(root_path, task_type)
+    return os.path.join(root_path, task_type)
+
+
+def get_model_yaml_path(root_path, task_type, model_name):
+    return os.path.join(root_path, task_type, f'{model_name}.yaml')
 
 
 def get_pretrained_weights_path(model_name):
@@ -41,24 +48,23 @@ def get_pretrained_weights_path(model_name):
 
 
 def convert_voc_to_yolo(task_type, root_path, split, reserve_no_label):
-    dataset_yaml_path = get_dataset_yaml_path(root_path)
-    yolo_dataset_path = os.path.join(root_path, 'labels')
-    if os.path.isfile(dataset_yaml_path) and os.path.isdir(yolo_dataset_path) and os.listdir(yolo_dataset_path):
+    dataset_yaml_path = get_dataset_yaml_path(root_path, task_type)
+    if os.path.isfile(dataset_yaml_path) or (task_type.endswith('classify') and os.path.isdir(dataset_yaml_path)):
         print(f'✅ Dataset configuration file already exists at {dataset_yaml_path}\n')
         return
     print('🚀 Converting dataset to YOLO format ...')
     annconverter.process(task_type, root_path, split, reserve_no_label)
-    if not os.path.isfile(dataset_yaml_path):
-        print(f'❌ dataset.yaml not found at {dataset_yaml_path} after conversion, please check the process')
+    if os.path.isfile(dataset_yaml_path) or (task_type.endswith('classify') and os.path.isdir(dataset_yaml_path)):
+        print('✅ Conversion done!\n')
         return
-    print('✅ Conversion done!\n')
+    print(f'❌ dataset.yaml not found at {dataset_yaml_path} after conversion, please check the process')
 
 
 def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_type='detect'):
     model_name = get_model_name(model_version, model_scale, task_type)
     if model_name is None:
         raise ValueError(f'❌ Invalid version, scale or task type: {model_version}, {model_scale}, {task_type}')
-    target_path = get_model_yaml_path(root_path, model_name)
+    target_path = get_model_yaml_path(root_path, task_type, model_name)
     print(f'🚀 Generating model YAML for task: {task_type} ...')
     try:
         yaml_handler = YAML()
@@ -74,7 +80,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
             raise FileNotFoundError(f'❌ Template model configuration file not found: {source_path}')
 
         # read num_classes from dataset.yaml
-        dataset_yaml_path = get_dataset_yaml_path(root_path)
+        dataset_yaml_path = get_dataset_yaml_path(root_path, task_type)
         with open(dataset_yaml_path) as f:
             dataset = yaml_handler.load(f)
 
@@ -99,8 +105,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
             yaml_handler.dump(model, f)
 
     except Exception as e:
-        print(f'❌ Failed to generate model configuration file: {e}')
-        return
+        raise ValueError(f'❌ Failed to generate model configuration file: {e}')
 
     print(f'✅ Model configuration file generated: {target_path}\n')
     return model_name
@@ -123,26 +128,27 @@ def download_pretrained(model_name):
 def train_model(root_path, model_name, task_type):
     # Train the model
     print(f'🚀 Starting training for model: {model_name} ...')
-    model = YOLO(get_model_yaml_path(root_path, model_name))
+    model = YOLO(get_model_yaml_path(root_path, task_type, model_name))
     model.load(get_pretrained_weights_path(model_name))
-    data = get_dataset_yaml_path(root_path) if not task_type.endswith('classify') else os.path.join(root_path, 'labels')
-    imgsz = 640 if not task_type.endswith('classify') else 224
-    model.train(data=data, epochs=100, batch=32, imgsz=imgsz)
+    batch = 32 if not task_type.endswith('classify') else 128  # 分类任务可以上大 batch
+    imgsz = 640 if not task_type.endswith('classify') else 224  # 分类任务不需要大尺寸输入
+    model.train(data=get_train_dataset(root_path, task_type), epochs=100, batch=batch, imgsz=imgsz)
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
     print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
     return best_model_path
 
 
 def validate_model(root_path, model_name, best_model_path):
+    # todo: 改为仅分类模型使用, 用来检查数据集中的错误标注或困难样本
     # Validate the model using the best checkpoint
     print(f'🚀 Running inference on validation set using best model: {best_model_path} ...')
     if not os.path.isfile(best_model_path):
         print(f'❌ Best model checkpoint not found at {best_model_path}, skipping ...')
         return
-    model = YOLO(best_model_path)
     val_path = os.path.join(root_path, 'val.txt')
     save_path = os.path.abspath(os.path.join(root_path, 'val_results'))
-    model.predict(source=val_path, save=True, conf=0.25, project=save_path, name=model_name, exist_ok=True)
+    #  model = YOLO(best_model_path)
+    #  model.predict(source=val_path, save=True, conf=0.25, project=save_path, name=model_name, exist_ok=True)
     print(f'✅ Inference completed! Results saved at: {save_path}\n')
 
 
@@ -150,9 +156,11 @@ def export_model_to_onnx(best_model_path, root_path, model_name):
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
         print('🚀 Exporting best model to ONNX format ...')
-        onnx_path = os.path.join(root_path, 'weights', f'{model_name}.onnx')
         model = YOLO(best_model_path)
         temp_onnx_path = model.export(format='onnx', simplify=True)
+        formatted_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        onnx_path = os.path.join(root_path, 'weights', f'{model_name}_{formatted_time}.onnx')
+        os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
         shutil.move(temp_onnx_path, onnx_path)
         print(f'✅ Model exported to ONNX format: {onnx_path}')
     except Exception as e:

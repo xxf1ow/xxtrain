@@ -72,8 +72,8 @@ def rectangle_include_point_wide(r: 'list[float]', p: 'list[float]', w: float) -
 
 
 # 判断一个 shape 是否完全在矩形 rect 内部, 宽松版本. rect: [xmin, ymin, xmax, ymax], shape_points: [x1, y1, x2, y2, ...]
-def rectangle_include_shape(rect: 'list[float]', shape_points: np.ndarray, shape_type=None) -> bool:
-    w = max(rect[2] - rect[0], rect[3] - rect[1]) * 0.15  # 宽松版本的宽度, 用于容忍标注误差.
+def rectangle_include_shape(rect: 'list[float]', shape_points: np.ndarray, wide: float = 0, shape_type=None) -> bool:
+    w = max(rect[2] - rect[0], rect[3] - rect[1]) * wide  # 宽松版本的宽度, 用于容忍标注误差.
     if shape_type == 'circle':
         assert shape_points.shape == (2, 2), 'Shape of shape_type=circle must have 2 points with shape (2, 2)'
         (cx, cy), (px, py) = shape_points[0], shape_points[1]
@@ -178,7 +178,7 @@ def parse_det_anns_from_labelimg(
 ) -> 'dict[UUID, Annotation]':
     try:
         if not os.path.isfile(det_path):
-            raise FileNotFoundError('file not found ...')
+            return {}
         tree = ET.parse(det_path)
         root = tree.getroot()
         # check image size
@@ -288,12 +288,18 @@ class TaskProcessor:
     # 定义不同任务允许的形状
     RULES = {
         TaskType.DETECT: [ShapeType.RECTANGLE],
-        TaskType.SEGMENT: [ShapeType.POLYGON, ShapeType.CIRCLE, ShapeType.RECTANGLE, ShapeType.ROTATION],
-        TaskType.POSE: [ShapeType.POLYGON, ShapeType.POINT, ShapeType.LINE, ShapeType.LINESTRIP],
-        TaskType.OBB: [
-            ShapeType.POLYGON,
-            ShapeType.CIRCLE,
+        TaskType.SEGMENT: [
             ShapeType.RECTANGLE,
+            ShapeType.CIRCLE,
+            ShapeType.POLYGON,
+            ShapeType.ROTATION,
+            ShapeType.LINE,
+        ],
+        TaskType.POSE: [ShapeType.POLYGON, ShapeType.ROTATION, ShapeType.LINE, ShapeType.LINESTRIP, ShapeType.POINT],
+        TaskType.OBB: [
+            ShapeType.RECTANGLE,
+            ShapeType.CIRCLE,
+            ShapeType.POLYGON,
             ShapeType.ROTATION,
             ShapeType.LINESTRIP,
         ],
@@ -342,7 +348,7 @@ def parse_seg_anns_from_labelme(
 ) -> 'dict[Any, Annotation]':
     try:
         if not os.path.isfile(seg_path):
-            raise FileNotFoundError('file not found ...')
+            return {}
         # load json label file
         with open(seg_path, encoding='utf-8') as file:
             data = json.load(file)
@@ -380,7 +386,11 @@ def parse_seg_anns_from_labelme(
 
 
 def map_parent_child_annotations(
-    parents: 'dict[Any, Annotation]', children: 'dict[Any, Annotation]', img_path: str = '', strict: bool = True
+    parents: 'dict[Any, Annotation]',
+    children: 'dict[Any, Annotation]',
+    img_path: str = '',
+    wide: float = 0,
+    strict: bool = True,
 ) -> 'dict[Any, list[Any]]':
     # 计算 parent 和 children 之间的匹配关系, 返回一个 dict
     # key 是 parent 的 instance, value 是一个 list 包含所有匹配的 cheren instance
@@ -388,7 +398,9 @@ def map_parent_child_annotations(
     # 遍历每个子标注，寻找其唯一的父标注
     for ckey, cval in children.items():
         # 找到所有包含 child 的 parent
-        matched_parents = [pk for pk, pv in parents.items() if rectangle_include_shape(pv.bbox, cval.points, cval.type)]
+        matched_parents = [
+            pk for pk, pv in parents.items() if rectangle_include_shape(pv.bbox, cval.points, wide, cval.type)
+        ]
         # 约束检查：不允许一个 child 没有 parent, 或一个 child 匹配多个 parent
         if strict and not matched_parents:
             raise ValueError(f'Child annotation (path: {img_path}, bbox: {cval.bbox}) does not belong to any parent.')

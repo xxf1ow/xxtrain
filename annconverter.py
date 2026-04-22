@@ -7,22 +7,36 @@
 
 # 数据集目录约定:
 #   root_path/
-#   ├── images/
+#   └── src/
+#       ├── dir1/
+#       │   ├── imgs/       # 存放图片文件
+#       │   ├── anns/       # 存放检测标注 (labelimg, xml 格式)
+#       │   ├── anns_seg/   # 存放分割标注 (json 格式, 实例分割任务可选)
+#       │   ├── anns_obb/   # 存放旋转标注 (json 格式, 旋转目标检测可选)
+#       │   └── anns_pose/  # 存放骨骼标注 (json 格式, 骨骼关键点检测可选)
+#       ├── dir2/
+#       │   ├── imgs/
+#       │   ├── anns/
+#       │   └── ...
+#       ├── ...
+#       └── labels.txt      # 存放标签列表 (可选)
+
+# 执行完生成后的目录状态:
+#   root_path/
+#   ├── src/
 #   │   ├── dir1/
-#   │   │   ├── imgs/       # 存放图片文件
-#   │   │   ├── anns/       # 存放检测标注 (labelimg, xml 格式)
-#   │   │   ├── anns_seg/   # 存放分割标注 (json 格式, 实例分割任务可选)
-#   │   │   ├── anns_obb/   # 存放旋转标注 (json 格式, 旋转目标检测可选)
-#   │   │   └── anns_pose/  # 存放骨骼标注 (json 格式, 骨骼关键点检测可选)
 #   │   ├── dir2/
-#   │   │   ├── imgs/
-#   │   │   ├── anns/
-#   │   │   └── ...
-#   │   └── ...
-#   ├── labels.txt
-#   ├── train.txt
-#   ├── val.txt
-#   └── dataset.yaml
+#   │   ├── ...
+#   │   └── labels.txt      # 与执行前完全相同, 没有任何增删
+#   └── detect/
+#       ├── dir1/
+#       │   ├── xx.jpg      # 原始图片的软链接 (对应 src/dir1/xx.jpg)
+#       │   └── xx.txt      # 生成的 yolo 格式标签文件
+#       ├── dir2/
+#       │   └── ...
+#       ├── train.txt
+#       ├── val.txt
+#       └── dataset.yaml
 
 from annprocessor import (
     ClassifyAnnsGeneratorForPointTask,
@@ -82,7 +96,7 @@ def task_point_process(task_type: str):
     det_labels = ['tl', 'tc', 'cl', 'cc']
     seg_labels = ['1']
     if task_type == 'point-detect':
-        # python3 train.py --task_type point-detect --root_path data/point
+        # python3 train.py --task_type point-detect --root_path data/point (约半个小时)
         label_list = ['Point']
         pipe = [
             ImageSizeParser(),
@@ -91,10 +105,12 @@ def task_point_process(task_type: str):
             DetectAnnsGenerator(),
             DatasetSplitter(),
         ]
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), False)])
     elif task_type == 'point-classify':
-        # python3 train.py --task_type point-classify --root_path data/point (约一个小时)
+        # python3 train.py --task_type point-classify --root_path data/point (约十五分钟)
         label_list = det_labels
         pipe = [ImageSizeParser(), DetectAnnsParser(det_labels), ClassifyAnnsGeneratorForPointTask()]
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), True)])
     elif task_type == 'point-segment':
         # python3 train.py --task_type point-segment --root_path data/point (约一个小时)
         label_list = ['Point']
@@ -103,42 +119,43 @@ def task_point_process(task_type: str):
             ImageSizeParser(),
             DetectAnnsParser(det_labels),
             SegmentAnnsParser(seg_labels),
-            DetectAndSegAnnsMatcher(),
+            DetectAndSegAnnsMatcher(strict=False),
             DetectBboxCropIterator(Pipeline(subpipe)),
         ]
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), True)])
     else:
         raise ValueError(f'Unsupported task type: {task_type}')
-    pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     return pipeline, label_list
 
 
 def task_knob_process(task_type: str):
     # 旋钮仪表识别任务 = detect + segment + classify, 表盘检测 + 旋钮分割判断角度 + 方向分类
     # 数据集特殊约定:
-    #    classify 是将整理好了的,全部指向上的旋钮裁剪图片, 生成其它三种 flip 方向的图片, 然后做分类
+    #    classify 是将整理好了的, 全部指向上的旋钮裁剪图片, 生成其它三种 flip 方向的图片, 然后做分类
     labels = ['switch']
     if task_type == 'knob-detect':
-        # python3 train.py --task_type knob-detect --root_path data/knob
+        # python3 train.py --task_type knob-detect --root_path data/knob (约四十五分钟)
         label_list = labels
         pipe = standard_detect_pipe
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     elif task_type == 'knob-segment':
-        # python3 train.py --task_type knob-segment --root_path data/knob
+        # python3 train.py --task_type knob-segment --root_path data/knob (约两个半小时)
         label_list = labels
         subpipe = [SegmentAnnsGeneratorForKnobTask(), DatasetSplitter()]
         pipe = [
             ImageSizeParser(),
             DetectAnnsParser(labels),
             SegmentAnnsParser(labels),
-            DetectAndSegAnnsMatcher(False),  # 这个数据集标注质量较差, 不严格要求 detect 和 segment 的匹配
+            DetectAndSegAnnsMatcher(0.15, False),  # 这个数据集标注质量较差, 不严格要求 detect 和 segment 的匹配
             DetectBboxCropIterator(Pipeline(subpipe)),
         ]
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), True)])
     # elif task_type == 'knob-classify':
     #     # python3 train.py --task_type knob-classify --root_path data/knob
     #     label_list = ['up', 'down']
     #     pipe = [ImageSizeParser(), DetectAnnsParser(labels), ClassifyAnnsGeneratorForSwitchTask()]
     else:
         raise ValueError(f'Unsupported task type: {task_type}')
-    pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     return pipeline, label_list
 
 
