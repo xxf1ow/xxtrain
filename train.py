@@ -33,12 +33,6 @@ def get_dataset_yaml_path(root_path: str, task_type: str):
     return os.path.join(root_path, task_type, 'dataset.yaml')
 
 
-def get_train_dataset(root_path: str, task_type: str):
-    if not task_type.endswith('classify'):
-        return get_dataset_yaml_path(root_path, task_type)
-    return os.path.join(root_path, task_type)
-
-
 def get_model_yaml_path(root_path: str, task_type: str, model_name: str):
     return os.path.join(root_path, task_type, f'{model_name}.yaml')
 
@@ -131,9 +125,24 @@ def train_model(root_path: str, model_name: str, task_type: str) -> YOLO:
     print(f'🚀 Starting training for model: {model_name} ...')
     model = YOLO(get_model_yaml_path(root_path, task_type, model_name))
     model.load(get_pretrained_weights_path(model_name))
-    batch = 32 if not task_type.endswith('classify') else 128  # 分类任务可以上大 batch
-    imgsz = 640 if not task_type.endswith('classify') else 224  # 分类任务不需要大尺寸输入
-    model.train(data=get_train_dataset(root_path, task_type), epochs=100, batch=batch, imgsz=imgsz)
+
+    if not task_type.endswith('classify'):
+        model.train(data=get_dataset_yaml_path(root_path, task_type), epochs=100, batch=32, imgsz=640)
+    else:
+        if not task_type.startswith('point') and not task_type.startswith('knob'):
+            model.train(data=os.path.join(root_path, task_type), epochs=100, batch=256, imgsz=224)
+        else:
+            model.train(
+                data=os.path.join(root_path, task_type),
+                epochs=36,
+                batch=256,
+                imgsz=224,
+                fliplr=0.0,  # 针对方向敏感型数据集: 禁止左右翻转
+                flipud=0.0,  # 针对方向敏感型数据集: 禁止上下翻转
+                degrees=0.0,  # 针对方向敏感型数据集: 禁止旋转
+                auto_augment=None,  # 针对方向敏感型数据集: 禁止自动数据增强
+            )
+
     best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else ''
     if not os.path.isfile(best_model_path):
         print(f'❌ Training completed! But the best model checkpoint not found at {best_model_path} ...')
