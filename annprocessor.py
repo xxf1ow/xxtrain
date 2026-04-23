@@ -199,6 +199,8 @@ class DirectoryIterator(BaseProcessor):
                 self.set(sub_payload, 'in_det_path', f'{work_path}/{dir_name}/anns/{raw_name}.xml')
                 self.set(sub_payload, 'in_seg_path', f'{work_path}/{dir_name}/anns_seg/{raw_name}.json')
                 self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
+            if not os.listdir(sub_save_path):
+                os.rmdir(sub_save_path)
 
 
 class ImageSizeParser(BaseProcessor):
@@ -505,14 +507,15 @@ class ClassifyAnnsGeneratorForPointTask(BaseProcessor):
         save_path = ctx.get_labels_path()
         for idx, (_, val) in enumerate(det_anns.items()):
             label = val.label
+            label_id = ctx.label_list.index(label)
             out_img_path = ''
             if ctx.split <= 0 or current_idx % ctx.split != 0:  # 训练集
-                out_img_path = f'{save_path}/train/{label}/{current_dir}_{current_idx}_{idx}.jpg'
+                out_img_path = f'{save_path}/train/{label_id:02d}-{label}/{current_dir}_{current_idx}_{idx}.jpg'
                 ctx.images_count[0] += 1
                 ctx.labels_count[0] += 1
                 ctx.train_list.append(out_img_path)
             if ctx.split <= 0 or current_idx % ctx.split == 0:  # 验证集
-                out_img_path = f'{save_path}/test/{label}/{current_dir}_{current_idx}_{idx}.jpg'
+                out_img_path = f'{save_path}/val/{label_id:02d}-{label}/{current_dir}_{current_idx}_{idx}.jpg'
                 ctx.images_count[1] += 1
                 ctx.labels_count[1] += 1
                 ctx.val_list.append(out_img_path)

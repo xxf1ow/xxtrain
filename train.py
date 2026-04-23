@@ -5,6 +5,7 @@ from datetime import datetime
 
 import ultralytics
 from ruamel.yaml import YAML
+from ultralytics.engine.results import Probs
 from ultralytics.models import YOLO
 
 import annconverter
@@ -12,14 +13,14 @@ import annconverter
 suffix_switcher = {'classify': '-cls', 'detect': '', 'obb': '-obb', 'pose': '-pose', 'segment': '-seg'}
 
 
-def get_template_name(model_version='v8', task_type='detect'):
+def get_template_name(model_version: str = 'v8', task_type: str = 'detect'):
     for task, suffix in suffix_switcher.items():
         if task_type.endswith(task):
             return f'yolo{model_version}{suffix}.yaml'
     return None
 
 
-def get_model_name(model_version='v8', model_scale='n', task_type='detect'):
+def get_model_name(model_version: str = 'v8', model_scale: str = 'n', task_type: str = 'detect'):
     if model_scale not in ['n', 's', 'm', 'l', 'x']:
         return None
     for task, suffix in suffix_switcher.items():
@@ -28,26 +29,26 @@ def get_model_name(model_version='v8', model_scale='n', task_type='detect'):
     return None
 
 
-def get_dataset_yaml_path(root_path, task_type):
+def get_dataset_yaml_path(root_path: str, task_type: str):
     return os.path.join(root_path, task_type, 'dataset.yaml')
 
 
-def get_train_dataset(root_path, task_type):
+def get_train_dataset(root_path: str, task_type: str):
     if not task_type.endswith('classify'):
         return get_dataset_yaml_path(root_path, task_type)
     return os.path.join(root_path, task_type)
 
 
-def get_model_yaml_path(root_path, task_type, model_name):
+def get_model_yaml_path(root_path: str, task_type: str, model_name: str):
     return os.path.join(root_path, task_type, f'{model_name}.yaml')
 
 
-def get_pretrained_weights_path(model_name):
+def get_pretrained_weights_path(model_name: str):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(current_dir, '.weights', f'{model_name}.pt')
 
 
-def convert_voc_to_yolo(task_type, root_path, split, reserve_no_label):
+def convert_voc_to_yolo(task_type: str, root_path: str, split: int, reserve_no_label: bool):
     dataset_yaml_path = get_dataset_yaml_path(root_path, task_type)
     if os.path.isfile(dataset_yaml_path) or (task_type.endswith('classify') and os.path.isdir(dataset_yaml_path)):
         print(f'✅ Dataset configuration file already exists at {dataset_yaml_path}\n')
@@ -60,7 +61,7 @@ def convert_voc_to_yolo(task_type, root_path, split, reserve_no_label):
     print(f'❌ dataset.yaml not found at {dataset_yaml_path} after conversion, please check the process')
 
 
-def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_type='detect'):
+def generate_model_yaml(root_path: str, model_version: str = 'v8', model_scale: str = 'n', task_type: str = 'detect'):
     model_name = get_model_name(model_version, model_scale, task_type)
     if model_name is None:
         raise ValueError(f'❌ Invalid version, scale or task type: {model_version}, {model_scale}, {task_type}')
@@ -111,7 +112,7 @@ def generate_model_yaml(root_path, model_version='v8', model_scale='n', task_typ
     return model_name
 
 
-def download_pretrained(model_name):
+def download_pretrained(model_name: str):
     # download pretrained weights if not exist
     pretrained_weights = f'{model_name}.pt'
     pretrained_weights_path = get_pretrained_weights_path(model_name)
@@ -125,7 +126,7 @@ def download_pretrained(model_name):
     print(f'✅ Pretrained weights downloaded: {pretrained_weights_path}\n')
 
 
-def train_model(root_path, model_name, task_type):
+def train_model(root_path: str, model_name: str, task_type: str) -> YOLO:
     # Train the model
     print(f'🚀 Starting training for model: {model_name} ...')
     model = YOLO(get_model_yaml_path(root_path, task_type, model_name))
@@ -133,31 +134,20 @@ def train_model(root_path, model_name, task_type):
     batch = 32 if not task_type.endswith('classify') else 128  # 分类任务可以上大 batch
     imgsz = 640 if not task_type.endswith('classify') else 224  # 分类任务不需要大尺寸输入
     model.train(data=get_train_dataset(root_path, task_type), epochs=100, batch=batch, imgsz=imgsz)
-    best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else 'N/A'
-    print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
-    return best_model_path
-
-
-def validate_model(root_path, model_name, best_model_path):
-    # todo: 改为仅分类模型使用, 用来检查数据集中的错误标注或困难样本
-    # Validate the model using the best checkpoint
-    print(f'🚀 Running inference on validation set using best model: {best_model_path} ...')
+    best_model_path = model.trainer.best if model.trainer and hasattr(model.trainer, 'best') else ''
     if not os.path.isfile(best_model_path):
-        print(f'❌ Best model checkpoint not found at {best_model_path}, skipping ...')
-        return
-    val_path = os.path.join(root_path, 'val.txt')
-    save_path = os.path.abspath(os.path.join(root_path, 'val_results'))
-    #  model = YOLO(best_model_path)
-    #  model.predict(source=val_path, save=True, conf=0.25, project=save_path, name=model_name, exist_ok=True)
-    print(f'✅ Inference completed! Results saved at: {save_path}\n')
+        print(f'❌ Training completed! But the best model checkpoint not found at {best_model_path} ...')
+        return model
+    print(f'✅ Training completed! Best model saved at: {best_model_path}\n')
+    model = YOLO(best_model_path)
+    return model
 
 
-def export_model_to_onnx(best_model_path, root_path, model_name):
+def export_model_to_onnx(best_model: YOLO, root_path: str, model_name: str):
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
         print('🚀 Exporting best model to ONNX format ...')
-        model = YOLO(best_model_path)
-        temp_onnx_path = model.export(format='onnx', simplify=True)
+        temp_onnx_path = best_model.export(format='onnx', simplify=True)
         formatted_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         onnx_path = os.path.join(root_path, 'weights', f'{model_name}_{formatted_time}.onnx')
         os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
@@ -168,21 +158,82 @@ def export_model_to_onnx(best_model_path, root_path, model_name):
         return
 
 
+def classify_validate(best_model: YOLO, root_path: str, task_type: str):
+    # Validate the model using the best checkpoint
+    print('🚀 Running inference on validation set using best model ...')
+    # YOLO 分类模型在训练时会将 data 参数保存在 overrides 中
+    data_root = best_model.overrides.get('data')
+    if not data_root or not os.path.exists(data_root):
+        data_root = os.path.join(root_path, task_type)
+        if not os.path.exists(data_root):
+            print(f'❌ Could not find dataset root at: {data_root}')
+            return
+    data_root = os.path.abspath(data_root)
+
+    # 2. 获取类别映射 (index -> name)
+    class_names = best_model.names
+    name_to_idx = {v: k for k, v in class_names.items()}
+
+    # 4. 遍历训练集和验证集
+    total_count = 0
+    mismatched = []
+    # 遍历 train 和 val 文件夹
+    for split in ['train', 'val']:
+        split_path = os.path.join(data_root, split)
+        if not os.path.isdir(split_path):
+            print(f'⚠️ Warning: {split} path not found, skipping...')
+            continue
+        for class_dir in os.listdir(split_path):
+            class_dir_path = os.path.join(split_path, class_dir)
+            if not os.path.isdir(class_dir_path):
+                continue
+            results = best_model.predict(source=class_dir_path, stream=True, conf=0.25, save=False)
+            for res in results:
+                if res.probs is not Probs:
+                    continue
+                total_count += 1
+                true_name = os.path.basename(os.path.dirname(res.path))
+                true_idx = name_to_idx.get(true_name)
+                pred_idx = res.probs.top1
+                pred_name = class_names[pred_idx]
+                if pred_idx != true_idx:
+                    mismatched.append(f'expect: {true_idx}-{true_name}, actual: {pred_idx}-{pred_name} ==> {res.path}')
+
+    # 写入到文件
+    print('✅ Validation completed!')
+    print(f'📊 Total samples processed: {total_count}')
+    if len(mismatched) > 0:
+        mismatched_txt = os.path.join(root_path, task_type, 'mismatched_samples.txt')
+        with open(mismatched_txt, 'w', encoding='utf-8') as f:
+            f.write('# Mismatched Samples (Format: True_Label | Predicted_Label | Path)\n')
+            f.write('\n'.join(mismatched))
+        print(f'❌ Found {len(mismatched)} mismatched samples.')
+        print(f'📄 Results saved at: {mismatched_txt}\n')
+
+
 def process(
-    root_path, model_version='v8', model_scale='n', task_type='detect', split=10, reserve_no_label=True, validate=False
+    root_path: str,
+    model_version: str = 'v8',
+    model_scale: str = 'n',
+    task_type: str = 'detect',
+    split: int = 10,
+    reserve_no_label: bool = True,
+    validate: bool = False,
 ):
     # process dataset and generate dataset.yaml, generate model.yaml, download pretrained weights
     convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
     model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
     download_pretrained(model_name)
-    best_model_path = train_model(root_path, model_name, task_type)
-    if validate:
-        validate_model(root_path, model_name, best_model_path)
-    export_model_to_onnx(best_model_path, root_path, model_name)
+    best_model = train_model(root_path, model_name, task_type)
+    export_model_to_onnx(best_model, root_path, model_name)
+    if task_type.endswith('classify'):
+        classify_validate(best_model, root_path, task_type)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'export', 'val'], help='Run mode')
+    parser.add_argument('--weights', type=str, help='Path to .pt model weights (required for export/val)')
     parser.add_argument('--root_path', type=str, required=True, help='Path to VOC dataset root')
     parser.add_argument('--model_version', type=str, default='v8', help='YOLO model version (e.g. v8)')
     parser.add_argument('--model_scale', type=str, default='n', help='YOLO model scale (e.g. n, s, m, l, x)')
@@ -192,9 +243,43 @@ if __name__ == '__main__':
     parser.add_argument('--validate', type=bool, default=False, help='Whether to run validation after training')
     args = parser.parse_args()
 
-    # # only export ONNX model without training
-    # best_model_path = '/home/lxx/ultralytics/xxtrain/runs/pose/train/weights/best.pt'
-    # model_name = get_model_name(args.model_version, args.model_scale, args.task_type)
-    # export_model_to_onnx(args.root_path, model_name, get_pretrained_weights_path(model_name))
+    model_name = get_model_name(args.model_version, args.model_scale, args.task_type)
+    assert model_name is not None, (
+        f'❌ Invalid version, scale or task type: {args.model_version}, {args.model_scale}, {args.task_type}'
+    )
 
-    process(args.root_path, args.model_version, args.model_scale, args.task_type, args.split, args.reserve_no_label)
+    if args.mode == 'train':
+        process(args.root_path, args.model_version, args.model_scale, args.task_type, args.split, args.reserve_no_label)
+
+    elif args.mode == 'export':
+        """
+        python3 train.py \
+            --mode export \
+            --root_path data/point \
+            --task_type point-classify \
+            --weights runs/classify/train9/weights/best.pt
+        """
+        if not args.weights:
+            print('❌ Error: --weights is required for export mode')
+        else:
+            print(f'🚀 Loading model for export: {args.weights}')
+            model = YOLO(args.weights)
+            export_model_to_onnx(model, args.root_path, model_name)
+
+    elif args.mode == 'val':
+        """
+        python3 train.py \
+            --mode val \
+            --root_path data/point \
+            --task_type point-classify \
+            --weights runs/classify/train9/weights/best.pt
+        """
+        if not args.weights:
+            print('❌ Error: --weights is required for val mode')
+        else:
+            print(f'🚀 Loading model for validation: {args.weights}')
+            model = YOLO(args.weights)
+            if args.task_type.endswith('classify'):
+                classify_validate(model, args.root_path, args.task_type)
+            else:
+                print("ℹ️ Currently only 'classify' task supports custom validation script in this file.")
