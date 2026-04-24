@@ -5,6 +5,7 @@ from datetime import datetime
 
 import ultralytics
 from ruamel.yaml import YAML
+from tqdm import tqdm
 from ultralytics.engine.results import Probs
 from ultralytics.models import YOLO
 
@@ -130,12 +131,12 @@ def train_model(root_path: str, model_name: str, task_type: str) -> YOLO:
         model.train(data=get_dataset_yaml_path(root_path, task_type), epochs=100, batch=32, imgsz=640)
     else:
         if not task_type.startswith('point') and not task_type.startswith('knob'):
-            model.train(data=os.path.join(root_path, task_type), epochs=100, batch=256, imgsz=224)
+            model.train(data=os.path.join(root_path, task_type), epochs=72, batch=128, imgsz=224)
         else:
             model.train(
                 data=os.path.join(root_path, task_type),
-                epochs=36,
-                batch=256,
+                epochs=72,
+                batch=128,
                 imgsz=224,
                 fliplr=0.0,  # 针对方向敏感型数据集: 禁止左右翻转
                 flipud=0.0,  # 针对方向敏感型数据集: 禁止上下翻转
@@ -167,54 +168,69 @@ def export_model_to_onnx(best_model: YOLO, root_path: str, model_name: str):
         return
 
 
-def classify_validate(best_model: YOLO, root_path: str, task_type: str):
+def standard_validate(best_model: YOLO, directory: str):
     # Validate the model using the best checkpoint
     print('🚀 Running inference on validation set using best model ...')
-    # YOLO 分类模型在训练时会将 data 参数保存在 overrides 中
-    data_root = best_model.overrides.get('data')
-    if not data_root or not os.path.exists(data_root):
-        data_root = os.path.join(root_path, task_type)
-        if not os.path.exists(data_root):
-            print(f'❌ Could not find dataset root at: {data_root}')
-            return
-    data_root = os.path.abspath(data_root)
+    results = best_model.predict(source=directory, verbose=False, save=True, stream=True)
+    if isinstance(results, map) or hasattr(results, '__iter__'):
+        for _ in results:
+            pass
+    assert best_model.predictor and hasattr(best_model.predictor, 'save_dir')
+    print(f'✅ Inference completed. Results are saved in {best_model.predictor.save_dir}')
 
-    # 2. 获取类别映射 (index -> name)
+
+def classify_validate(best_model: YOLO, directory: str):
+    # Validate the model using the best checkpoint
+    assert model.task == 'classify'
     class_names = best_model.names
     name_to_idx = {v: k for k, v in class_names.items()}
+    if not class_names:
+        print('⚠️ 标签列表是空的 ...')
+        return
 
-    # 4. 遍历训练集和验证集
+    # 递归得到所有图片文件路径
+    valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp')
+    abs_root_path = os.path.abspath(directory)
+    image_paths = []
+    for root, dirs, files in os.walk(abs_root_path):
+        for file in files:
+            if file.lower().endswith(valid_extensions):
+                full_path = os.path.join(root, file)
+                image_paths.append(full_path)
+    if not image_paths:
+        print(f'⚠️ 在目录 {directory} 下未找到任何图片文件。')
+        return
+
+    # run
+    print(f'🚀 Running inference using best model, image size: {len(image_paths)} ...')
     total_count = 0
     mismatched = []
-    # 遍历 train 和 val 文件夹
-    for split in ['train', 'val']:
-        split_path = os.path.join(data_root, split)
-        if not os.path.isdir(split_path):
-            print(f'⚠️ Warning: {split} path not found, skipping...')
-            continue
-        for class_dir in os.listdir(split_path):
-            class_dir_path = os.path.join(split_path, class_dir)
-            if not os.path.isdir(class_dir_path):
-                continue
-            results = best_model.predict(source=class_dir_path, stream=True, conf=0.25, save=False)
-            for res in results:
-                if res.probs is not Probs:
-                    continue
-                total_count += 1
-                true_name = os.path.basename(os.path.dirname(res.path))
-                true_idx = name_to_idx.get(true_name)
-                pred_idx = res.probs.top1
-                pred_name = class_names[pred_idx]
-                if pred_idx != true_idx:
-                    mismatched.append(f'expect: {true_idx}-{true_name}, actual: {pred_idx}-{pred_name} ==> {res.path}')
+    for imgpath in tqdm(image_paths, leave=True, colour='CYAN'):
+        results = best_model.predict(source=imgpath, verbose=False, save=False)
+        res = results[0]
+        total_count += 1
+        true_name = os.path.basename(os.path.dirname(imgpath))
+        true_idx = name_to_idx.get(true_name)
+        assert true_idx is not None
+        assert isinstance(res.probs, Probs)
+        pred_idx = res.probs.top1
+        pred_name = class_names[pred_idx]
+        if pred_idx != true_idx:
+            assert best_model.predictor and hasattr(best_model.predictor, 'save_dir')
+            save_dir = os.path.join(best_model.predictor.save_dir, f'{true_name} - {pred_name}')
+            os.makedirs(save_dir, exist_ok=True)
+            shutil.copy(imgpath, os.path.join(save_dir, os.path.basename(imgpath)))
+            mismatched.append(f'expect: {true_idx}-{true_name}, actual: {pred_idx}-{pred_name} ==> {imgpath}')
 
     # 写入到文件
     print('✅ Validation completed!')
     print(f'📊 Total samples processed: {total_count}')
     if len(mismatched) > 0:
-        mismatched_txt = os.path.join(root_path, task_type, 'mismatched_samples.txt')
+        assert best_model.predictor and hasattr(best_model.predictor, 'save_dir')
+        mismatched_txt = os.path.join(best_model.predictor.save_dir, 'mismatched_samples.txt')
         with open(mismatched_txt, 'w', encoding='utf-8') as f:
-            f.write('# Mismatched Samples (Format: True_Label | Predicted_Label | Path)\n')
+            f.write('# Mismatched Samples Report\n')
+            f.write(f'# Total mismatched: {len(mismatched)} / {total_count}\n')
             f.write('\n'.join(mismatched))
         print(f'❌ Found {len(mismatched)} mismatched samples.')
         print(f'📄 Results saved at: {mismatched_txt}\n')
@@ -227,7 +243,6 @@ def process(
     task_type: str = 'detect',
     split: int = 10,
     reserve_no_label: bool = True,
-    validate: bool = False,
 ):
     # process dataset and generate dataset.yaml, generate model.yaml, download pretrained weights
     convert_voc_to_yolo(task_type, root_path, split, reserve_no_label)
@@ -235,21 +250,19 @@ def process(
     download_pretrained(model_name)
     best_model = train_model(root_path, model_name, task_type)
     export_model_to_onnx(best_model, root_path, model_name)
-    if task_type.endswith('classify'):
-        classify_validate(best_model, root_path, task_type)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'export', 'val'], help='Run mode')
-    parser.add_argument('--weights', type=str, help='Path to .pt model weights (required for export/val)')
-    parser.add_argument('--root_path', type=str, required=True, help='Path to VOC dataset root')
+    parser.add_argument('--root_path', type=str, help='Path to VOC dataset root')
     parser.add_argument('--model_version', type=str, default='v8', help='YOLO model version (e.g. v8)')
     parser.add_argument('--model_scale', type=str, default='n', help='YOLO model scale (e.g. n, s, m, l, x)')
     parser.add_argument('--task_type', type=str, default='detect', help='Task type (e.g. detect)')
     parser.add_argument('--split', type=int, default=10, help='Split ratio for test set')
     parser.add_argument('--reserve_no_label', action='store_true', help='Whether to keep images without labels')
-    parser.add_argument('--validate', type=bool, default=False, help='Whether to run validation after training')
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'export', 'val'], help='Run mode')
+    parser.add_argument('--weights', type=str, help='Path to .pt model weights (required for export/val)')
+    parser.add_argument('--directory', type=str, help='Path to images directory (required for export/val)')
     args = parser.parse_args()
 
     model_name = get_model_name(args.model_version, args.model_scale, args.task_type)
@@ -277,18 +290,16 @@ if __name__ == '__main__':
 
     elif args.mode == 'val':
         """
-        python3 train.py \
-            --mode val \
-            --root_path data/point \
-            --task_type point-classify \
-            --weights runs/classify/train9/weights/best.pt
+        python3 train.py --mode val \
+        --directory /home/lxx/ultralytics/xxtrain/data/light/light-classify \
+        --weights runs/classify/train16/weights/best.pt
         """
-        if not args.weights:
-            print('❌ Error: --weights is required for val mode')
+        if not args.weights or not args.directory:
+            print('❌ Error: --weights and --directory is required for val mode')
         else:
-            print(f'🚀 Loading model for validation: {args.weights}')
             model = YOLO(args.weights)
-            if args.task_type.endswith('classify'):
-                classify_validate(model, args.root_path, args.task_type)
+            print(f'🚀 Loading model for validation: {args.weights}, task type: {model.task} ...')
+            if model.task == 'classify':
+                classify_validate(model, args.directory)
             else:
-                print("ℹ️ Currently only 'classify' task supports custom validation script in this file.")
+                standard_validate(model, args.directory)

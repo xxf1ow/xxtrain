@@ -1,5 +1,6 @@
 import os
 
+import cv2
 import numpy as np
 import PIL.Image
 from tqdm import tqdm
@@ -525,11 +526,17 @@ class ClassifyAnnsGeneratorForPointTask(BaseProcessor):
             if not os.path.exists(out_dirname):
                 os.makedirs(out_dirname, exist_ok=True)
             # crop image and save
-            img = PIL.Image.open(in_img_path)
-            cimg = img.crop(val.bbox)
-            if cimg.mode != 'RGB':
-                cimg = cimg.convert('RGB')
-            cimg.save(out_img_path)
+            img = cv2.imread(in_img_path)
+            assert img is not None
+            x1, y1, x2, y2 = map(int, val.bbox)
+            roi = img[y1:y2, x1:x2]
+            h, w = roi.shape[:2]
+            size = max(h, w)
+            square_img = np.zeros((size, size, 3), dtype=np.uint8)
+            dy = (size - h) // 2
+            dx = (size - w) // 2
+            square_img[dy : dy + h, dx : dx + w] = roi
+            cv2.imwrite(out_img_path, square_img)
 
 
 class DetectAnnsConverterForPointTask(BaseProcessor):

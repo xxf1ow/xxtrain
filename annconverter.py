@@ -181,6 +181,33 @@ def task_scale_process(task_type: str):
     return pipeline, label_list
 
 
+def task_light_process(task_type: str):
+    # 小灯识别任务 = detect + classify
+    # 数据集特殊约定:
+    #    1. detect 标注的任何标签都被视为同一种类别, 训练时不区分不同标签的 detect 框, 只关注框的位置和大小
+    #    2. classify 使用 detect 的框类别标签, 不专门做标注
+    det_labels = ['0', '1', '2']
+    if task_type == 'light-detect':
+        # python3 train.py --task_type light-detect --root_path data/light (约二十分钟)
+        label_list = ['light']
+        pipe = [
+            ImageSizeParser(),
+            DetectAnnsParser(det_labels),
+            DetectAnnsConverterForPointTask(label_list[0]),
+            DetectAnnsGenerator(),
+            DatasetSplitter(),
+        ]
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), False)])
+    elif task_type == 'light-classify':
+        # python3 train.py --task_type light-classify --root_path data/light (约十五分钟)
+        label_list = det_labels
+        pipe = [ImageSizeParser(), DetectAnnsParser(det_labels), ClassifyAnnsGeneratorForPointTask()]
+        pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), True)])
+    else:
+        raise ValueError(f'Unsupported task type: {task_type}')
+    return pipeline, label_list
+
+
 def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
     if task_type.find('-') == -1:
         pipeline, label_list = standard_process(task_type)
@@ -190,6 +217,8 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
         pipeline, label_list = task_knob_process(task_type)
     elif task_type.startswith('scale'):
         pipeline, label_list = task_scale_process(task_type)
+    elif task_type.startswith('light'):
+        pipeline, label_list = task_light_process(task_type)
     else:
         raise ValueError(f'Unsupported task type: {task_type}')
 
