@@ -71,17 +71,39 @@ def rectangle_include_point_wide(r: 'list[float]', p: 'list[float]', w: float) -
     return p[0] >= r[0] - w and p[0] <= r[2] + w and p[1] >= r[1] - w and p[1] <= r[3] + w
 
 
+def calculate_wide(area_rect, area_shape, base_length, base_wide):
+    if base_wide <= 0:
+        return 0
+    ratio = area_shape / area_rect
+    threshold = 0.5
+    if ratio >= threshold:
+        scale = 1.0
+    elif ratio < 0.1:  # 给一个小底线，避免极小面积还有宽容度
+        scale = 0
+    else:
+        scale = ratio / threshold
+    return base_length * base_wide * scale  # 宽松版本的宽度, 用于容忍标注误差
+
+
 # 判断一个 shape 是否完全在矩形 rect 内部, 宽松版本. rect: [xmin, ymin, xmax, ymax], shape_points: [x1, y1, x2, y2, ...]
 def rectangle_include_shape(rect: 'list[float]', shape_points: np.ndarray, wide: float = 0, shape_type=None) -> bool:
-    w = max(rect[2] - rect[0], rect[3] - rect[1]) * wide  # 宽松版本的宽度, 用于容忍标注误差.
+    rect_w = rect[2] - rect[0]
+    rect_h = rect[3] - rect[1]
+    area_rect = rect_w * rect_h
+    base_length = max(rect_w, rect_h)
+    assert area_rect > 0
     if shape_type == 'circle':
         assert shape_points.shape == (2, 2), 'Shape of shape_type=circle must have 2 points with shape (2, 2)'
         (cx, cy), (px, py) = shape_points[0], shape_points[1]
         r = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+        area_shape = math.pi * (r**2)
+        w = calculate_wide(area_rect, area_shape, base_length, wide)
         return rectangle_include_point_wide(rect, [cx, cy], r + w)
     else:
         mins = np.min(shape_points, axis=0)  # rect: [xmin, ymin, xmax, ymax]
         maxs = np.max(shape_points, axis=0)  # shape_points: (N, 2)
+        area_shape = (maxs[0] - mins[0]) * (maxs[1] - mins[1])
+        w = calculate_wide(area_rect, area_shape, base_length, wide)
         return mins[0] >= rect[0] - w and mins[1] >= rect[1] - w and maxs[0] <= rect[2] + w and maxs[1] <= rect[3] + w
 
 

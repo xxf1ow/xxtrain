@@ -1,3 +1,4 @@
+import copy
 import os
 
 import cv2
@@ -221,8 +222,10 @@ class ImageSizeParser(BaseProcessor):
 
 
 class DetectAnnsParser(BaseProcessor):
-    def __init__(self, label_list: 'list[str]' = []):
+    def __init__(self, label_list: 'list[str]' = [], strict: bool = True, out_name: str = 'det_anns'):
         self.label_list = label_list
+        self.strict = strict
+        self.out_name = out_name
 
     def required_inputs(self) -> list:
         return ['in_img_path', 'in_det_path', 'img_size']
@@ -236,17 +239,21 @@ class DetectAnnsParser(BaseProcessor):
         labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in det_anns.items() if val.label not in labelset]
         if invalid_instance:
-            ctx.skip_files.add(payload.get('in_img_path'))
+            if self.strict:
+                ctx.skip_files.add(payload.get('in_img_path'))
             for key in invalid_instance:
-                ctx.skip_label_list.add(key)
                 del det_anns[key]
+                if self.strict:
+                    ctx.skip_label_list.add(key)
         # set to payload
-        self.set(payload, 'det_anns', det_anns)
+        self.set(payload, self.out_name, det_anns)
 
 
 class SegmentAnnsParser(BaseProcessor):
-    def __init__(self, label_list: 'list[str]' = []):
+    def __init__(self, label_list: 'list[str]' = [], strict: bool = True, out_name: str = 'seg_anns'):
         self.label_list = label_list
+        self.strict = strict
+        self.out_name = out_name
 
     def required_inputs(self) -> list:
         return ['in_img_path', 'in_seg_path', 'img_size']
@@ -260,17 +267,21 @@ class SegmentAnnsParser(BaseProcessor):
         labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]
         if invalid_instance:
-            ctx.skip_files.add(payload.get('in_img_path'))
+            if self.strict:
+                ctx.skip_files.add(payload.get('in_img_path'))
             for key in invalid_instance:
-                ctx.skip_label_list.add(key)
                 del seg_anns[key]
+                if self.strict:
+                    ctx.skip_label_list.add(key)
         # set to payload
-        self.set(payload, 'seg_anns', seg_anns)
+        self.set(payload, self.out_name, seg_anns)
 
 
 class PoseAnnsParser(BaseProcessor):
-    def __init__(self, label_list: 'list[str]' = []):
+    def __init__(self, label_list: 'list[str]' = [], strict: bool = True, out_name: str = 'seg_anns'):
         self.label_list = label_list
+        self.strict = strict
+        self.out_name = out_name
 
     def required_inputs(self) -> list:
         return ['in_img_path', 'in_pose_path', 'img_size']
@@ -284,12 +295,14 @@ class PoseAnnsParser(BaseProcessor):
         labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]
         if invalid_instance:
-            ctx.skip_files.add(payload.get('in_img_path'))
+            if self.strict:
+                ctx.skip_files.add(payload.get('in_img_path'))
             for key in invalid_instance:
-                ctx.skip_label_list.add(key)
                 del seg_anns[key]
+                if self.strict:
+                    ctx.skip_label_list.add(key)
         # set to payload
-        self.set(payload, 'seg_anns', seg_anns)
+        self.set(payload, self.out_name, seg_anns)
 
 
 class DetectAnnsGenerator(BaseProcessor):
@@ -539,16 +552,27 @@ class ClassifyAnnsGeneratorForPointTask(BaseProcessor):
             cv2.imwrite(out_img_path, square_img)
 
 
-class DetectAnnsConverterForPointTask(BaseProcessor):
-    """将 det_anns 标签全部转为同一个类别, 以适配 PointTask 任务"""
-
-    def __init__(self, target_label: str):
-        self.target_label = target_label
+class AnnotationsConverter(BaseProcessor):
+    def __init__(
+        self, in_name: str = 'det_anns', out_name: str = 'det_anns', in_labels: 'list[str]' = [], out_labels: str = ''
+    ):
+        self.in_name = in_name
+        self.out_name = out_name
+        self.in_labels = in_labels
+        self.out_labels = out_labels
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
-        det_anns = payload.get('det_anns')
-        for key, val in det_anns.items():
-            val.label = self.target_label  # 将所有检测标签转换为同一个类别
+        src = payload.get(self.in_name)
+        if self.in_name != self.out_name:
+            det_anns = copy.deepcopy(src)
+        else:
+            det_anns = src
+        if self.out_labels:
+            for key, val in det_anns.items():
+                if len(self.in_labels) == 0 or val.lable in self.in_labels:
+                    val.label = self.out_labels
+        if self.in_name != self.out_name:
+            self.set(payload, self.out_name, det_anns)
 
 
 class PoseAnnsGeneratorForPointTask(BaseProcessor):
