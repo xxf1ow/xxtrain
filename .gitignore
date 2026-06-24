@@ -1,2 +1,10 @@
-*
-!*/
+__pycache__/**
+.cache/**
+.codegraph/**
+.superpowers/**
+.vscode/**
+.venv/**
+.weights/**
+data/**
+docs/**
+runs/**
