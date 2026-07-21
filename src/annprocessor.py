@@ -215,8 +215,8 @@ class ImageSizeParser(BaseProcessor):
         # outputs: img_size
         in_img_path = payload.get('in_img_path')
         assert os.path.isfile(in_img_path), f'图片文件不存在: {in_img_path}'
-        img = PIL.Image.open(in_img_path)
-        width, height = img.size
+        with PIL.Image.open(in_img_path) as img:
+            width, height = img.size
         assert width > 0 and height > 0
         self.set(payload, 'img_size', (width, height))
 
@@ -284,13 +284,13 @@ class PoseAnnsParser(BaseProcessor):
         self.out_name = out_name
 
     def required_inputs(self) -> list:
-        return ['in_img_path', 'in_pose_path', 'img_size']
+        return ['in_img_path', 'in_seg_path', 'img_size']
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         # outputs: pose_anns
-        in_pose_path = payload.get('in_pose_path')
+        in_seg_path = payload.get('in_seg_path')
         width, height = payload.get('img_size')
-        seg_anns = parse_seg_anns_from_labelme(in_pose_path, width, height, TaskType.POSE)
+        seg_anns = parse_seg_anns_from_labelme(in_seg_path, width, height, TaskType.POSE)
         # remove anns whose labels are not in label_list, and mark the file to be skipped
         labelset = set(ctx.label_list) if len(self.label_list) == 0 else set(self.label_list)
         invalid_instance = [key for key, val in seg_anns.items() if val.label not in labelset]

@@ -1,0 +1,27 @@
+{
+  "version": "5.2.1",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "1",
+      "points": [
+        [
+          1352.8169014084508,
+          673.8028169014085
+        ],
+        [
+          1294.3661971830986,
+          489.2957746478873
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "shape_type": "line",
+      "flags": {}
+    }
+  ],
+  "imagePath": "..\\imgs\\0001.jpg",
+  "imageData": null,
+  "imageHeight": 1080,
+  "imageWidth": 1920
+}

@@ -1,0 +1,23 @@
+{
+  "version": "5.2.1",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "rw400",
+      "points": [
+        [
+          1774.242424242424,
+          1276.5151515151515
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "shape_type": "point",
+      "flags": {}
+    }
+  ],
+  "imagePath": "..\\imgs\\0001.jpg",
+  "imageData": null,
+  "imageHeight": 2250,
+  "imageWidth": 4000
+}

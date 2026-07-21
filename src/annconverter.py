@@ -11,9 +11,7 @@
 #       ├── dir1/
 #       │   ├── imgs/       # 存放图片文件
 #       │   ├── anns/       # 存放检测标注 (labelimg, xml 格式)
-#       │   ├── anns_seg/   # 存放分割标注 (json 格式, 实例分割任务可选)
-#       │   ├── anns_obb/   # 存放旋转标注 (json 格式, 旋转目标检测可选)
-#       │   └── anns_pose/  # 存放骨骼标注 (json 格式, 骨骼关键点检测可选)
+#       │   ├── anns_seg/   # 存放分割/旋转/骨骼标注 (json 格式)
 #       ├── dir2/
 #       │   ├── imgs/
 #       │   ├── anns/
@@ -138,7 +136,7 @@ def task_point_process(task_type: str):
         pipe = [
             ImageSizeParser(),
             DetectAnnsParser(det_labels),
-            AnnotationsConverter(label_list[0]),
+            AnnotationsConverter(out_labels=label_list[0]),
             DetectAnnsGenerator(),
             DatasetSplitter(),
         ]

@@ -1,0 +1,26 @@
+<annotation>
+	<folder>imgs</folder>
+	<filename>0000.jpg</filename>
+	<path>0000.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>4000</width>
+		<height>2250</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>rw400</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>1621</xmin>
+			<ymin>373</ymin>
+			<xmax>2193</xmax>
+			<ymax>2054</ymax>
+		</bndbox>
+	</object>
+</annotation>
