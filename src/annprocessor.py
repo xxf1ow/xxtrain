@@ -507,6 +507,32 @@ class DetectBboxCropIterator(BaseProcessor):
             self.sub_pipeline.process(ctx, sub_payload)  # 执行单图处理流水线
 
 
+class ClassifyAnnsGenerator(BaseProcessor):
+    """Create an Ultralytics whole-image classification dataset."""
+
+    def required_inputs(self) -> list:
+        return ['in_img_path', 'current_dir', 'current_idx']
+
+    def process(self, ctx: GlobalContext, payload: TaskPayload):
+        in_img_path = payload.get('in_img_path')
+        class_name = payload.get('current_dir')
+        current_idx = payload.get('current_idx')
+        targets = []
+        if ctx.split <= 0 or current_idx % ctx.split != 0:
+            targets.append(('train', 0, ctx.train_list))
+        if ctx.split <= 0 or current_idx % ctx.split == 0:
+            targets.append(('val', 1, ctx.val_list))
+
+        for split_name, split_index, output_list in targets:
+            out_dir = os.path.join(ctx.get_labels_path(), split_name, class_name)
+            os.makedirs(out_dir, exist_ok=True)
+            out_img_path = os.path.join(out_dir, os.path.basename(in_img_path))
+            os.symlink(in_img_path, out_img_path)
+            ctx.images_count[split_index] += 1
+            ctx.labels_count[split_index] += 1
+            output_list.append(out_img_path)
+
+
 class ClassifyAnnsGeneratorForPointTask(BaseProcessor):
     """根据 det_anns 裁剪出目标图像, 保存并生成分类标注 (不支持复合类别)"""
 

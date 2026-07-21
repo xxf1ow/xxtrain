@@ -151,15 +151,15 @@ def get_color_map(num_classes: int) -> 'list[tuple[int, int, int]]':
 
 
 def find_dir(path: str) -> 'list[str]':
-    return [item.name for item in os.scandir(path) if item.is_dir()]
+    return sorted(item.name for item in os.scandir(path) if item.is_dir())
 
 
 def find_img(path: str) -> 'list[str]':
-    return [
+    return sorted(
         item.name
         for item in os.scandir(path)
         if item.is_file() and item.name.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))
-    ]
+    )
 
 
 # 取出 xml 单项 (length 预期长度, 为 0 则不检查)

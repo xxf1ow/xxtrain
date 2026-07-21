@@ -38,8 +38,12 @@
 #       ├── val.txt
 #       └── dataset.yaml
 
+import os
+
+from annparser import find_dir, find_img
 from annprocessor import (
     AnnotationsConverter,
+    ClassifyAnnsGenerator,
     ClassifyAnnsGeneratorForPointTask,
     DatasetSplitter,
     DetectAndSegAnnsMatcher,
@@ -75,6 +79,36 @@ standard_pose_pipe = [
 ]
 
 
+def validate_standard_classify_input(ctx: GlobalContext) -> None:
+    labels = ctx.label_list
+    if not labels or any(not label for label in labels):
+        raise ValueError('Classification labels must not be empty')
+    if len(labels) != len(set(labels)):
+        raise ValueError('Classification labels must not contain duplicates')
+
+    work_path = ctx.get_images_path()
+    class_dirs = find_dir(work_path)
+    missing = sorted(set(labels) - set(class_dirs))
+    extra = sorted(set(class_dirs) - set(labels))
+    if missing or extra:
+        raise ValueError(f'Classification labels mismatch: missing={missing}, extra={extra}')
+
+    for class_name in class_dirs:
+        imgs_path = os.path.join(work_path, class_name, 'imgs')
+        if not os.path.isdir(imgs_path):
+            raise ValueError(f'Classification image directory does not exist: {imgs_path}')
+        images = find_img(imgs_path)
+        if not images:
+            raise ValueError(f'Classification class has no images: {class_name}')
+        if ctx.split > 0:
+            train_count = sum(index % ctx.split != 0 for index in range(len(images)))
+            val_count = sum(index % ctx.split == 0 for index in range(len(images)))
+            if train_count == 0 or val_count == 0:
+                raise ValueError(f"Classification split leaves class '{class_name}' without train or val samples")
+
+    ctx.label_list = sorted(labels)
+
+
 def standard_process(task_type: str):
     if task_type == 'detect':
         pipeline = Pipeline([DirectoryIterator(Pipeline(standard_detect_pipe))])
@@ -82,6 +116,8 @@ def standard_process(task_type: str):
         pipeline = Pipeline([DirectoryIterator(Pipeline(standard_segment_pipe))])
     elif task_type == 'pose':
         pipeline = Pipeline([DirectoryIterator(Pipeline(standard_pose_pipe))])
+    elif task_type == 'classify':
+        pipeline = Pipeline([DirectoryIterator(Pipeline([ClassifyAnnsGenerator()]), True)])
     else:
         raise ValueError(f'Unsupported task type: {task_type}')
     return pipeline, []
@@ -224,6 +260,8 @@ def process(task_type: str, root_path: str, split: int, reserve_no_label: bool):
 
     # 初始化上下文并启动流水线
     ctx = GlobalContext(task_type, root_path, split, label_list, reserve_no_label)
+    if task_type == 'classify':
+        validate_standard_classify_input(ctx)
     pipeline.process(ctx, TaskPayload())
     ctx.dataset_finalize()
     ctx.print_summary()
