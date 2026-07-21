@@ -110,6 +110,7 @@ def validate_standard_classify_input(ctx: GlobalContext) -> None:
 
 
 def standard_process(task_type: str):
+    # python3 src/train.py --task_type type --root_path data/path
     if task_type == 'detect':
         pipeline = Pipeline([DirectoryIterator(Pipeline(standard_detect_pipe))])
     elif task_type == 'segment':
@@ -132,7 +133,7 @@ def task_point_process(task_type: str):
     det_labels = ['tl', 'tc', 'cl', 'cc']
     seg_labels = ['1']
     if task_type == 'point-detect':
-        # python3 train.py --task_type point-detect --root_path data/point (约半个小时)
+        # python3 src/train.py --task_type point-detect --root_path data/point (约半个小时)
         label_list = ['Point']
         pipe = [
             ImageSizeParser(),
@@ -143,12 +144,12 @@ def task_point_process(task_type: str):
         ]
         pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     elif task_type == 'point-classify':
-        # python3 train.py --task_type point-classify --root_path data/point (约十五分钟)
+        # python3 src/train.py --task_type point-classify --root_path data/point (约十五分钟)
         label_list = det_labels
         pipe = [ImageSizeParser(), DetectAnnsParser(det_labels), ClassifyAnnsGeneratorForPointTask()]
         pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), True)])
     elif task_type == 'point-segment':
-        # python3 train.py --task_type point-segment --root_path data/point (约一个小时)
+        # python3 src/train.py --task_type point-segment --root_path data/point (约一个小时)
         label_list = ['Point']
         subpipe = [SegmentAnnsGeneratorForPointTask(), DatasetSplitter()]
         pipe = [
@@ -170,12 +171,12 @@ def task_knob_process(task_type: str):
     #    classify 是将整理好了的, 全部指向上的旋钮裁剪图片, 生成其它三种 flip 方向的图片, 然后做分类
     labels = ['switch']
     if task_type == 'knob-detect':
-        # python3 train.py --task_type knob-detect --root_path data/knob (约四十五分钟)
+        # python3 src/train.py --task_type knob-detect --root_path data/knob (约四十五分钟)
         label_list = labels
         pipe = standard_detect_pipe
         pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     elif task_type == 'knob-segment':
-        # python3 train.py --task_type knob-segment --root_path data/knob (约两个半小时)
+        # python3 src/train.py --task_type knob-segment --root_path data/knob (约两个半小时)
         label_list = labels
         subpipe = [SegmentAnnsGeneratorForKnobTask(), DatasetSplitter()]
         pipe = [
@@ -187,7 +188,7 @@ def task_knob_process(task_type: str):
         ]
         pipeline = Pipeline([DirectoryIterator(Pipeline(pipe), True)])
     # elif task_type == 'knob-classify':
-    #     # python3 train.py --task_type knob-classify --root_path data/knob
+    #     # python3 src/train.py --task_type knob-classify --root_path data/knob
     #     label_list = ['up', 'down']
     #     pipe = [ImageSizeParser(), DetectAnnsParser(labels), ClassifyAnnsGeneratorForSwitchTask()]
     else:
@@ -201,7 +202,7 @@ def task_scale_process(task_type: str):
     det_labels = ['Scale']
     seg_labels = ['beg_tl', 'beg_br', 'end_tl', 'end_br', 'point']
     if task_type.endswith('pose'):
-        # python3 train.py --task_type scale-pose --root_path data/scale
+        # python3 src/train.py --task_type scale-pose --root_path data/scale
         label_list = seg_labels
         pipe = [
             ImageSizeParser(),
@@ -223,12 +224,12 @@ def task_light_process(task_type: str):
     #    1. detect 标注的任何标签都被视为同一种类别, 训练时不区分不同标签的 detect 框, 只关注框的位置和大小
     #    2. classify 使用 detect 的框类别标签, 不专门做标注
     if task_type == 'light1-detect':
-        # python3 train.py --task_type light1-detect --root_path data/light2 (约二十分钟)
+        # python3 src/train.py --task_type light1-detect --root_path data/light2 (约二十分钟)
         label_list = ['1008']
         pipe = [ImageSizeParser(), DetectAnnsParser(label_list, False), DetectAnnsGenerator(), DatasetSplitter()]
         pipeline = Pipeline([DirectoryIterator(Pipeline(pipe))])
     elif task_type == 'light2-detect':
-        # python3 train.py --task_type light2-detect --root_path data/light2 (约二十分钟)
+        # python3 src/train.py --task_type light2-detect --root_path data/light2 (约二十分钟)
         label_list = ['0']
         subpipe = [AnnotationsConverter('seg_anns', 'det_anns', [], '0'), DetectAnnsGenerator(), DatasetSplitter()]
         pipe = [

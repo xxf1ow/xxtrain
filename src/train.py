@@ -153,6 +153,23 @@ def train_model(root_path: str, model_name: str, task_type: str) -> YOLO:
     return model
 
 
+def copy_class_reference_images(root_path: str, task_type: str, onnx_path: str, class_names: dict[int, str]):
+    references = []
+    train_path = os.path.join(root_path, task_type, 'train')
+    for class_index, class_name in sorted(class_names.items()):
+        class_path = os.path.join(train_path, class_name)
+        with os.scandir(class_path) as image_entries:
+            image_path = next((entry.path for entry in image_entries if entry.is_file()), None)
+        if image_path is None:
+            raise FileNotFoundError(f'No reference image found for class: {class_name}')
+        references.append((class_index, class_name, image_path))
+    references_path = f'{os.path.splitext(onnx_path)[0]}_references'
+    os.makedirs(references_path, exist_ok=True)
+    for class_index, class_name, image_path in references:
+        extension = os.path.splitext(image_path)[1]
+        shutil.copy(image_path, os.path.join(references_path, f'{class_index}_{class_name}{extension}'))
+
+
 def export_model_to_onnx(best_model: YOLO, root_path: str, model_name: str):
     # Exporting model to ONNX and Optimize the ONNX model using onnxsim
     try:
@@ -163,6 +180,7 @@ def export_model_to_onnx(best_model: YOLO, root_path: str, model_name: str):
         os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
         shutil.move(temp_onnx_path, onnx_path)
         print(f'✅ Model exported to ONNX format: {onnx_path}')
+        return onnx_path
     except Exception as e:
         print(f'❌ Failed to export model to ONNX format: {e}')
         return
@@ -249,7 +267,9 @@ def process(
     model_name = generate_model_yaml(root_path, model_version, model_scale, task_type)
     download_pretrained(model_name)
     best_model = train_model(root_path, model_name, task_type)
-    export_model_to_onnx(best_model, root_path, model_name)
+    onnx_path = export_model_to_onnx(best_model, root_path, model_name)
+    if onnx_path and task_type.endswith('classify'):
+        copy_class_reference_images(root_path, task_type, onnx_path, best_model.names)
 
 
 if __name__ == '__main__':
@@ -275,7 +295,7 @@ if __name__ == '__main__':
 
     elif args.mode == 'export':
         """
-        python3 train.py \
+        python3 src/train.py \
             --mode export \
             --root_path data/point \
             --task_type point-classify \
@@ -286,11 +306,13 @@ if __name__ == '__main__':
         else:
             print(f'🚀 Loading model for export: {args.weights}')
             model = YOLO(args.weights)
-            export_model_to_onnx(model, args.root_path, model_name)
+            onnx_path = export_model_to_onnx(model, args.root_path, model_name)
+            if onnx_path and args.task_type.endswith('classify'):
+                copy_class_reference_images(args.root_path, args.task_type, onnx_path, model.names)
 
     elif args.mode == 'val':
         """
-        python3 train.py --mode val \
+        python3 src/train.py --mode val \
         --directory /home/lxx/ultralytics/xxtrain/data/light/light-classify \
         --weights runs/classify/train16/weights/best.pt
         """
