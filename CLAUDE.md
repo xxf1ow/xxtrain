@@ -32,7 +32,7 @@ python src/train.py --mode export --root_path data/point --task_type point-class
 python src/train.py --mode val --weights runs/classify/train16/weights/best.pt --directory data/light/light-classify
 
 # Full conversion baseline (fixtures + semantic snapshots + failure/reproducibility checks)
-python -m unittest discover -s test -p 'test_*.py' -v
+python -m unittest discover -s test -t . -p 'test_*.py' -v
 
 # Static verification used by the baseline
 ruff check src test
