@@ -171,7 +171,7 @@ class Pipeline(BaseProcessor):
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         for processor in self.processors:
-            processor.process(ctx, payload)
+            processor(ctx, payload)
 
 
 class DirectoryIterator(BaseProcessor):
