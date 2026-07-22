@@ -15,7 +15,7 @@ All Python source lives under `src/`. The four modules import each other as flat
 
 ## Commands
 
-There is no test suite, requirements file, or build step. Everything runs through `src/train.py`.
+The repository has a standard-library `unittest` conversion baseline. Production workflows run through `src/train.py`.
 
 ```bash
 # Full pipeline: convert annotations -> generate model.yaml -> download weights -> train -> export ONNX
@@ -31,10 +31,19 @@ python src/train.py --mode export --root_path data/point --task_type point-class
 # other tasks run predict+save). Task is inferred from the loaded weights, NOT --task_type.
 python src/train.py --mode val --weights runs/classify/train16/weights/best.pt --directory data/light/light-classify
 
+# Full conversion baseline (fixtures + semantic snapshots + failure/reproducibility checks)
+python -m unittest discover -s test -p 'test_*.py' -v
+
+# Static verification used by the baseline
+ruff check src test
+python -m compileall -q src test
+
 # Lint / format (config in pyproject.toml: line-length 120, single quotes, lf, skip-magic-trailing-comma)
 ruff check .
 ruff format .
 ```
+
+Test fixtures live in `test/fixtures/`, human-reviewed snapshots in `test/expected/conversions/`, and the migration adapter boundary in `test/support/current_api.py`. `scale` is not yet covered by the conversion baseline.
 
 Key CLI args: `--split N` (every Nth image goes to validation; `<=0` puts each image in both sets), `--reserve_no_label` (keep images with zero annotations). Training hyperparameters (epochs, batch, imgsz, augmentation) are **hardcoded** in `train_model()` in `src/train.py`, branched by task family.
 
@@ -42,7 +51,7 @@ Key CLI args: `--split N` (every Nth image goes to validation; `<=0` puts each i
 
 `task_type` is the central dispatch key throughout the codebase. Two forms:
 
-- **Standard** (no hyphen): `detect`, `segment`, `pose` — uses `<root_path>/src/labels.txt` for the class list and the `standard_*_pipe` pipelines.
+- **Standard** (no hyphen): `detect`, `segment`, `pose`, `classify` — uses `<root_path>/src/labels.txt` for the class list and the `standard_*_pipe` pipelines.
 - **Custom** `<family>-<yolotask>`: e.g. `point-detect`, `point-classify`, `point-segment`, `knob-detect`, `knob-segment`, `scale-pose`, `light1-detect`, `light2-detect`. Each is routed in `annconverter.process()` by prefix (`point`/`knob`/`scale`/`light`) to a `task_<family>_process()` builder that returns a custom `(pipeline, label_list)`.
 
 The suffix after the last hyphen must end in one of `classify/detect/obb/pose/segment` — `train.py`'s `suffix_switcher` maps that to the Ultralytics model suffix (`-cls`, ``, `-obb`, `-pose`, `-seg`) and selects training imgsz/epochs/augmentation. Several families (point, knob, scale, light) are *composite* real-world tasks (e.g. gauge reading = detect dial + segment/pose the needle + classify position) split across multiple `task_type` invocations that share one `data/<family>/` root.
@@ -61,9 +70,7 @@ root_path/
     └── labels.txt      # class list, one per line (standard tasks only)
 ```
 
-Output is written to `root_path/<task_type>/` as YOLO `.txt` labels next to **symlinks** of the source images (or cropped JPEGs for crop-based tasks), plus `train.txt`, `val.txt`, and `dataset.yaml`. Classify tasks instead write `train/<NN-label>/` and `val/<NN-label>/` directories of cropped square images. Trained runs land in `runs/<yolotask>/`; exported ONNX in `root_path/weights/`. Pretrained `.pt` weights are cached in `.weights/`.
-
-Note: the `data/example/` dataset uses an older `images/` layout instead of `src/`; trust the code (`get_images_path()` returns `src/`), not that example.
+Non-crop YOLO task output is written to `root_path/<task_type>/` as `.txt` labels next to source images, plus `train.txt`, `val.txt`, and `dataset.yaml`. These tasks and standard `classify` first call `os.symlink` for each source image and fall back to `shutil.copy2` when it raises `OSError`; standard `classify` writes whole images under `train/<class>/` and `val/<class>/`. Only `point-classify` writes JPEG crops padded to a square. Bbox-crop tasks, including `point-segment`, `knob-segment`, and `light2-detect`, save ordinary JPEG crops directly and do not link source images. Trained runs land in `runs/<yolotask>/`; exported ONNX in `root_path/weights/`. Pretrained `.pt` weights are cached in `.weights/`.
 
 ## Pipeline architecture (the core abstraction)
 
