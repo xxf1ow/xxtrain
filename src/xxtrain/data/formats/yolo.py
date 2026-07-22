@@ -5,13 +5,10 @@ from ..labels import LabelCatalog
 
 
 def _bbox_values(annotation: Bbox, image_info: ImageInfo) -> tuple[float, float, float, float]:
-    assert 0 <= annotation.x1 <= annotation.x2 <= image_info.width
-    assert 0 <= annotation.y1 <= annotation.y2 <= image_info.height
     x_center = (annotation.x1 + annotation.x2) / 2.0 / image_info.width
     y_center = (annotation.y1 + annotation.y2) / 2.0 / image_info.height
     width = (annotation.x2 - annotation.x1) / image_info.width
     height = (annotation.y2 - annotation.y1) / image_info.height
-    assert all(0 <= value <= 1 for value in (x_center, y_center, width, height))
     return x_center, y_center, width, height
 
 
@@ -42,6 +39,7 @@ def encode_pose(
     if set(keypoints) != set(keypoint_labels.names):
         raise ValueError('关键点标签与目录不匹配')
     x_center, y_center, width, height = _bbox_values(bbox, image_info)
+    assert all(0 <= value <= 1 for value in (x_center, y_center, width, height))
     values = ['0', f'{x_center:.6f}', f'{y_center:.6f}', f'{width:.6f}', f'{height:.6f}']
     for label in keypoint_labels:
         annotation = keypoints[label]

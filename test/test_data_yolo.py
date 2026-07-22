@@ -68,25 +68,40 @@ class YoloEncoderTest(unittest.TestCase):
                 catalog,
             )
 
-    def test_detect_rejects_bbox_corners_outside_image(self) -> None:
+    def test_detect_preserves_legacy_out_of_image_bbox_encoding(self) -> None:
         labels = LabelCatalog(names=('x',))
-        annotations = (
-            Bbox(label='x', x1=-10, y1=10, x2=10, y2=50),
-            Bbox(label='x', x1=190, y1=10, x2=210, y2=50),
+        cases = (
+            (Bbox(label='x', x1=-30, y1=10, x2=-10, y2=50), '0 -0.100000 0.300000 0.100000 0.400000'),
+            (Bbox(label='x', x1=190, y1=10, x2=210, y2=50), '0 1.000000 0.300000 0.100000 0.400000'),
         )
-        for annotation in annotations:
+        for annotation, expected in cases:
             with self.subTest(annotation=annotation):
-                with self.assertRaises(AssertionError):
-                    encode_detect(annotation, self.image, labels)
+                self.assertEqual(expected, encode_detect(annotation, self.image, labels))
 
-    def test_pose_rejects_bbox_corners_outside_image(self) -> None:
+    def test_pose_allows_outside_corners_when_normalized_bbox_values_are_valid(self) -> None:
         keypoints = {'point': Points(label='point', points=[[100, 50]])}
         keypoint_labels = LabelCatalog(names=('point',))
-        bboxes = (
-            Bbox(label='object', x1=-10, y1=10, x2=10, y2=50),
-            Bbox(label='object', x1=190, y1=10, x2=210, y2=50),
+        cases = (
+            (
+                Bbox(label='object', x1=-10, y1=10, x2=10, y2=50),
+                '0 0.000000 0.300000 0.100000 0.400000 0.500000 0.500000 2',
+            ),
+            (
+                Bbox(label='object', x1=190, y1=10, x2=210, y2=50),
+                '0 1.000000 0.300000 0.100000 0.400000 0.500000 0.500000 2',
+            ),
         )
-        for bbox in bboxes:
+        for bbox, expected in cases:
+            with self.subTest(bbox=bbox):
+                self.assertEqual(expected, encode_pose(bbox, keypoints, self.image, keypoint_labels))
+
+    def test_pose_rejects_normalized_bbox_values_outside_unit_range(self) -> None:
+        keypoints = {'point': Points(label='point', points=[[100, 50]])}
+        keypoint_labels = LabelCatalog(names=('point',))
+        for bbox in (
+            Bbox(label='object', x1=-30, y1=10, x2=-10, y2=50),
+            Bbox(label='object', x1=210, y1=10, x2=230, y2=50),
+        ):
             with self.subTest(bbox=bbox):
                 with self.assertRaises(AssertionError):
                     encode_pose(bbox, keypoints, self.image, keypoint_labels)
