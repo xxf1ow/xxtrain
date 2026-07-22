@@ -1,11 +1,18 @@
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from test.support.current_api import TaskType, convert_dataset, parse_labelimg, parse_labelme
+from test.support.current_api import TaskType, convert_dataset, parse_labelimg, parse_labelme, unavailable_symlinks
+from test.support.output_manifest import collect_output_manifest
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
+EXPECTED_PATH = Path(__file__).resolve().parent / 'expected' / 'conversions'
+SYMLINK_FALLBACK_CASES = [
+    ('detect', 'standard-detect'),
+    ('classify', 'standard-classify'),
+]
 
 
 class FailureBehaviorTest(unittest.TestCase):
@@ -60,6 +67,21 @@ class FailureBehaviorTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, 'without train or val samples'):
             convert_dataset('classify', str(root_path), split=10, reserve_no_label=False)
+
+    def test_symlink_failure_falls_back_to_copied_images(self) -> None:
+        for task_type, fixture_name in SYMLINK_FALLBACK_CASES:
+            with self.subTest(task_type=task_type):
+                root_path = self.copy_fixture(fixture_name)
+                with unavailable_symlinks():
+                    convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+
+                actual = collect_output_manifest(root_path, task_type)
+                expected = json.loads((EXPECTED_PATH / f'{task_type}.json').read_text(encoding='utf-8'))
+                self.assertEqual(expected, actual)
+                for relative_path in actual['images']:
+                    image_path = root_path / task_type / relative_path
+                    self.assertTrue(image_path.is_file())
+                    self.assertFalse(image_path.is_symlink())
 
 
 if __name__ == '__main__':
