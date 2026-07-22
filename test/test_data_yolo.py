@@ -68,13 +68,39 @@ class YoloEncoderTest(unittest.TestCase):
                 catalog,
             )
 
-    def test_all_encoders_reject_out_of_image_coordinates(self) -> None:
-        with self.assertRaises(AssertionError):
-            encode_detect(
-                Bbox(label='x', x1=0, y1=0, x2=201, y2=50),
-                self.image,
-                LabelCatalog(names=('x',)),
-            )
+    def test_detect_rejects_bbox_corners_outside_image(self) -> None:
+        labels = LabelCatalog(names=('x',))
+        annotations = (
+            Bbox(label='x', x1=-10, y1=10, x2=10, y2=50),
+            Bbox(label='x', x1=190, y1=10, x2=210, y2=50),
+        )
+        for annotation in annotations:
+            with self.subTest(annotation=annotation):
+                with self.assertRaises(AssertionError):
+                    encode_detect(annotation, self.image, labels)
+
+    def test_pose_rejects_bbox_corners_outside_image(self) -> None:
+        keypoints = {'point': Points(label='point', points=[[100, 50]])}
+        keypoint_labels = LabelCatalog(names=('point',))
+        bboxes = (
+            Bbox(label='object', x1=-10, y1=10, x2=10, y2=50),
+            Bbox(label='object', x1=190, y1=10, x2=210, y2=50),
+        )
+        for bbox in bboxes:
+            with self.subTest(bbox=bbox):
+                with self.assertRaises(AssertionError):
+                    encode_pose(bbox, keypoints, self.image, keypoint_labels)
+
+    def test_segment_rejects_points_outside_image(self) -> None:
+        labels = LabelCatalog(names=('mask',))
+        annotations = (
+            Polygon(label='mask', points=[[-1, 10], [100, 10], [60, 50]]),
+            Polygon(label='mask', points=[[20, 10], [201, 10], [60, 50]]),
+        )
+        for annotation in annotations:
+            with self.subTest(annotation=annotation):
+                with self.assertRaises(AssertionError):
+                    encode_segment(annotation, self.image, labels)
 
 
 if __name__ == '__main__':

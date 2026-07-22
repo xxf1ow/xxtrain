@@ -5,6 +5,8 @@ from ..labels import LabelCatalog
 
 
 def _bbox_values(annotation: Bbox, image_info: ImageInfo) -> tuple[float, float, float, float]:
+    assert 0 <= annotation.x1 <= annotation.x2 <= image_info.width
+    assert 0 <= annotation.y1 <= annotation.y2 <= image_info.height
     x_center = (annotation.x1 + annotation.x2) / 2.0 / image_info.width
     y_center = (annotation.y1 + annotation.y2) / 2.0 / image_info.height
     width = (annotation.x2 - annotation.x1) / image_info.width
