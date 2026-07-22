@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository workflow constraints
+
+- Superpowers-generated artifacts, including specs and implementation plans, are local working files. Never stage or commit them to Git.
+- Do not create or use Git worktrees for this repository. Perform all work in the current checkout.
+
 ## What this is
 
 A training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It takes raw annotation files (labelimg XML for detection boxes, labelme JSON for segment/pose/obb), converts them into YOLO-format datasets, generates a model `.yaml`, downloads pretrained weights, trains, validates, and exports to ONNX. The novel/non-obvious part is the **annotation conversion pipeline** (`src/annconverter.py` + `src/annprocessor.py` + `src/annparser.py`); `src/train.py` is a relatively thin Ultralytics wrapper on top.
@@ -52,8 +57,7 @@ root_path/
     ├── <subdir>/
     │   ├── imgs/       # images
     │   ├── anns/       # labelimg XML  (detection boxes)        -> in_det_path
-    │   ├── anns_seg/   # labelme JSON  (segment / instance)     -> in_seg_path
-    │   └── anns_pose/  # labelme JSON  (pose keypoints)
+    │   └── anns_seg/   # labelme JSON  (segment / instance)     -> in_seg_path
     └── labels.txt      # class list, one per line (standard tasks only)
 ```
 
