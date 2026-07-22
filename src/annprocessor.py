@@ -603,7 +603,7 @@ class AnnotationsConverter(BaseProcessor):
             det_anns = src
         if self.out_labels:
             for key, val in det_anns.items():
-                if len(self.in_labels) == 0 or val.lable in self.in_labels:
+                if len(self.in_labels) == 0 or val.label in self.in_labels:
                     val.label = self.out_labels
         if self.in_name != self.out_name:
             self.set(payload, self.out_name, det_anns)

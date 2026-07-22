@@ -29,6 +29,7 @@ ShapeType = annparser.ShapeType
 TaskType = annparser.TaskType
 TaskProcessor = annparser.TaskProcessor
 map_parent_child = annparser.map_parent_child_annotations
+AnnotationsConverter = annprocessor.AnnotationsConverter
 ImageSizeParser = annprocessor.ImageSizeParser
 Pipeline = annprocessor.Pipeline
 TaskPayload = annprocessor.TaskPayload
