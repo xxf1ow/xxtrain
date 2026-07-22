@@ -1,16 +1,14 @@
 import gc
-import importlib
 import shutil
-import sys
 import tempfile
 import unittest
 import warnings
 from pathlib import Path
 
+from test.support.current_api import convert_dataset
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_PATH = PROJECT_ROOT / 'test' / 'fixtures'
-sys.path.insert(0, str(PROJECT_ROOT / 'src'))
-process = importlib.import_module('annconverter').process
 
 
 BASELINE_CASES = [
@@ -36,7 +34,7 @@ class ConversionBaselineTest(unittest.TestCase):
 
             with warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter('always', ResourceWarning)
-                process(task_type, str(root_path), split=10, reserve_no_label=False)
+                convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
                 gc.collect()
             resource_warnings = [item for item in caught_warnings if issubclass(item.category, ResourceWarning)]
             self.assertEqual([], resource_warnings)
