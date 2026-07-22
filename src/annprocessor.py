@@ -1,5 +1,6 @@
 import copy
 import os
+import shutil
 
 import cv2
 import numpy as np
@@ -15,6 +16,13 @@ from annparser import (
     parse_det_anns_from_labelimg,
     parse_seg_anns_from_labelme,
 )
+
+
+def _symlink_or_copy(source_path: str, target_path: str) -> None:
+    try:
+        os.symlink(source_path, target_path)
+    except OSError:
+        shutil.copy2(source_path, target_path)
 
 
 class GlobalContext:
@@ -163,7 +171,7 @@ class Pipeline(BaseProcessor):
 
     def process(self, ctx: GlobalContext, payload: TaskPayload):
         for processor in self.processors:
-            processor.process(ctx, payload)
+            processor(ctx, payload)
 
 
 class DirectoryIterator(BaseProcessor):
@@ -193,7 +201,7 @@ class DirectoryIterator(BaseProcessor):
                     in_img_path = raw_img_path
                 else:
                     in_img_path = os.path.join(sub_save_path, file)
-                    os.symlink(raw_img_path, in_img_path)
+                    _symlink_or_copy(raw_img_path, in_img_path)
                 self.set(sub_payload, 'current_dir', dir_name)
                 self.set(sub_payload, 'current_idx', num)
                 self.set(sub_payload, 'in_img_path', in_img_path)
@@ -527,7 +535,7 @@ class ClassifyAnnsGenerator(BaseProcessor):
             out_dir = os.path.join(ctx.get_labels_path(), split_name, class_name)
             os.makedirs(out_dir, exist_ok=True)
             out_img_path = os.path.join(out_dir, os.path.basename(in_img_path))
-            os.symlink(in_img_path, out_img_path)
+            _symlink_or_copy(in_img_path, out_img_path)
             ctx.images_count[split_index] += 1
             ctx.labels_count[split_index] += 1
             output_list.append(out_img_path)
@@ -595,7 +603,7 @@ class AnnotationsConverter(BaseProcessor):
             det_anns = src
         if self.out_labels:
             for key, val in det_anns.items():
-                if len(self.in_labels) == 0 or val.lable in self.in_labels:
+                if len(self.in_labels) == 0 or val.label in self.in_labels:
                     val.label = self.out_labels
         if self.in_name != self.out_name:
             self.set(payload, self.out_name, det_anns)

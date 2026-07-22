@@ -1,0 +1,41 @@
+{
+  "files": [
+    "20260620/0000_0.jpg",
+    "20260620/0000_0.txt",
+    "20260620/0001_0.jpg",
+    "20260620/0001_0.txt",
+    "dataset.yaml",
+    "train.txt",
+    "val.txt"
+  ],
+  "images": {
+    "20260620/0000_0.jpg": {
+      "size": [
+        489,
+        432
+      ]
+    },
+    "20260620/0001_0.jpg": {
+      "size": [
+        388,
+        461
+      ]
+    }
+  },
+  "text_files": {
+    "20260620/0000_0.txt": "0 0.460208 0.490227 0.449131 0.496201 0.278136 0.073777",
+    "20260620/0001_0.txt": "0 0.421847 0.457477 0.407106 0.461407 0.263830 0.059210",
+    "train.txt": "<ROOT>/point-segment/20260620/0001_0.jpg",
+    "val.txt": "<ROOT>/point-segment/20260620/0000_0.jpg"
+  },
+  "yaml_files": {
+    "dataset.yaml": {
+      "names": {
+        "0": "Point"
+      },
+      "path": "<ROOT>",
+      "train": "point-segment/train.txt",
+      "val": "point-segment/val.txt"
+    }
+  }
+}
