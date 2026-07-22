@@ -1,0 +1,15 @@
+{
+  "version": "5.0.0",
+  "flags": {},
+  "shapes": [
+    {"label": "reverse", "points": [[20, 18], [2, 4]], "group_id": null, "shape_type": "rectangle", "flags": {}},
+    {"label": "circle", "points": [[30, 30], [33, 34]], "group_id": null, "shape_type": "circle", "flags": {}},
+    {"label": "object", "points": [[40, 10], [50, 10], [45, 20]], "group_id": 7, "shape_type": "polygon", "flags": {}},
+    {"label": "axis", "points": [[42, 12], [48, 18]], "group_id": 7, "shape_type": "line", "flags": {}},
+    {"label": "path", "points": [[60, 10], [65, 15], [70, 12]], "group_id": null, "shape_type": "linestrip", "flags": {}}
+  ],
+  "imagePath": "sample.jpg",
+  "imageData": null,
+  "imageHeight": 80,
+  "imageWidth": 100
+}
