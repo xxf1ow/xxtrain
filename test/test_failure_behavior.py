@@ -4,8 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test.support.current_api import TaskType, convert_dataset, parse_labelimg, parse_labelme, unavailable_symlinks
+from test.support.current_api import convert_dataset, unavailable_symlinks
 from test.support.output_manifest import collect_output_manifest
+from xxtrain.data import ImageInfo
+from xxtrain.data.formats import read_labelimg, read_labelme
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 EXPECTED_PATH = Path(__file__).resolve().parent / 'expected' / 'conversions'
@@ -28,14 +30,14 @@ class FailureBehaviorTest(unittest.TestCase):
         annotation_path = root_path / 'src' / '20260620' / 'anns' / '0000.xml'
 
         with self.assertRaisesRegex(Exception, '图片与标签不对应'):
-            parse_labelimg(str(annotation_path), 1919, 1080)
+            read_labelimg(annotation_path, ImageInfo(width=1919, height=1080))
 
     def test_labelme_rejects_mismatched_image_width(self) -> None:
         root_path = self.copy_fixture('standard-segment')
         annotation_path = root_path / 'src' / '251010' / 'anns_seg' / '0000.json'
 
         with self.assertRaisesRegex(Exception, '图片与标签不对应'):
-            parse_labelme(str(annotation_path), 1919, 1080, TaskType.SEGMENT)
+            read_labelme(annotation_path, ImageInfo(width=1919, height=1080))
 
     def test_invalid_annotation_reports_parse_failure(self) -> None:
         root_path = self.copy_fixture('standard-segment')
@@ -43,7 +45,7 @@ class FailureBehaviorTest(unittest.TestCase):
         annotation_path.write_text('{', encoding='utf-8')
 
         with self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
-            parse_labelme(str(annotation_path), 1920, 1080, TaskType.SEGMENT)
+            read_labelme(annotation_path, ImageInfo(width=1920, height=1080))
 
     def test_unknown_task_type_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, 'Unsupported task type: unknown'):

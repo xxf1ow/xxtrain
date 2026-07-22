@@ -11,7 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It takes raw annotation files (labelimg XML for detection boxes, labelme JSON for segment/pose/obb), converts them into YOLO-format datasets, generates a model `.yaml`, downloads pretrained weights, trains, validates, and exports to ONNX. The novel/non-obvious part is the **annotation conversion pipeline** (`src/annconverter.py` + `src/annprocessor.py` + `src/annparser.py`); `src/train.py` is a relatively thin Ultralytics wrapper on top.
 
-All Python source lives under `src/`. The four modules import each other as flat siblings (`import annconverter`, `from annprocessor import ...`), which works because running `python src/train.py` puts `src/` on `sys.path`. **Do not confuse the project's `src/` (code) with a dataset's `root_path/src/` (input images/annotations) — they are unrelated despite the shared name.**
+All Python source lives under `src/`. The legacy pipeline modules import each other as flat siblings (`import annconverter`, `from annprocessor import ...`), which works because running `python src/train.py` puts `src/` on `sys.path`. **Do not confuse the project's `src/` (code) with a dataset's `root_path/src/` (input images/annotations) — they are unrelated despite the shared name.**
+
+The source migration has established `src/xxtrain/` as the new package boundary. `xxtrain.task` owns only the five basic task types; `xxtrain.data` owns immutable annotations, label ordering, geometry, one-way LabelImg/LabelMe readers, pure YOLO encoders, and dataset artifact helpers. New data-layer code must use this package and must not import or re-export the legacy flat modules. The flat `annparser.py`, `annprocessor.py`, and `annconverter.py` remain only because the pipeline has not yet migrated; do not add new data behavior to them.
 
 ## Commands
 
@@ -32,7 +34,7 @@ python src/train.py --mode export --root_path data/point --task_type point-class
 python src/train.py --mode val --weights runs/classify/train16/weights/best.pt --directory data/light/light-classify
 
 # Full conversion baseline (fixtures + semantic snapshots + failure/reproducibility checks)
-python -m unittest discover -s test -p 'test_*.py' -v
+python -m unittest discover -s test -t . -p 'test_*.py' -v
 
 # Static verification used by the baseline
 ruff check src test
@@ -84,7 +86,7 @@ A pipeline is assembled in `src/annconverter.py` (e.g. `standard_detect_pipe`, o
 
 Typical processor chain: `ImageSizeParser` → `*AnnsParser` (parse + drop labels not in the label set) → optionally `DetectAndSegAnnsMatcher` (assigns child shapes to parent boxes via `map_parent_child_annotations` / geometric containment) → `*AnnsGenerator` (emit YOLO `.txt`) → `DatasetSplitter` (train/val split + stat counting). Generators set `ann_count`/`out_img_path`, which `DatasetSplitter` consumes — so a generator must run before the splitter.
 
-## Annotation layer (`src/annparser.py`)
+## Legacy annotation layer (`src/annparser.py`)
 
 - **`Annotation`** dataclass is the universal shape: `label`, `type` (`ShapeType`), `parts` (list of `np.ndarray` point arrays — `parts[0]` via `.points`), `instance` (UUID, or `(label, group_id)` for grouped labelme shapes), with computed `.bbox` and `.translate()`.
 - `parse_det_anns_from_labelimg` (XML) and `parse_seg_anns_from_labelme` (JSON) are the two parsers; both assert that the annotation's recorded image size matches the actual image.
