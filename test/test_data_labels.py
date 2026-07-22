@@ -16,6 +16,10 @@ class LabelCatalogTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             LabelCatalog(names=('known',)).index('unknown')
 
+    def test_rejects_non_tuple_name_containers(self) -> None:
+        with self.assertRaises(ValueError):
+            LabelCatalog(names=['a'])
+
     def test_rejects_empty_catalog_names_and_duplicates(self) -> None:
         for names in ((), ('',), ('a', 'a'), ('a', 1)):
             with self.subTest(names=names), self.assertRaises(ValueError):

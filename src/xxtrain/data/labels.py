@@ -7,6 +7,8 @@ class LabelCatalog:
     names: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if type(self.names) is not tuple:
+            raise ValueError('Label catalog names must be a tuple')
         if not self.names:
             raise ValueError('Label catalog must not be empty')
         if any(not isinstance(name, str) or not name for name in self.names):
