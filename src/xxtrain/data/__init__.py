@@ -11,6 +11,7 @@ from .annotation import (
     RotatedBbox,
     Shape,
 )
+from .labels import LabelCatalog
 
 __all__ = [
     'Annotation',
@@ -18,6 +19,7 @@ __all__ = [
     'Bbox',
     'Circle',
     'ImageInfo',
+    'LabelCatalog',
     'Line',
     'Points',
     'Polygon',
