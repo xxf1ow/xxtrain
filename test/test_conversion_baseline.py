@@ -1,5 +1,7 @@
 import gc
+import json
 import shutil
+import sys
 import tempfile
 import unittest
 import warnings
@@ -12,6 +14,7 @@ from test.support.output_manifest import collect_output_manifest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_PATH = PROJECT_ROOT / 'test' / 'fixtures'
+EXPECTED_PATH = PROJECT_ROOT / 'test' / 'expected' / 'conversions'
 
 
 BASELINE_CASES = [
@@ -29,6 +32,20 @@ BASELINE_CASES = [
 ]
 
 
+def update_snapshots() -> None:
+    EXPECTED_PATH.mkdir(parents=True, exist_ok=True)
+    for task_type, fixture_name in BASELINE_CASES:
+        with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
+            root_path = Path(temp_dir) / fixture_name
+            shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
+            convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+            manifest = collect_output_manifest(root_path, task_type)
+        snapshot = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
+        expected_path = EXPECTED_PATH / f'{task_type}.json'
+        expected_path.write_text(snapshot, encoding='utf-8')
+        print(f'updated {expected_path.relative_to(PROJECT_ROOT)}')
+
+
 class ConversionBaselineTest(unittest.TestCase):
     def assert_conversion(self, task_type: str, fixture_name: str) -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
@@ -42,20 +59,9 @@ class ConversionBaselineTest(unittest.TestCase):
             resource_warnings = [item for item in caught_warnings if issubclass(item.category, ResourceWarning)]
             self.assertEqual([], resource_warnings)
 
-            output_path = root_path / task_type
-            dataset_path = output_path / 'dataset.yaml'
-            train_path = output_path / 'train.txt'
-            val_path = output_path / 'val.txt'
-            self.assertTrue(dataset_path.is_file())
-            self.assertTrue(train_path.is_file())
-            self.assertTrue(val_path.is_file())
-
-            train_images = [Path(line) for line in train_path.read_text(encoding='utf-8').splitlines() if line]
-            val_images = [Path(line) for line in val_path.read_text(encoding='utf-8').splitlines() if line]
-            self.assertTrue(train_images)
-            self.assertTrue(val_images)
-            for image_path in train_images + val_images:
-                self.assertTrue(image_path.is_file(), image_path)
+            actual = collect_output_manifest(root_path, task_type)
+            expected = json.loads((EXPECTED_PATH / f'{task_type}.json').read_text(encoding='utf-8'))
+            self.assertEqual(expected, actual)
 
     def test_baseline_conversions(self) -> None:
         for task_type, fixture_name in BASELINE_CASES:
@@ -116,4 +122,7 @@ class OutputManifestTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    if sys.argv[1:] == ['--update-snapshots']:
+        update_snapshots()
+    else:
+        unittest.main()

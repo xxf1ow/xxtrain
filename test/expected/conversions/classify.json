@@ -1,0 +1,67 @@
+{
+  "files": [
+    "dataset.yaml",
+    "train.txt",
+    "train/IA/0003.jpg",
+    "train/P/0001.jpg",
+    "train/Uab/0002.jpg",
+    "val.txt",
+    "val/IA/0001_0.jpg",
+    "val/P/0000.jpg",
+    "val/Uab/0000_0.jpg"
+  ],
+  "images": {
+    "train/IA/0003.jpg": {
+      "size": [
+        319,
+        234
+      ]
+    },
+    "train/P/0001.jpg": {
+      "size": [
+        319,
+        235
+      ]
+    },
+    "train/Uab/0002.jpg": {
+      "size": [
+        319,
+        235
+      ]
+    },
+    "val/IA/0001_0.jpg": {
+      "size": [
+        350,
+        242
+      ]
+    },
+    "val/P/0000.jpg": {
+      "size": [
+        319,
+        235
+      ]
+    },
+    "val/Uab/0000_0.jpg": {
+      "size": [
+        350,
+        243
+      ]
+    }
+  },
+  "text_files": {
+    "train.txt": "<ROOT>/classify/train/IA/0003.jpg\n<ROOT>/classify/train/P/0001.jpg\n<ROOT>/classify/train/Uab/0002.jpg",
+    "val.txt": "<ROOT>/classify/val/IA/0001_0.jpg\n<ROOT>/classify/val/P/0000.jpg\n<ROOT>/classify/val/Uab/0000_0.jpg"
+  },
+  "yaml_files": {
+    "dataset.yaml": {
+      "names": {
+        "0": "IA",
+        "1": "P",
+        "2": "Uab"
+      },
+      "path": "<ROOT>",
+      "train": "classify/train.txt",
+      "val": "classify/val.txt"
+    }
+  }
+}

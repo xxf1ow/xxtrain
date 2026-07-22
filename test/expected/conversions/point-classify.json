@@ -1,0 +1,40 @@
+{
+  "files": [
+    "dataset.yaml",
+    "train.txt",
+    "train/03-cc/20260620_1_0.jpg",
+    "val.txt",
+    "val/03-cc/20260620_0_0.jpg"
+  ],
+  "images": {
+    "train/03-cc/20260620_1_0.jpg": {
+      "size": [
+        461,
+        461
+      ]
+    },
+    "val/03-cc/20260620_0_0.jpg": {
+      "size": [
+        489,
+        489
+      ]
+    }
+  },
+  "text_files": {
+    "train.txt": "<ROOT>/point-classify/train/03-cc/20260620_1_0.jpg",
+    "val.txt": "<ROOT>/point-classify/val/03-cc/20260620_0_0.jpg"
+  },
+  "yaml_files": {
+    "dataset.yaml": {
+      "names": {
+        "0": "tl",
+        "1": "tc",
+        "2": "cl",
+        "3": "cc"
+      },
+      "path": "<ROOT>",
+      "train": "point-classify/train.txt",
+      "val": "point-classify/val.txt"
+    }
+  }
+}

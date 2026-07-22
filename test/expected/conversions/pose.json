@@ -1,0 +1,50 @@
+{
+  "files": [
+    "dataset.yaml",
+    "rw400/0000.jpg",
+    "rw400/0000.txt",
+    "rw400/0001.jpg",
+    "rw400/0001.txt",
+    "train.txt",
+    "val.txt"
+  ],
+  "images": {
+    "rw400/0000.jpg": {
+      "size": [
+        4000,
+        2250
+      ]
+    },
+    "rw400/0001.jpg": {
+      "size": [
+        4000,
+        2250
+      ]
+    }
+  },
+  "text_files": {
+    "rw400/0000.txt": "0 0.476750 0.539333 0.143000 0.747111 0.467045 0.625253 2",
+    "rw400/0001.txt": "0 0.456375 0.483333 0.141750 0.725778 0.443561 0.567340 2",
+    "train.txt": "<ROOT>/pose/rw400/0001.jpg",
+    "val.txt": "<ROOT>/pose/rw400/0000.jpg"
+  },
+  "yaml_files": {
+    "dataset.yaml": {
+      "kpt_names": {
+        "0": [
+          "rw400"
+        ]
+      },
+      "kpt_shape": [
+        1,
+        3
+      ],
+      "names": {
+        "0": "rw400"
+      },
+      "path": "<ROOT>",
+      "train": "pose/train.txt",
+      "val": "pose/val.txt"
+    }
+  }
+}
