@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -22,7 +23,8 @@ class NewPipelineFailureBehaviorTest(unittest.TestCase):
     def test_unknown_and_scale_pose_are_rejected_before_filesystem_access(self) -> None:
         for task_name in ('unknown', 'scale-pose'):
             with self.subTest(task_name=task_name):
-                with self.assertRaisesRegex(ValueError, f'Unsupported task type: {task_name}'):
+                message = re.escape(f'Unsupported task type: {task_name}')
+                with self.assertRaisesRegex(ValueError, rf'^{message}$'):
                     convert_dataset(task_name, 'unused', split=10, reserve_no_label=False)
 
     def test_classification_rejects_extra_class_directory(self) -> None:

@@ -214,18 +214,22 @@ class PipelineProcessorTest(unittest.TestCase):
         children = (
             Polygon(label='c', points=((32, 2), (40, 2), (40, 10))),
             Polygon(label='c', points=((2, 2), (10, 2), (10, 10))),
+            Polygon(label='c', points=((34, 12), (42, 12), (42, 18))),
         )
         output = MatchAnnotations().transform(
             MatchInput(sample=sample, parents=parents, children=children),
             context,
         )
         self.assertEqual((parents[1], parents[0]), tuple(match.parent for match in output.matches))
-        self.assertEqual((children[0],), output.matches[0].children)
+        self.assertEqual((children[0], children[2]), output.matches[0].children)
         self.assertEqual((children[1],), output.matches[1].children)
 
     def test_crop_matches_builds_deferred_views_in_match_order(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output_path = Path(temp_dir.name) / 'output'
         sample = self.make_sample(Path('image.jpg'))
-        context = self.make_context(Path('.'))
+        context = self.make_context(output_path)
         parents = (
             Bbox(label='p', x1=0, y1=0, x2=20, y2=20),
             Bbox(label='p', x1=30, y1=0, x2=50, y2=20),
@@ -250,19 +254,22 @@ class PipelineProcessorTest(unittest.TestCase):
         )
         self.assertEqual(parents[1].bbox, crops[0].sample.image.crop_box)
         self.assertEqual(ImageInfo(width=20, height=20), crops[0].sample.image.info)
-        self.assertFalse(Path('group/image_0.jpg').exists())
+        self.assertFalse(output_path.exists())
         self.assertEqual(
             ((2.0, 2.0), (10.0, 2.0), (10.0, 10.0)),
             crops[0].sample.annotations[0].points,
         )
 
-    def test_crop_detection_boxes_uses_legacy_classification_name(self) -> None:
+    def test_crop_detection_boxes_builds_deferred_views_with_legacy_names(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        output_path = Path(temp_dir.name) / 'output'
         annotations = (
             Bbox(label='known', x1=0, y1=0, x2=20, y2=10),
             Bbox(label='known', x1=30, y1=0, x2=50, y2=20),
         )
         sample_with_two_boxes = self.make_sample(Path('image.jpg'), annotations=annotations)
-        context = self.make_context(Path('.'))
+        context = self.make_context(output_path)
         outputs = tuple(CropDetectionBoxes().expand(sample_with_two_boxes, context))
         self.assertEqual(
             ('group_3_0.jpg', 'group_3_1.jpg'),
@@ -282,6 +289,7 @@ class PipelineProcessorTest(unittest.TestCase):
             tuple(output.sample.image.info for output in outputs),
         )
         self.assertTrue(all(not output.sample.annotations for output in outputs))
+        self.assertFalse(output_path.exists())
 
     def test_relabel_crop_annotations_preserves_crop_parent(self) -> None:
         annotation = Polygon(label='source', points=((1, 1), (2, 1), (2, 2)))
