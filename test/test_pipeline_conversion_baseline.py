@@ -20,8 +20,11 @@ STANDARD_CASES = [
 CUSTOM_CASES = [
     ('point-detect', 'point'),
     ('point-classify', 'point'),
+    ('point-segment', 'point'),
     ('knob-detect', 'knob'),
+    ('knob-segment', 'knob'),
     ('light1-detect', 'light'),
+    ('light2-detect', 'light'),
 ]
 
 

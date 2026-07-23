@@ -8,12 +8,17 @@ from .core import Context, ConversionConfig, ConversionReport, Pipeline
 from .discovery import DirectorySource, SampleSource, validate_classification_source
 from .processors import (
     CropDetectionBoxes,
+    CropMatches,
+    EncodeCropDetection,
     EncodeDetection,
+    EncodeKnobSegment,
+    EncodePointSegment,
     EncodePose,
     EncodeSegment,
     FilterLabels,
     FilterMatchingAnnotations,
     MatchAnnotations,
+    PartitionAnnotations,
     PrepareClassification,
     PrepareMatchChildren,
     PrepareSegmentShapes,
@@ -22,6 +27,7 @@ from .processors import (
     ReadLabelMe,
     ReadMatchingAnnotations,
     RelabelAnnotations,
+    RelabelCropAnnotations,
 )
 from .sinks import ClassificationDatasetSink, DatasetSink, YoloDatasetSink
 
@@ -39,8 +45,11 @@ _STANDARD_TASK_TYPES = {
 _CUSTOM_TASK_TYPES = {
     'point-detect': TaskType.DETECT,
     'point-classify': TaskType.CLASSIFY,
+    'point-segment': TaskType.SEGMENT,
     'knob-detect': TaskType.DETECT,
+    'knob-segment': TaskType.SEGMENT,
     'light1-detect': TaskType.DETECT,
+    'light2-detect': TaskType.DETECT,
 }
 
 
@@ -85,10 +94,14 @@ def build_recipe(
         labels = LabelCatalog(('Point',))
     elif task_name == 'point-classify':
         labels = LabelCatalog(POINT_LABELS)
-    elif task_name == 'knob-detect':
+    elif task_name == 'point-segment':
+        labels = LabelCatalog(('Point',))
+    elif task_name in ('knob-detect', 'knob-segment'):
         labels = LabelCatalog(KNOB_LABELS)
     elif task_name == 'light1-detect':
         labels = LabelCatalog(LIGHT1_LABELS)
+    elif task_name == 'light2-detect':
+        labels = LabelCatalog(('0',))
     else:
         labels = _read_labels(root)
         if task_type is TaskType.CLASSIFY:
@@ -123,9 +136,43 @@ def build_recipe(
             (ReadImageInfo(), ReadLabelImg(), FilterLabels(POINT_LABELS), CropDetectionBoxes())
         )
         sink = ClassificationDatasetSink(indexed_class_directories=True)
+    elif task_name == 'point-segment':
+        pipeline = Pipeline(
+            (
+                ReadImageInfo(),
+                ReadMatchingAnnotations(),
+                FilterMatchingAnnotations(
+                    parent_labels=('tl', 'tc', 'cl', 'cc'),
+                    child_labels=('1',),
+                    strict=True,
+                ),
+                PrepareMatchChildren(TaskType.SEGMENT),
+                MatchAnnotations(wide=0, strict=False),
+                CropMatches(),
+                EncodePointSegment(),
+            )
+        )
+        sink = YoloDatasetSink()
     elif task_name == 'knob-detect':
         pipeline = Pipeline(
             (ReadImageInfo(), ReadLabelImg(), FilterLabels(KNOB_LABELS), EncodeDetection())
+        )
+        sink = YoloDatasetSink()
+    elif task_name == 'knob-segment':
+        pipeline = Pipeline(
+            (
+                ReadImageInfo(),
+                ReadMatchingAnnotations(),
+                FilterMatchingAnnotations(
+                    parent_labels=('switch',),
+                    child_labels=('switch',),
+                    strict=True,
+                ),
+                PrepareMatchChildren(TaskType.SEGMENT),
+                MatchAnnotations(wide=0.15, strict=False),
+                CropMatches(),
+                EncodeKnobSegment(),
+            )
         )
         sink = YoloDatasetSink()
     elif task_name == 'light1-detect':
@@ -135,6 +182,22 @@ def build_recipe(
                 ReadLabelImg(),
                 FilterLabels(LIGHT1_LABELS, strict=False),
                 EncodeDetection(),
+            )
+        )
+        sink = YoloDatasetSink()
+    elif task_name == 'light2-detect':
+        pipeline = Pipeline(
+            (
+                ReadImageInfo(),
+                ReadLabelImg(),
+                PartitionAnnotations(
+                    parent_labels=('1008',),
+                    child_labels=('0', '1', '2'),
+                ),
+                MatchAnnotations(wide=0.1, strict=False),
+                CropMatches(),
+                RelabelCropAnnotations('0'),
+                EncodeCropDetection(),
             )
         )
         sink = YoloDatasetSink()
