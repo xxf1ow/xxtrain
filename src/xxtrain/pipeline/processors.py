@@ -15,13 +15,20 @@ from xxtrain.data import (
     RotatedBbox,
     Shape,
 )
-from xxtrain.data.formats import read_labelimg, read_labelme
+from xxtrain.data.formats import (
+    encode_detect,
+    encode_pose,
+    encode_segment,
+    read_labelimg,
+    read_labelme,
+)
 from xxtrain.data.geometry import match_parent_children
 from xxtrain.pipeline.core import (
     AnnotationMatch,
     ClassifyOutput,
     Context,
     CropOutput,
+    EncodeOutput,
     ExpandProcessor,
     ItemProcessor,
     MatchInput,
@@ -322,3 +329,123 @@ class RelabelCropAnnotations(ItemProcessor[CropOutput, CropOutput]):
             )
         )
         return CropOutput(sample=sample, parent=item.parent)
+
+
+class EncodeDetection(ItemProcessor[Sample, EncodeOutput]):
+    input_type = Sample
+    output_type = EncodeOutput
+
+    def transform(self, item: Sample, context: Context) -> EncodeOutput:
+        info = item.image.require_info()
+        boxes = tuple(
+            annotation for annotation in item.annotations if isinstance(annotation, Bbox)
+        )
+        if len(boxes) != len(item.annotations):
+            raise TypeError('EncodeDetection requires only Bbox annotations')
+        return EncodeOutput(
+            sample=item,
+            lines=tuple(encode_detect(box, info, context.config.labels) for box in boxes),
+        )
+
+
+class EncodeCropDetection(ItemProcessor[CropOutput, EncodeOutput]):
+    input_type = CropOutput
+    output_type = EncodeOutput
+
+    def transform(self, item: CropOutput, context: Context) -> EncodeOutput:
+        return EncodeDetection().transform(item.sample, context)
+
+
+class EncodeSegment(ItemProcessor[Sample, EncodeOutput]):
+    input_type = Sample
+    output_type = EncodeOutput
+
+    def transform(self, item: Sample, context: Context) -> EncodeOutput:
+        info = item.image.require_info()
+        shapes = tuple(
+            annotation for annotation in item.annotations if isinstance(annotation, Shape)
+        )
+        return EncodeOutput(
+            sample=item,
+            lines=tuple(
+                encode_segment(shape, info, context.config.labels) for shape in shapes
+            ),
+        )
+
+
+class EncodePose(ItemProcessor[MatchOutput, EncodeOutput]):
+    input_type = MatchOutput
+    output_type = EncodeOutput
+
+    def transform(self, item: MatchOutput, context: Context) -> EncodeOutput:
+        info = item.sample.image.require_info()
+        lines = []
+        for match in item.matches:
+            keypoints = {
+                child.label: child
+                for child in match.children
+                if isinstance(child, Points)
+            }
+            if len(keypoints) != len(match.children):
+                raise ValueError(f'骨骼标注必须是点类型: {item.sample.image.path}')
+            lines.append(
+                encode_pose(match.parent, keypoints, info, context.config.labels)
+            )
+        return EncodeOutput(sample=item.sample, lines=tuple(lines))
+
+
+class EncodePointSegment(ItemProcessor[CropOutput, EncodeOutput]):
+    input_type = CropOutput
+    output_type = EncodeOutput
+
+    def transform(self, item: CropOutput, context: Context) -> EncodeOutput:
+        info = item.sample.image.require_info()
+        line_thickness = 6.0
+        lines = []
+        for annotation in item.sample.annotations:
+            if not isinstance(annotation, Line):
+                raise ValueError(
+                    f'标注类型错误: {item.sample.image.path} 中的 {annotation} 不是 line 类型'
+                )
+            p1 = np.asarray(annotation.points[0])
+            p2 = np.asarray(annotation.points[1])
+            vector = p2 - p1
+            length = np.linalg.norm(vector)
+            unit_vector = np.array([1.0, 0.0]) if length == 0 else vector / length
+            normal_vector = np.array([-unit_vector[1], unit_vector[0]])
+            half_thickness = line_thickness / 2.0
+            corners = (
+                p1 + normal_vector * half_thickness,
+                p1 - normal_vector * half_thickness,
+                p2,
+            )
+            values = ['0']
+            for x, y in corners:
+                norm_x = x / info.width
+                norm_y = y / info.height
+                assert 0 <= norm_x <= 1 and 0 <= norm_y <= 1
+                values.extend((f'{norm_x:.6f}', f'{norm_y:.6f}'))
+            lines.append(' '.join(values))
+        return EncodeOutput(sample=item.sample, lines=tuple(lines))
+
+
+class EncodeKnobSegment(ItemProcessor[CropOutput, EncodeOutput]):
+    input_type = CropOutput
+    output_type = EncodeOutput
+
+    def transform(self, item: CropOutput, context: Context) -> EncodeOutput:
+        info = item.sample.image.require_info()
+        label_id = context.config.labels.index(item.parent.label)
+        lines = []
+        for annotation in item.sample.annotations:
+            if not isinstance(annotation, Shape):
+                raise TypeError(
+                    f'EncodeKnobSegment requires Shape, got {type(annotation).__name__}'
+                )
+            values = [str(label_id)]
+            for x, y in annotation.points:
+                norm_x = max(0.0, min(1.0, x / info.width))
+                norm_y = max(0.0, min(1.0, y / info.height))
+                values.extend((f'{norm_x:.6f}', f'{norm_y:.6f}'))
+            lines.append(' '.join(values))
+        return EncodeOutput(sample=item.sample, lines=tuple(lines))
