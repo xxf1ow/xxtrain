@@ -8,6 +8,7 @@ from xxtrain.data import LabelCatalog
 from xxtrain.pipeline.core import Pipeline
 from xxtrain.pipeline.discovery import DirectorySource
 from xxtrain.pipeline.processors import (
+    CropDetectionBoxes,
     EncodeDetection,
     EncodePose,
     EncodeSegment,
@@ -21,6 +22,7 @@ from xxtrain.pipeline.processors import (
     ReadLabelImg,
     ReadLabelMe,
     ReadMatchingAnnotations,
+    RelabelAnnotations,
 )
 from xxtrain.pipeline.recipes import Recipe, build_recipe
 from xxtrain.pipeline.sinks import ClassificationDatasetSink, YoloDatasetSink
@@ -38,6 +40,27 @@ EXPECTED_STANDARD_PROCESSORS = {
         EncodePose,
     ),
     'classify': (PrepareClassification,),
+}
+
+EXPECTED_CUSTOM_PROCESSORS = {
+    'point-detect': (ReadImageInfo, ReadLabelImg, FilterLabels, RelabelAnnotations, EncodeDetection),
+    'point-classify': (ReadImageInfo, ReadLabelImg, FilterLabels, CropDetectionBoxes),
+    'knob-detect': (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
+    'light1-detect': (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
+}
+
+EXPECTED_CUSTOM_LABELS = {
+    'point-detect': ('Point',),
+    'point-classify': ('tl', 'tc', 'cl', 'cc'),
+    'knob-detect': ('switch',),
+    'light1-detect': ('1008',),
+}
+
+CUSTOM_FIXTURES = {
+    'point-detect': 'point',
+    'point-classify': 'point',
+    'knob-detect': 'knob',
+    'light1-detect': 'light',
 }
 
 
@@ -66,6 +89,45 @@ class PipelineRecipeTest(unittest.TestCase):
                     reserve_no_label=False,
                 )
                 self.assertEqual(expected_types, tuple(type(value) for value in recipe.pipeline.processors))
+
+    def test_custom_recipe_processor_sequences_and_label_catalogs(self) -> None:
+        for task_name, expected_types in EXPECTED_CUSTOM_PROCESSORS.items():
+            with self.subTest(task_name=task_name):
+                recipe, context = build_recipe(task_name, self.copy_fixture(CUSTOM_FIXTURES[task_name]))
+                self.assertEqual(expected_types, tuple(type(value) for value in recipe.pipeline.processors))
+                self.assertEqual(EXPECTED_CUSTOM_LABELS[task_name], recipe.labels.names)
+                self.assertIs(recipe.labels, context.config.labels)
+
+    def test_custom_recipe_processor_configuration(self) -> None:
+        for task_name in EXPECTED_CUSTOM_PROCESSORS:
+            with self.subTest(task_name=task_name):
+                recipe, _ = build_recipe(task_name, self.copy_fixture(CUSTOM_FIXTURES[task_name]))
+                filter_labels = next(
+                    processor
+                    for processor in recipe.pipeline.processors
+                    if isinstance(processor, FilterLabels)
+                )
+                expected_input_labels = (
+                    ('tl', 'tc', 'cl', 'cc')
+                    if task_name.startswith('point-')
+                    else EXPECTED_CUSTOM_LABELS[task_name]
+                )
+                self.assertEqual(expected_input_labels, filter_labels.labels)
+                self.assertEqual(task_name != 'light1-detect', filter_labels.strict)
+
+                if task_name == 'point-detect':
+                    relabel = next(
+                        processor
+                        for processor in recipe.pipeline.processors
+                        if isinstance(processor, RelabelAnnotations)
+                    )
+                    self.assertEqual('Point', relabel.label)
+
+    def test_point_classification_uses_indexed_class_directories(self) -> None:
+        recipe, _ = build_recipe('point-classify', self.copy_fixture('point'))
+
+        self.assertIsInstance(recipe.sink, ClassificationDatasetSink)
+        self.assertTrue(recipe.sink.indexed_class_directories)
 
     def test_detection_segmentation_and_pose_preserve_label_order(self) -> None:
         fixtures = {
@@ -120,7 +182,7 @@ class PipelineRecipeTest(unittest.TestCase):
     def test_unsupported_task_is_rejected_before_filesystem_access(self) -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-recipe-') as temp_dir:
             missing_root = Path(temp_dir) / 'does-not-exist'
-            for task_name in ('obb', 'point-detect', 'custom'):
+            for task_name in ('obb', 'custom'):
                 with self.subTest(task_name=task_name):
                     with self.assertRaisesRegex(ValueError, 'Unsupported standard task'):
                         build_recipe(task_name, missing_root)

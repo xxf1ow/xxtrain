@@ -7,6 +7,7 @@ from xxtrain.task import TaskType
 from .core import Context, ConversionConfig, ConversionReport, Pipeline
 from .discovery import DirectorySource, SampleSource, validate_classification_source
 from .processors import (
+    CropDetectionBoxes,
     EncodeDetection,
     EncodePose,
     EncodeSegment,
@@ -20,14 +21,26 @@ from .processors import (
     ReadLabelImg,
     ReadLabelMe,
     ReadMatchingAnnotations,
+    RelabelAnnotations,
 )
 from .sinks import ClassificationDatasetSink, DatasetSink, YoloDatasetSink
+
+POINT_LABELS = ('tl', 'tc', 'cl', 'cc')
+KNOB_LABELS = ('switch',)
+LIGHT1_LABELS = ('1008',)
 
 _STANDARD_TASK_TYPES = {
     'detect': TaskType.DETECT,
     'segment': TaskType.SEGMENT,
     'pose': TaskType.POSE,
     'classify': TaskType.CLASSIFY,
+}
+
+_CUSTOM_TASK_TYPES = {
+    'point-detect': TaskType.DETECT,
+    'point-classify': TaskType.CLASSIFY,
+    'knob-detect': TaskType.DETECT,
+    'light1-detect': TaskType.DETECT,
 }
 
 
@@ -62,12 +75,24 @@ def build_recipe(
     try:
         task_type = _STANDARD_TASK_TYPES[task_name]
     except KeyError:
-        raise ValueError(f'Unsupported standard task: {task_name}') from None
+        try:
+            task_type = _CUSTOM_TASK_TYPES[task_name]
+        except KeyError:
+            raise ValueError(f'Unsupported standard task: {task_name}') from None
 
     root = Path(root_path)
-    labels = _read_labels(root)
-    if task_type is TaskType.CLASSIFY:
-        labels = validate_classification_source(root, labels, split)
+    if task_name == 'point-detect':
+        labels = LabelCatalog(('Point',))
+    elif task_name == 'point-classify':
+        labels = LabelCatalog(POINT_LABELS)
+    elif task_name == 'knob-detect':
+        labels = LabelCatalog(KNOB_LABELS)
+    elif task_name == 'light1-detect':
+        labels = LabelCatalog(LIGHT1_LABELS)
+    else:
+        labels = _read_labels(root)
+        if task_type is TaskType.CLASSIFY:
+            labels = validate_classification_source(root, labels, split)
 
     context = Context(
         config=ConversionConfig(
@@ -82,7 +107,38 @@ def build_recipe(
     )
     source = DirectorySource()
 
-    if task_type is TaskType.DETECT:
+    if task_name == 'point-detect':
+        pipeline = Pipeline(
+            (
+                ReadImageInfo(),
+                ReadLabelImg(),
+                FilterLabels(POINT_LABELS),
+                RelabelAnnotations('Point'),
+                EncodeDetection(),
+            )
+        )
+        sink = YoloDatasetSink()
+    elif task_name == 'point-classify':
+        pipeline = Pipeline(
+            (ReadImageInfo(), ReadLabelImg(), FilterLabels(POINT_LABELS), CropDetectionBoxes())
+        )
+        sink = ClassificationDatasetSink(indexed_class_directories=True)
+    elif task_name == 'knob-detect':
+        pipeline = Pipeline(
+            (ReadImageInfo(), ReadLabelImg(), FilterLabels(KNOB_LABELS), EncodeDetection())
+        )
+        sink = YoloDatasetSink()
+    elif task_name == 'light1-detect':
+        pipeline = Pipeline(
+            (
+                ReadImageInfo(),
+                ReadLabelImg(),
+                FilterLabels(LIGHT1_LABELS, strict=False),
+                EncodeDetection(),
+            )
+        )
+        sink = YoloDatasetSink()
+    elif task_type is TaskType.DETECT:
         pipeline = Pipeline((ReadImageInfo(), ReadLabelImg(), FilterLabels(), EncodeDetection()))
         sink = YoloDatasetSink()
     elif task_type is TaskType.SEGMENT:

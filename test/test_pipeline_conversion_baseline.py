@@ -17,9 +17,16 @@ STANDARD_CASES = [
     ('classify', 'standard-classify'),
 ]
 
+CUSTOM_CASES = [
+    ('point-detect', 'point'),
+    ('point-classify', 'point'),
+    ('knob-detect', 'knob'),
+    ('light1-detect', 'light'),
+]
+
 
 class NewPipelineConversionBaselineTest(unittest.TestCase):
-    cases = STANDARD_CASES
+    cases = STANDARD_CASES + CUSTOM_CASES
 
     def assert_conversion(self, task_name: str, fixture_name: str) -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-new-pipeline-') as temp_dir:
