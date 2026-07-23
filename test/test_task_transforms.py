@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-from test.support.current_api import convert_dataset
+from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 

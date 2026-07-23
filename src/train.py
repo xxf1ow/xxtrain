@@ -9,7 +9,7 @@ from tqdm import tqdm
 from ultralytics.engine.results import Probs
 from ultralytics.models import YOLO
 
-import annconverter
+from xxtrain.pipeline import convert_dataset
 
 suffix_switcher = {'classify': '-cls', 'detect': '', 'obb': '-obb', 'pose': '-pose', 'segment': '-seg'}
 
@@ -49,7 +49,12 @@ def convert_voc_to_yolo(task_type: str, root_path: str, split: int, reserve_no_l
         print(f'✅ Dataset configuration file already exists at {dataset_yaml_path}\n')
         return
     print('🚀 Converting dataset to YOLO format ...')
-    annconverter.process(task_type, root_path, split, reserve_no_label)
+    convert_dataset(
+        task_type,
+        root_path,
+        split=split,
+        reserve_no_label=reserve_no_label,
+    )
     if os.path.isfile(dataset_yaml_path) or (task_type.endswith('classify') and os.path.isdir(dataset_yaml_path)):
         print('✅ Conversion done!\n')
         return

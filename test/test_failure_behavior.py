@@ -2,12 +2,14 @@ import json
 import shutil
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
-from test.support.current_api import convert_dataset, unavailable_symlinks
 from test.support.output_manifest import collect_output_manifest
 from xxtrain.data import ImageInfo
 from xxtrain.data.formats import read_labelimg, read_labelme
+from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 EXPECTED_PATH = Path(__file__).resolve().parent / 'expected' / 'conversions'
@@ -15,6 +17,12 @@ SYMLINK_FALLBACK_CASES = [
     ('detect', 'standard-detect'),
     ('classify', 'standard-classify'),
 ]
+
+
+@contextmanager
+def unavailable_symlinks():
+    with patch('xxtrain.pipeline.sinks.os.symlink', side_effect=OSError('symlink privilege unavailable')):
+        yield
 
 
 class FailureBehaviorTest(unittest.TestCase):

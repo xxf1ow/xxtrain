@@ -111,6 +111,31 @@ class PipelineRecipeTest(unittest.TestCase):
         shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
         return root_path
 
+    def test_pipeline_public_api_exports_stable_symbols(self) -> None:
+        from xxtrain.pipeline import (
+            Context,
+            ConversionConfig,
+            ConversionReport,
+            ExpandProcessor,
+            ImageRef,
+            ItemProcessor,
+            Pipeline,
+            Sample,
+            convert_dataset,
+        )
+
+        self.assertTrue(callable(convert_dataset))
+        self.assertTrue(all(value is not None for value in (
+            Context,
+            ConversionConfig,
+            ConversionReport,
+            ExpandProcessor,
+            ImageRef,
+            ItemProcessor,
+            Pipeline,
+            Sample,
+        )))
+
     def test_standard_recipe_processor_sequences(self) -> None:
         fixtures = {
             'detect': 'standard-detect',
