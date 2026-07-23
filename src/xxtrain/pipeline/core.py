@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Self
+from typing import Generic, Self, TypeVar
 
 from xxtrain.data import Annotation, Bbox, ImageInfo, LabelCatalog, Shape
 from xxtrain.task import TaskType
@@ -129,3 +131,104 @@ class ConversionReport:
 class Context:
     config: ConversionConfig
     report: ConversionReport
+
+
+InputT = TypeVar('InputT')
+OutputT = TypeVar('OutputT')
+
+
+def _type_name(value_type: type) -> str:
+    return value_type.__name__
+
+
+class ItemProcessor(ABC, Generic[InputT, OutputT]):
+    input_type: type[InputT]
+    output_type: type[OutputT]
+
+    @abstractmethod
+    def transform(self, item: InputT, context: Context) -> OutputT | None:
+        raise NotImplementedError
+
+    def apply(self, items: Iterable[InputT], context: Context) -> Iterator[OutputT]:
+        for item in items:
+            self._validate_input(item)
+            output = self.transform(item, context)
+            if output is not None:
+                self._validate_output(output)
+                yield output
+
+    def _validate_input(self, item: object) -> None:
+        if not isinstance(item, self.input_type):
+            raise TypeError(
+                f'{type(self).__name__} expected {_type_name(self.input_type)}, got {type(item).__name__}'
+            )
+
+    def _validate_output(self, output: object) -> None:
+        if not isinstance(output, self.output_type):
+            raise TypeError(
+                f'{type(self).__name__} declared {_type_name(self.output_type)}, got {type(output).__name__}'
+            )
+
+
+class ExpandProcessor(ABC, Generic[InputT, OutputT]):
+    input_type: type[InputT]
+    output_type: type[OutputT]
+
+    @abstractmethod
+    def expand(self, item: InputT, context: Context) -> Iterable[OutputT]:
+        raise NotImplementedError
+
+    def apply(self, items: Iterable[InputT], context: Context) -> Iterator[OutputT]:
+        for item in items:
+            if not isinstance(item, self.input_type):
+                raise TypeError(
+                    f'{type(self).__name__} expected {_type_name(self.input_type)}, got {type(item).__name__}'
+                )
+            for output in self.expand(item, context):
+                if not isinstance(output, self.output_type):
+                    raise TypeError(
+                        f'{type(self).__name__} declared {_type_name(self.output_type)}, '
+                        f'got {type(output).__name__}'
+                    )
+                yield output
+
+
+Processor = ItemProcessor[object, object] | ExpandProcessor[object, object]
+
+
+@dataclass(frozen=True, slots=True)
+class Pipeline:
+    processors: tuple[Processor, ...]
+
+    def __post_init__(self) -> None:
+        for previous, following in zip(self.processors, self.processors[1:]):
+            if not issubclass(previous.output_type, following.input_type):
+                raise TypeError(
+                    f'{type(previous).__name__} produces {_type_name(previous.output_type)}, '
+                    f'but {type(following).__name__} expects {_type_name(following.input_type)}'
+                )
+
+    def validate_boundaries(self, source_type: type, sink_type: type) -> None:
+        if not self.processors:
+            if not issubclass(source_type, sink_type):
+                raise TypeError(
+                    f'source produces {_type_name(source_type)}, but sink expects {_type_name(sink_type)}'
+                )
+            return
+        first, last = self.processors[0], self.processors[-1]
+        if not issubclass(source_type, first.input_type):
+            raise TypeError(
+                f'source produces {_type_name(source_type)}, but {type(first).__name__} '
+                f'expects {_type_name(first.input_type)}'
+            )
+        if not issubclass(last.output_type, sink_type):
+            raise TypeError(
+                f'{type(last).__name__} produces {_type_name(last.output_type)}, '
+                f'but sink expects {_type_name(sink_type)}'
+            )
+
+    def run(self, items: Iterable[object], context: Context) -> Iterator[object]:
+        stream: Iterable[object] = items
+        for processor in self.processors:
+            stream = processor.apply(stream, context)
+        yield from stream

@@ -6,11 +6,15 @@ from pathlib import Path
 from xxtrain.data import Bbox, ImageInfo, LabelCatalog
 from xxtrain.pipeline.core import (
     ClassifyOutput,
+    Context,
     ConversionConfig,
     ConversionReport,
     CropOutput,
     EncodeOutput,
+    ExpandProcessor,
     ImageRef,
+    ItemProcessor,
+    Pipeline,
     Sample,
 )
 from xxtrain.task import TaskType
@@ -72,6 +76,77 @@ class PipelineValueObjectsTest(unittest.TestCase):
         )
         with self.assertRaises(FrozenInstanceError):
             config.split = 2
+
+
+class AddOne(ItemProcessor[int, int]):
+    input_type = int
+    output_type = int
+
+    def transform(self, item: int, context: Context) -> int:
+        return item + 1
+
+
+class DropEven(ItemProcessor[int, int]):
+    input_type = int
+    output_type = int
+
+    def transform(self, item: int, context: Context) -> int | None:
+        return None if item % 2 == 0 else item
+
+
+class Duplicate(ExpandProcessor[int, str]):
+    input_type = int
+    output_type = str
+
+    def expand(self, item: int, context: Context):
+        yield f'{item}:a'
+        yield f'{item}:b'
+
+
+class PipelineEngineTest(unittest.TestCase):
+    def make_context(self) -> Context:
+        return Context(
+            config=ConversionConfig(
+                task_name='detect',
+                task_type=TaskType.DETECT,
+                root_path=Path('.'),
+                split=10,
+                labels=LabelCatalog(('dial',)),
+                reserve_no_label=True,
+            ),
+            report=ConversionReport(),
+        )
+
+    def test_pipeline_preserves_filter_and_expand_order(self) -> None:
+        pipeline = Pipeline((AddOne(), DropEven(), Duplicate()))
+        self.assertEqual(['1:a', '1:b', '3:a', '3:b'], list(pipeline.run((0, 1, 2), self.make_context())))
+
+    def test_empty_pipeline_passes_values_through(self) -> None:
+        self.assertEqual([1, 2], list(Pipeline(()).run((1, 2), self.make_context())))
+
+    def test_constructor_rejects_incompatible_neighbors(self) -> None:
+        with self.assertRaisesRegex(TypeError, 'Duplicate.*str.*AddOne.*int'):
+            Pipeline((Duplicate(), AddOne()))
+
+    def test_runtime_rejects_wrong_input_type(self) -> None:
+        with self.assertRaisesRegex(TypeError, 'AddOne.*expected int.*str'):
+            list(Pipeline((AddOne(),)).run(('bad',), self.make_context()))
+
+    def test_runtime_rejects_wrong_output_type(self) -> None:
+        class Broken(AddOne):
+            def transform(self, item: int, context: Context) -> int:
+                return 'bad'
+
+        with self.assertRaisesRegex(TypeError, 'Broken.*declared int.*str'):
+            list(Pipeline((Broken(),)).run((1,), self.make_context()))
+
+    def test_recipe_boundaries_are_checked(self) -> None:
+        pipeline = Pipeline((AddOne(), Duplicate()))
+        pipeline.validate_boundaries(int, str)
+        with self.assertRaisesRegex(TypeError, 'source.*str.*AddOne.*int'):
+            pipeline.validate_boundaries(str, str)
+        with self.assertRaisesRegex(TypeError, 'Duplicate.*str.*sink.*int'):
+            pipeline.validate_boundaries(int, int)
 
 
 if __name__ == '__main__':
