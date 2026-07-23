@@ -15,10 +15,21 @@ from xxtrain.data import (
     Polyline,
     RotatedBbox,
 )
-from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, ImageRef, MatchInput, Sample
+from xxtrain.pipeline.core import (
+    Context,
+    ConversionConfig,
+    ConversionReport,
+    CropOutput,
+    ImageRef,
+    MatchInput,
+    Sample,
+)
 from xxtrain.pipeline.processors import (
+    CropDetectionBoxes,
+    CropMatches,
     FilterLabels,
     FilterMatchingAnnotations,
+    MatchAnnotations,
     PartitionAnnotations,
     PrepareClassification,
     PrepareMatchChildren,
@@ -28,6 +39,7 @@ from xxtrain.pipeline.processors import (
     ReadLabelMe,
     ReadMatchingAnnotations,
     RelabelAnnotations,
+    RelabelCropAnnotations,
 )
 from xxtrain.task import TaskType
 
@@ -191,6 +203,98 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual('group', output.class_name)
         self.assertEqual('missing.jpg', output.output_name)
         self.assertIs(output.sample, sample)
+
+    def test_match_order_follows_first_child_hit(self) -> None:
+        sample = self.make_sample(Path('image.jpg'))
+        context = self.make_context(Path('.'))
+        parents = (
+            Bbox(label='p', x1=0, y1=0, x2=20, y2=20),
+            Bbox(label='p', x1=30, y1=0, x2=50, y2=20),
+        )
+        children = (
+            Polygon(label='c', points=((32, 2), (40, 2), (40, 10))),
+            Polygon(label='c', points=((2, 2), (10, 2), (10, 10))),
+        )
+        output = MatchAnnotations().transform(
+            MatchInput(sample=sample, parents=parents, children=children),
+            context,
+        )
+        self.assertEqual((parents[1], parents[0]), tuple(match.parent for match in output.matches))
+        self.assertEqual((children[0],), output.matches[0].children)
+        self.assertEqual((children[1],), output.matches[1].children)
+
+    def test_crop_matches_builds_deferred_views_in_match_order(self) -> None:
+        sample = self.make_sample(Path('image.jpg'))
+        context = self.make_context(Path('.'))
+        parents = (
+            Bbox(label='p', x1=0, y1=0, x2=20, y2=20),
+            Bbox(label='p', x1=30, y1=0, x2=50, y2=20),
+        )
+        children = (
+            Polygon(label='c', points=((32, 2), (40, 2), (40, 10))),
+            Polygon(label='c', points=((2, 2), (10, 2), (10, 10))),
+        )
+        match_output = MatchAnnotations().transform(
+            MatchInput(sample=sample, parents=parents, children=children),
+            context,
+        )
+        crops = tuple(CropMatches().expand(match_output, context))
+        self.assertEqual(('group/image_0', 'group/image_1'), tuple(crop.sample.id for crop in crops))
+        self.assertEqual(
+            (sample.source_index, sample.source_index),
+            tuple(crop.sample.source_index for crop in crops),
+        )
+        self.assertEqual(
+            (sample.source_group, sample.source_group),
+            tuple(crop.sample.source_group for crop in crops),
+        )
+        self.assertEqual(parents[1].bbox, crops[0].sample.image.crop_box)
+        self.assertEqual(ImageInfo(width=20, height=20), crops[0].sample.image.info)
+        self.assertFalse(Path('group/image_0.jpg').exists())
+        self.assertEqual(
+            ((2.0, 2.0), (10.0, 2.0), (10.0, 10.0)),
+            crops[0].sample.annotations[0].points,
+        )
+
+    def test_crop_detection_boxes_uses_legacy_classification_name(self) -> None:
+        annotations = (
+            Bbox(label='known', x1=0, y1=0, x2=20, y2=10),
+            Bbox(label='known', x1=30, y1=0, x2=50, y2=20),
+        )
+        sample_with_two_boxes = self.make_sample(Path('image.jpg'), annotations=annotations)
+        context = self.make_context(Path('.'))
+        outputs = tuple(CropDetectionBoxes().expand(sample_with_two_boxes, context))
+        self.assertEqual(
+            ('group_3_0.jpg', 'group_3_1.jpg'),
+            tuple(output.output_name for output in outputs),
+        )
+        self.assertEqual(
+            ('group/image_0', 'group/image_1'),
+            tuple(output.sample.id for output in outputs),
+        )
+        self.assertEqual((3, 3), tuple(output.sample.source_index for output in outputs))
+        self.assertEqual(('known', 'known'), tuple(output.class_name for output in outputs))
+        self.assertEqual((annotations[0].bbox, annotations[1].bbox), tuple(
+            output.sample.image.crop_box for output in outputs
+        ))
+        self.assertEqual(
+            (ImageInfo(width=20, height=10), ImageInfo(width=20, height=20)),
+            tuple(output.sample.image.info for output in outputs),
+        )
+        self.assertTrue(all(not output.sample.annotations for output in outputs))
+
+    def test_relabel_crop_annotations_preserves_crop_parent(self) -> None:
+        annotation = Polygon(label='source', points=((1, 1), (2, 1), (2, 2)))
+        parent = Bbox(label='parent', x1=0, y1=0, x2=4, y2=4)
+        crop = CropOutput(
+            sample=self.make_sample(Path('image.jpg'), annotations=(annotation,)),
+            parent=parent,
+        )
+        output = RelabelCropAnnotations('target').transform(crop, self.make_context(Path('.')))
+        self.assertEqual('source', crop.sample.annotations[0].label)
+        self.assertEqual('target', output.sample.annotations[0].label)
+        self.assertEqual(annotation.id, output.sample.annotations[0].id)
+        self.assertIs(parent, output.parent)
 
 
 if __name__ == '__main__':

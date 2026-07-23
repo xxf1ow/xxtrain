@@ -16,7 +16,18 @@ from xxtrain.data import (
     Shape,
 )
 from xxtrain.data.formats import read_labelimg, read_labelme
-from xxtrain.pipeline.core import ClassifyOutput, Context, ItemProcessor, MatchInput, Sample
+from xxtrain.data.geometry import match_parent_children
+from xxtrain.pipeline.core import (
+    AnnotationMatch,
+    ClassifyOutput,
+    Context,
+    CropOutput,
+    ExpandProcessor,
+    ItemProcessor,
+    MatchInput,
+    MatchOutput,
+    Sample,
+)
 from xxtrain.task import TaskType
 
 
@@ -222,3 +233,92 @@ class PrepareClassification(ItemProcessor[Sample, ClassifyOutput]):
 
     def transform(self, item: Sample, context: Context) -> ClassifyOutput:
         return ClassifyOutput(sample=item, class_name=item.source_group, output_name=item.image.path.name)
+
+
+class MatchAnnotations(ItemProcessor[MatchInput, MatchOutput]):
+    input_type = MatchInput
+    output_type = MatchOutput
+
+    def __init__(self, wide: float = 0, strict: bool = True):
+        self.wide = wide
+        self.strict = strict
+
+    def transform(self, item: MatchInput, context: Context) -> MatchOutput:
+        mapping = match_parent_children(
+            item.parents,
+            item.children,
+            image_path=str(item.sample.image.path),
+            wide=self.wide,
+            strict=self.strict,
+        )
+        parents = {parent.id: parent for parent in item.parents}
+        children = {child.id: child for child in item.children}
+        matches = tuple(
+            AnnotationMatch(
+                parent=parents[parent_id],
+                children=tuple(children[child_id] for child_id in child_ids),
+            )
+            for parent_id, child_ids in mapping.items()
+        )
+        return MatchOutput(sample=item.sample, matches=matches)
+
+
+class CropMatches(ExpandProcessor[MatchOutput, CropOutput]):
+    input_type = MatchOutput
+    output_type = CropOutput
+
+    def expand(self, item: MatchOutput, context: Context):
+        for crop_index, match in enumerate(item.matches):
+            x1, y1, x2, y2 = match.parent.bbox
+            image = item.sample.image.wrap(
+                crop_box=match.parent.bbox,
+                info=ImageInfo(width=int(x2 - x1), height=int(y2 - y1)),
+            )
+            sample = item.sample.wrap(
+                id=f'{item.sample.id}_{crop_index}',
+                image=image,
+                annotations=tuple(child.translate(-x1, -y1) for child in match.children),
+            )
+            yield CropOutput(sample=sample, parent=match.parent)
+
+
+class CropDetectionBoxes(ExpandProcessor[Sample, ClassifyOutput]):
+    input_type = Sample
+    output_type = ClassifyOutput
+
+    def expand(self, item: Sample, context: Context):
+        for crop_index, annotation in enumerate(item.annotations):
+            if not isinstance(annotation, Bbox):
+                raise TypeError(
+                    f'CropDetectionBoxes requires Bbox, got {type(annotation).__name__}'
+                )
+            x1, y1, x2, y2 = map(int, annotation.bbox)
+            sample = item.wrap(
+                id=f'{item.id}_{crop_index}',
+                image=item.image.wrap(
+                    crop_box=annotation.bbox,
+                    info=ImageInfo(width=x2 - x1, height=y2 - y1),
+                ),
+                annotations=(),
+            )
+            yield ClassifyOutput(
+                sample=sample,
+                class_name=annotation.label,
+                output_name=f'{item.source_group}_{item.source_index}_{crop_index}.jpg',
+            )
+
+
+class RelabelCropAnnotations(ItemProcessor[CropOutput, CropOutput]):
+    input_type = CropOutput
+    output_type = CropOutput
+
+    def __init__(self, label: str):
+        self.label = label
+
+    def transform(self, item: CropOutput, context: Context) -> CropOutput:
+        sample = item.sample.wrap(
+            annotations=tuple(
+                annotation.wrap(label=self.label) for annotation in item.sample.annotations
+            )
+        )
+        return CropOutput(sample=sample, parent=item.parent)
