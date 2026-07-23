@@ -282,7 +282,7 @@ class PipelineRecipeTest(unittest.TestCase):
             missing_root = Path(temp_dir) / 'does-not-exist'
             for task_name in ('obb', 'custom'):
                 with self.subTest(task_name=task_name):
-                    with self.assertRaisesRegex(ValueError, 'Unsupported standard task'):
+                    with self.assertRaisesRegex(ValueError, f'Unsupported task type: {task_name}'):
                         build_recipe(task_name, missing_root)
 
 

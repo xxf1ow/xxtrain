@@ -87,7 +87,7 @@ def build_recipe(
         try:
             task_type = _CUSTOM_TASK_TYPES[task_name]
         except KeyError:
-            raise ValueError(f'Unsupported standard task: {task_name}') from None
+            raise ValueError(f'Unsupported task type: {task_name}') from None
 
     root = Path(root_path)
     if task_name == 'point-detect':
