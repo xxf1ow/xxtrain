@@ -5,7 +5,7 @@ from xxtrain.data import LabelCatalog
 from xxtrain.task import TaskType
 
 from .core import Context, ConversionConfig, ConversionReport, Pipeline
-from .discovery import DirectorySource, SampleSource, validate_classification_source
+from .discovery import DirectorySource, SampleSource
 from .processors import (
     CropDetectionBoxes,
     CropMatches,
@@ -35,13 +35,6 @@ POINT_LABELS = ('tl', 'tc', 'cl', 'cc')
 KNOB_LABELS = ('switch',)
 LIGHT1_LABELS = ('1008',)
 
-_STANDARD_TASK_TYPES = {
-    'detect': TaskType.DETECT,
-    'segment': TaskType.SEGMENT,
-    'pose': TaskType.POSE,
-    'classify': TaskType.CLASSIFY,
-}
-
 _CUSTOM_TASK_TYPES = {
     'point-detect': TaskType.DETECT,
     'point-classify': TaskType.CLASSIFY,
@@ -51,6 +44,18 @@ _CUSTOM_TASK_TYPES = {
     'light1-detect': TaskType.DETECT,
     'light2-detect': TaskType.DETECT,
 }
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DatasetRecipe:
+    name: str
+    task_type: TaskType
+    labels: LabelCatalog | None
+    pipeline: Pipeline
+    sink: DatasetSink
+
+    def __post_init__(self) -> None:
+        self.pipeline.validate_boundaries(DirectorySource.output_type, self.sink.input_type)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -80,6 +85,53 @@ def _read_labels(root_path: Path, *, strict: bool) -> LabelCatalog:
     return LabelCatalog(labels) if strict else _LegacyLabelCatalog(labels)
 
 
+def standard_recipe(task_type: TaskType) -> DatasetRecipe:
+    if task_type is TaskType.DETECT:
+        return DatasetRecipe(
+            name='detect',
+            task_type=task_type,
+            labels=None,
+            pipeline=Pipeline((ReadImageInfo(), ReadLabelImg(), FilterLabels(), EncodeDetection())),
+            sink=YoloDatasetSink(),
+        )
+    if task_type is TaskType.SEGMENT:
+        return DatasetRecipe(
+            name='segment',
+            task_type=task_type,
+            labels=None,
+            pipeline=Pipeline(
+                (ReadImageInfo(), ReadLabelMe(), FilterLabels(), PrepareSegmentShapes(), EncodeSegment())
+            ),
+            sink=YoloDatasetSink(),
+        )
+    if task_type is TaskType.POSE:
+        return DatasetRecipe(
+            name='pose',
+            task_type=task_type,
+            labels=None,
+            pipeline=Pipeline(
+                (
+                    ReadImageInfo(),
+                    ReadMatchingAnnotations(),
+                    FilterMatchingAnnotations(),
+                    PrepareMatchChildren(TaskType.POSE),
+                    MatchAnnotations(),
+                    EncodePose(),
+                )
+            ),
+            sink=YoloDatasetSink(),
+        )
+    if task_type is TaskType.CLASSIFY:
+        return DatasetRecipe(
+            name='classify',
+            task_type=task_type,
+            labels=None,
+            pipeline=Pipeline((PrepareClassification(),)),
+            sink=ClassificationDatasetSink(),
+        )
+    raise ValueError(f'Unsupported standard task type: {task_type.value}')
+
+
 def build_recipe(
     task_name: str,
     root_path: str | Path,
@@ -88,12 +140,9 @@ def build_recipe(
     reserve_no_label: bool = True,
 ) -> tuple[Recipe, Context]:
     try:
-        task_type = _STANDARD_TASK_TYPES[task_name]
+        task_type = _CUSTOM_TASK_TYPES[task_name]
     except KeyError:
-        try:
-            task_type = _CUSTOM_TASK_TYPES[task_name]
-        except KeyError:
-            raise ValueError(f'Unsupported task type: {task_name}') from None
+        raise ValueError(f'Unsupported task type: {task_name}') from None
 
     root = Path(root_path)
     if task_name == 'point-detect':
@@ -108,10 +157,6 @@ def build_recipe(
         labels = LabelCatalog(LIGHT1_LABELS)
     elif task_name == 'light2-detect':
         labels = LabelCatalog(('0',))
-    else:
-        labels = _read_labels(root, strict=task_type is TaskType.CLASSIFY)
-        if task_type is TaskType.CLASSIFY:
-            labels = validate_classification_source(root, labels, split)
 
     context = Context(
         config=ConversionConfig(
@@ -207,29 +252,6 @@ def build_recipe(
             )
         )
         sink = YoloDatasetSink()
-    elif task_type is TaskType.DETECT:
-        pipeline = Pipeline((ReadImageInfo(), ReadLabelImg(), FilterLabels(), EncodeDetection()))
-        sink = YoloDatasetSink()
-    elif task_type is TaskType.SEGMENT:
-        pipeline = Pipeline(
-            (ReadImageInfo(), ReadLabelMe(), FilterLabels(), PrepareSegmentShapes(), EncodeSegment())
-        )
-        sink = YoloDatasetSink()
-    elif task_type is TaskType.POSE:
-        pipeline = Pipeline(
-            (
-                ReadImageInfo(),
-                ReadMatchingAnnotations(),
-                FilterMatchingAnnotations(),
-                PrepareMatchChildren(TaskType.POSE),
-                MatchAnnotations(),
-                EncodePose(),
-            )
-        )
-        sink = YoloDatasetSink()
-    else:
-        pipeline = Pipeline((PrepareClassification(),))
-        sink = ClassificationDatasetSink()
 
     recipe = Recipe(
         name=task_name,

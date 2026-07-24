@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from test.support.output_manifest import collect_output_manifest
+from test.support.scenarios import recipe_for_case
 from xxtrain.pipeline import convert_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +39,12 @@ def update_snapshots() -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
             root_path = Path(temp_dir) / fixture_name
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
-            convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+            convert_dataset(
+                recipe_for_case(task_type, root_path),
+                root_path,
+                split=10,
+                reserve_no_label=False,
+            )
             manifest = collect_output_manifest(root_path, task_type)
         snapshot = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
         expected_path = EXPECTED_PATH / f'{task_type}.json'
@@ -54,7 +60,12 @@ class ConversionBaselineTest(unittest.TestCase):
 
             with warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter('always', ResourceWarning)
-                convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+                convert_dataset(
+                    recipe_for_case(task_type, root_path),
+                    root_path,
+                    split=10,
+                    reserve_no_label=False,
+                )
                 gc.collect()
             resource_warnings = [item for item in caught_warnings if issubclass(item.category, ResourceWarning)]
             self.assertEqual([], resource_warnings)

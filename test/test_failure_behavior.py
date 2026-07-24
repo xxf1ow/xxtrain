@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test.support.output_manifest import collect_output_manifest
+from test.support.scenarios import recipe_for_case
 from xxtrain.data import ImageInfo
 from xxtrain.data.formats import read_labelimg, read_labelme
 from xxtrain.pipeline import convert_dataset
@@ -57,14 +58,24 @@ class FailureBehaviorTest(unittest.TestCase):
 
     def test_unknown_task_type_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, 'Unsupported task type: unknown'):
-            convert_dataset('unknown', 'unused', split=10, reserve_no_label=False)
+            convert_dataset(
+                recipe_for_case('unknown', 'unused'),
+                'unused',
+                split=10,
+                reserve_no_label=False,
+            )
 
     def test_classification_rejects_extra_class_directory(self) -> None:
         root_path = self.copy_fixture('standard-classify')
         (root_path / 'src' / 'extra' / 'imgs').mkdir(parents=True)
 
         with self.assertRaisesRegex(ValueError, 'Classification labels mismatch'):
-            convert_dataset('classify', str(root_path), split=10, reserve_no_label=False)
+            convert_dataset(
+                recipe_for_case('classify', root_path),
+                root_path,
+                split=10,
+                reserve_no_label=False,
+            )
 
     def test_classification_rejects_split_without_train_samples(self) -> None:
         root_path = self.copy_fixture('standard-classify')
@@ -76,14 +87,24 @@ class FailureBehaviorTest(unittest.TestCase):
                 image_path.unlink()
 
         with self.assertRaisesRegex(ValueError, 'without train or val samples'):
-            convert_dataset('classify', str(root_path), split=10, reserve_no_label=False)
+            convert_dataset(
+                recipe_for_case('classify', root_path),
+                root_path,
+                split=10,
+                reserve_no_label=False,
+            )
 
     def test_symlink_failure_falls_back_to_copied_images(self) -> None:
         for task_type, fixture_name in SYMLINK_FALLBACK_CASES:
             with self.subTest(task_type=task_type):
                 root_path = self.copy_fixture(fixture_name)
                 with unavailable_symlinks():
-                    convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+                    convert_dataset(
+                        recipe_for_case(task_type, root_path),
+                        root_path,
+                        split=10,
+                        reserve_no_label=False,
+                    )
 
                 actual = collect_output_manifest(root_path, task_type)
                 expected = json.loads((EXPECTED_PATH / f'{task_type}.json').read_text(encoding='utf-8'))

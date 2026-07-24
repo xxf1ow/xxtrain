@@ -2,9 +2,11 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from test.test_conversion_baseline import FIXTURES_PATH, PROJECT_ROOT
 from xxtrain.data import LabelCatalog
+from xxtrain.pipeline import DatasetRecipe, convert_dataset, standard_recipe
 from xxtrain.pipeline.core import Pipeline
 from xxtrain.pipeline.discovery import DirectorySource
 from xxtrain.pipeline.processors import (
@@ -30,23 +32,9 @@ from xxtrain.pipeline.processors import (
     RelabelAnnotations,
     RelabelCropAnnotations,
 )
-from xxtrain.pipeline.recipes import Recipe, build_recipe
+from xxtrain.pipeline.recipes import build_recipe
 from xxtrain.pipeline.sinks import ClassificationDatasetSink, YoloDatasetSink
 from xxtrain.task import TaskType
-
-EXPECTED_STANDARD_PROCESSORS = {
-    'detect': (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
-    'segment': (ReadImageInfo, ReadLabelMe, FilterLabels, PrepareSegmentShapes, EncodeSegment),
-    'pose': (
-        ReadImageInfo,
-        ReadMatchingAnnotations,
-        FilterMatchingAnnotations,
-        PrepareMatchChildren,
-        MatchAnnotations,
-        EncodePose,
-    ),
-    'classify': (PrepareClassification,),
-}
 
 EXPECTED_CUSTOM_PROCESSORS = {
     'point-detect': (ReadImageInfo, ReadLabelImg, FilterLabels, RelabelAnnotations, EncodeDetection),
@@ -111,24 +99,37 @@ class PipelineRecipeTest(unittest.TestCase):
         shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
         return root_path
 
+    def converted_labels(self, task_type: TaskType, root_path: Path) -> LabelCatalog:
+        with (
+            patch.object(DirectorySource, 'read', return_value=iter(())),
+            patch('xxtrain.pipeline.workflow.print_conversion_report') as print_report,
+        ):
+            convert_dataset(standard_recipe(task_type), root_path)
+        (context,) = print_report.call_args.args
+        return context.config.labels
+
     def test_pipeline_public_api_exports_stable_symbols(self) -> None:
         from xxtrain.pipeline import (
             Context,
             ConversionConfig,
             ConversionReport,
+            DatasetRecipe,
             ExpandProcessor,
             ImageRef,
             ItemProcessor,
             Pipeline,
             Sample,
             convert_dataset,
+            standard_recipe,
         )
 
         self.assertTrue(callable(convert_dataset))
+        self.assertTrue(callable(standard_recipe))
         self.assertTrue(all(value is not None for value in (
             Context,
             ConversionConfig,
             ConversionReport,
+            DatasetRecipe,
             ExpandProcessor,
             ImageRef,
             ItemProcessor,
@@ -137,22 +138,42 @@ class PipelineRecipeTest(unittest.TestCase):
         )))
 
     def test_standard_recipe_processor_sequences(self) -> None:
-        fixtures = {
-            'detect': 'standard-detect',
-            'segment': 'standard-segment',
-            'pose': 'standard-pose',
-            'classify': 'standard-classify',
+        expected = {
+            TaskType.DETECT: (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
+            TaskType.SEGMENT: (
+                ReadImageInfo,
+                ReadLabelMe,
+                FilterLabels,
+                PrepareSegmentShapes,
+                EncodeSegment,
+            ),
+            TaskType.POSE: (
+                ReadImageInfo,
+                ReadMatchingAnnotations,
+                FilterMatchingAnnotations,
+                PrepareMatchChildren,
+                MatchAnnotations,
+                EncodePose,
+            ),
+            TaskType.CLASSIFY: (PrepareClassification,),
         }
-        for task_name, expected_types in EXPECTED_STANDARD_PROCESSORS.items():
-            with self.subTest(task_name=task_name):
-                root_path = self.copy_fixture(fixtures[task_name])
-                recipe, _ = build_recipe(
-                    task_name,
-                    root_path,
-                    split=10,
-                    reserve_no_label=False,
+        for task_type, processor_types in expected.items():
+            with self.subTest(task_type=task_type):
+                recipe = standard_recipe(task_type)
+                self.assertEqual(
+                    processor_types,
+                    tuple(type(processor) for processor in recipe.pipeline.processors),
                 )
-                self.assertEqual(expected_types, tuple(type(value) for value in recipe.pipeline.processors))
+                self.assertIsNone(recipe.labels)
+
+    def test_convert_dataset_uses_recipe_and_false_reserve_default(self) -> None:
+        root_path = self.copy_fixture('standard-detect')
+        recipe = standard_recipe(TaskType.DETECT)
+
+        report = convert_dataset(recipe, root_path)
+
+        self.assertEqual(2, report.train_image_count + report.val_image_count)
+        self.assertTrue((root_path / 'detect' / 'dataset.yaml').is_file())
 
     def test_custom_recipe_processor_sequences_and_label_catalogs(self) -> None:
         for task_name, expected_types in EXPECTED_CUSTOM_PROCESSORS.items():
@@ -265,8 +286,8 @@ class PipelineRecipeTest(unittest.TestCase):
                     line.strip()
                     for line in (root_path / 'src' / 'labels.txt').read_text(encoding='utf-8').splitlines()
                 )
-                recipe, _ = build_recipe(task_name, root_path)
-                self.assertEqual(expected, recipe.labels.names)
+                labels = self.converted_labels(TaskType(task_name), root_path)
+                self.assertEqual(expected, labels.names)
 
     def test_non_classification_recipes_preserve_legacy_empty_and_duplicate_labels(self) -> None:
         fixtures = {
@@ -283,53 +304,33 @@ class PipelineRecipeTest(unittest.TestCase):
                 labels_path.write_text('\n'.join(expected), encoding='utf-8')
 
                 try:
-                    recipe, _ = build_recipe(task_name, root_path)
+                    labels = self.converted_labels(TaskType(task_name), root_path)
                 except ValueError as error:
                     self.fail(f'legacy labels were rejected: {error}')
 
-                self.assertEqual(expected, recipe.labels.names)
+                self.assertEqual(expected, labels.names)
 
     def test_classification_labels_are_sorted(self) -> None:
         root_path = self.copy_fixture('standard-classify')
         (root_path / 'src' / 'labels.txt').write_text('Uab\nIA\nP\n', encoding='utf-8')
 
-        recipe, context = build_recipe('classify', root_path)
+        labels = self.converted_labels(TaskType.CLASSIFY, root_path)
 
-        self.assertEqual(('IA', 'P', 'Uab'), recipe.labels.names)
-        self.assertIs(recipe.labels, context.config.labels)
+        self.assertEqual(('IA', 'P', 'Uab'), labels.names)
 
-    def test_standard_recipes_use_directory_source_and_task_specific_sinks(self) -> None:
-        fixtures = {
-            'detect': 'standard-detect',
-            'segment': 'standard-segment',
-            'pose': 'standard-pose',
-            'classify': 'standard-classify',
-        }
-        for task_name, fixture_name in fixtures.items():
-            with self.subTest(task_name=task_name):
-                recipe, _ = build_recipe(task_name, self.copy_fixture(fixture_name))
-                self.assertIsInstance(recipe.source, DirectorySource)
-                expected_sink = ClassificationDatasetSink if task_name == 'classify' else YoloDatasetSink
-                self.assertIsInstance(recipe.sink, expected_sink)
-
-    def test_recipe_validates_pipeline_sink_boundary(self) -> None:
+    def test_recipe_validates_fixed_source_and_sink_boundaries(self) -> None:
         with self.assertRaisesRegex(TypeError, 'PrepareClassification produces ClassifyOutput'):
-            Recipe(
+            DatasetRecipe(
                 name='classify',
                 task_type=TaskType.CLASSIFY,
                 labels=LabelCatalog(('label',)),
-                source=DirectorySource(),
                 pipeline=Pipeline((PrepareClassification(),)),
                 sink=YoloDatasetSink(),
             )
 
-    def test_unsupported_task_is_rejected_before_filesystem_access(self) -> None:
-        with tempfile.TemporaryDirectory(prefix='xxtrain-recipe-') as temp_dir:
-            missing_root = Path(temp_dir) / 'does-not-exist'
-            for task_name in ('obb', 'custom'):
-                with self.subTest(task_name=task_name):
-                    with self.assertRaisesRegex(ValueError, f'Unsupported task type: {task_name}'):
-                        build_recipe(task_name, missing_root)
+    def test_standard_recipe_rejects_unsupported_basic_task(self) -> None:
+        with self.assertRaisesRegex(ValueError, 'Unsupported standard task type: obb'):
+            standard_recipe(TaskType.OBB)
 
 
 if __name__ == '__main__':
