@@ -128,7 +128,7 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 - `standard_recipe()` 只拥有 detect、segment、pose、classify 四个标准 Recipe；point、knob、light 七个特殊 Recipe 由各自的 Scenario 文件拥有，不再保留中央任务名注册表。
 - 训练、独立导出和预测结果检查分别由 `src/train.py`、`src/export.py` 和 `src/review.py` 调用 `xxtrain.training`。`review.py` 检查预测结果，不调用 `model.val()` 重新计算验证指标。
 - `xxtrain.training` 包级受支持 API 固定为：`TrainingScenario`、`load_scenario`、`train`、`export`、`review`。
-- 12 个预置 Scenario 已用强制添加方式纳入 Git。由于 `data/` 默认被忽略，新增 Scenario 仍需执行 `git add -f data/<dataset>/<scenario>.py`。
+- 13 个预置 Scenario 已用强制添加方式纳入 Git。`standard_classify.py` 保留默认训练参数，`direction_sensitive_classify.py` 提供标准 Pipeline 的方向敏感参考，`tuned_classify.py` 承接原 `digit_cls.py` 的完整参数覆盖；`point_classify.py` 同样显式禁用水平/垂直翻转、旋转和自动增强。由于 `data/` 默认被忽略，新增 Scenario 仍需执行 `git add -f data/<dataset>/<scenario>.py`。
 - 模型 YAML 继续复制当前 Ultralytics 模板，只修改 `nc`，pose 额外修改 `kpt_shape`；ONNX 导出失败直接向入口传播。
 - 所有任务统一以 `<scenario_dir>/<recipe.name>/dataset.yaml` 作为转换完成信号。分类 Sink 在 finalize 最后生成该文件；仅存在 `train/<class>/` 或 `val/<class>/` 等部分目录时必须重新转换，不能把中断后的部分数据集误判为完成。
 

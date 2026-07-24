@@ -71,6 +71,8 @@ Relative `Path` values inside Scenario `train_args` resolve against the Scenario
 
 `TrainingScenario`, `load_scenario`, `train`, `export`, and `review`.
 
+Tracked classification Scenarios demonstrate three training policies under `data/standard-classify/`: `standard_classify.py` keeps the standard arguments, `direction_sensitive_classify.py` disables horizontal/vertical flips, rotation, and automatic augmentation, and `tuned_classify.py` shows a larger experimentally selected override set. The special `data/point/point_classify.py` Scenario declares the same four direction-sensitive constraints while retaining its crop-based Dataset Recipe. Non-standard arguments belong in each Scenario and must not be added to task-wide classification defaults.
+
 Model-template handling, pretrained-weight preparation, classification mismatch reporting, and other orchestration details remain internal.
 
 ## Commands
