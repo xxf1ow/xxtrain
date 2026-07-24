@@ -168,9 +168,21 @@ class TrainingWorkflowTest(unittest.TestCase):
         result.model.load.assert_called_once_with(result.pretrained_path)
         result.export_model_to_onnx.assert_called_once_with(result.best_model, self.root, result.model_name)
 
-    def test_existing_classification_output_skips_conversion(self) -> None:
+    def test_partial_classification_output_without_dataset_yaml_reconverts(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.CLASSIFY))
-        (self.root / scenario.dataset.name).mkdir()
+        (self.root / scenario.dataset.name / 'train' / 'partial-class').mkdir(parents=True)
+
+        result = self.run_workflow(scenario)
+
+        result.convert_dataset.assert_called_once_with(
+            scenario.dataset, self.root, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+        )
+
+    def test_existing_classification_dataset_yaml_skips_conversion(self) -> None:
+        scenario = TrainingScenario(dataset=standard_recipe(TaskType.CLASSIFY))
+        dataset_yaml = self.root / scenario.dataset.name / 'dataset.yaml'
+        dataset_yaml.parent.mkdir()
+        dataset_yaml.touch()
 
         result = self.run_workflow(scenario)
 

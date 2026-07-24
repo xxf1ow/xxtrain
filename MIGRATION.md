@@ -130,6 +130,7 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 - `xxtrain.training` 包级受支持 API 固定为：`TrainingScenario`、`load_scenario`、`train`、`export`、`review`。
 - 12 个预置 Scenario 已用强制添加方式纳入 Git。由于 `data/` 默认被忽略，新增 Scenario 仍需执行 `git add -f data/<dataset>/<scenario>.py`。
 - 模型 YAML 继续复制当前 Ultralytics 模板，只修改 `nc`，pose 额外修改 `kpt_shape`；ONNX 导出失败直接向入口传播。
+- 所有任务统一以 `<scenario_dir>/<recipe.name>/dataset.yaml` 作为转换完成信号。分类 Sink 在 finalize 最后生成该文件；仅存在 `train/<class>/` 或 `val/<class>/` 等部分目录时必须重新转换，不能把中断后的部分数据集误判为完成。
 
 ## 第三阶段：建立打包配置
 
@@ -142,7 +143,7 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 ## 已确认的迁移边界
 
 - LabelImg、LabelMe、YOLO 的统一双向导入导出接口属于迁移后的功能补齐。当前只承接原有转换方向。
-- 当前工作流在目标数据集产物已存在时跳过转换。源数据变化检测、失效判断和强制重建机制留待后续设计。
+- 当前工作流仅在目标数据集的 `dataset.yaml` 已存在时跳过转换。该文件表示 Sink 已执行 finalize，但不承担源数据变化检测或完整性校验；失效判断和强制重建机制留待后续设计。
 - 不保留新旧管线兼容层。开发期间允许整体功能暂时不可用，但入口切换只能在新架构承接全部既有配方后进行。
 - 发现的算法缺陷和校验策略变化单独处理；迁移提交只承担结构变化与经确认的行为等价转换。
 

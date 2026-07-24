@@ -30,8 +30,7 @@ def train(scenario_path: str | Path) -> None:
     dataset_root = root / scenario.dataset.name
     dataset_yaml = dataset_root / 'dataset.yaml'
 
-    dataset_exists = dataset_root.exists() if scenario.dataset.task_type is TaskType.CLASSIFY else dataset_yaml.exists()
-    if not dataset_exists:
+    if not dataset_yaml.exists():
         convert_dataset(scenario.dataset, root, split=scenario.split, reserve_no_label=scenario.reserve_no_label)
 
     name, model_yaml_path = generate_model_yaml(scenario, root)
