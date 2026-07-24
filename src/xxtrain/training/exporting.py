@@ -34,18 +34,14 @@ def copy_class_reference_images(
 
 
 def export_model_to_onnx(best_model: YOLO, root_path: str | Path, name: str) -> Path | None:
-    try:
-        print('🚀 Exporting best model to ONNX format ...')
-        temp_onnx_path = best_model.export(format='onnx', simplify=True)
-        formatted_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        onnx_path = Path(root_path) / 'weights' / f'{name}_{formatted_time}.onnx'
-        onnx_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(temp_onnx_path, onnx_path)
-        print(f'✅ Model exported to ONNX format: {onnx_path}')
-        return onnx_path
-    except Exception as error:
-        print(f'❌ Failed to export model to ONNX format: {error}')
-        return None
+    print('🚀 Exporting best model to ONNX format ...')
+    temp_onnx_path = best_model.export(format='onnx', simplify=True)
+    formatted_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    onnx_path = Path(root_path) / 'weights' / f'{name}_{formatted_time}.onnx'
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(temp_onnx_path, onnx_path)
+    print(f'✅ Model exported to ONNX format: {onnx_path}')
+    return onnx_path
 
 
 def export(scenario_path: str | Path, weights: str | Path) -> Path:

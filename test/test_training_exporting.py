@@ -80,13 +80,13 @@ class TrainingExportingTest(unittest.TestCase):
             self.assertTrue(expected.is_file())
             self.assertFalse(expected.with_name(f'{expected.stem}_references').exists())
 
-    def test_export_temporarily_preserves_swallowed_model_export_failure(self) -> None:
+    def test_export_propagates_model_export_failure(self) -> None:
         model = MagicMock()
         model.export.side_effect = RuntimeError('export failed')
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            with patch('builtins.print'):
-                self.assertIsNone(export_model_to_onnx(model, root, 'yolov8n'))
+            with self.assertRaisesRegex(RuntimeError, 'export failed'):
+                export_model_to_onnx(model, root, 'yolov8n')
 
 
 if __name__ == '__main__':
