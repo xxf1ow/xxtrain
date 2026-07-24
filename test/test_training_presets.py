@@ -28,6 +28,21 @@ from xxtrain.task import TaskType
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 
+DIRECTION_SENSITIVE_TRAIN_ARGS = {'fliplr': 0.0, 'flipud': 0.0, 'degrees': 0.0, 'auto_augment': None}
+
+DEFAULT_TRAINING_PRESETS = {
+    'detect',
+    'segment',
+    'pose',
+    'classify',
+    'point-detect',
+    'point-segment',
+    'knob-detect',
+    'knob-segment',
+    'light1-detect',
+    'light2-detect',
+}
+
 EXPECTED_SPECIAL_PROCESSORS = {
     'point-detect': (ReadImageInfo, ReadLabelImg, FilterLabels, RelabelAnnotations, EncodeDetection),
     'point-classify': (ReadImageInfo, ReadLabelImg, FilterLabels, CropDetectionBoxes),
@@ -80,12 +95,15 @@ class TrainingPresetTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNotNone(load_case_scenario(name))
 
-    def test_first_eleven_presets_use_standard_training_args(self) -> None:
-        for name in SCENARIO_PATHS:
-            if name == 'digit-cls':
-                continue
+    def test_presets_without_training_overrides_use_standard_arguments(self) -> None:
+        for name in DEFAULT_TRAINING_PRESETS:
             with self.subTest(name=name):
                 self.assertEqual({}, load_case_scenario(name).train_args)
+
+    def test_point_classification_preserves_direction_sensitive_training_arguments(self) -> None:
+        scenario = load_case_scenario('point-classify')
+
+        self.assertEqual(DIRECTION_SENSITIVE_TRAIN_ARGS, scenario.train_args)
 
     def test_digit_cls_reuses_standard_classify_recipe_with_overrides(self) -> None:
         standard = load_case_scenario('classify')

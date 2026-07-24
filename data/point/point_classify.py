@@ -14,5 +14,6 @@ SCENARIO = TrainingScenario(
             (ReadImageInfo(), ReadLabelImg(), FilterLabels(('tl', 'tc', 'cl', 'cc')), CropDetectionBoxes())
         ),
         sink=ClassificationDatasetSink(indexed_class_directories=True),
-    )
+    ),
+    train_args={'fliplr': 0.0, 'flipud': 0.0, 'degrees': 0.0, 'auto_augment': None},
 )
