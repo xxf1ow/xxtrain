@@ -100,10 +100,23 @@ class AnnotationTest(unittest.TestCase):
             with self.subTest(factory=factory), self.assertRaises(ValueError):
                 factory()
 
-    def test_image_info_requires_positive_integer_dimensions(self) -> None:
-        info = ImageInfo(width=1920, height=1080)
-        self.assertEqual((1920, 1080), (info.width, info.height))
-        for width, height in ((0, 1), (1, 0), (1.5, 2), (True, 2)):
+    def test_image_info_accepts_positive_finite_coordinate_extents(self) -> None:
+        integer_info = ImageInfo(width=1920, height=1080)
+        fractional_info = ImageInfo(width=20.6, height=10.5)
+        self.assertEqual((1920.0, 1080.0), (integer_info.width, integer_info.height))
+        self.assertEqual((20.6, 10.5), (fractional_info.width, fractional_info.height))
+        self.assertIs(type(integer_info.width), float)
+        self.assertIs(type(integer_info.height), float)
+        self.assertIs(type(fractional_info.width), float)
+        self.assertIs(type(fractional_info.height), float)
+        for width, height in (
+            (0, 1),
+            (1, 0),
+            (-1, 2),
+            (float('nan'), 2),
+            (float('inf'), 2),
+            (True, 2),
+        ):
             with self.subTest(width=width, height=height), self.assertRaises(ValueError):
                 ImageInfo(width=width, height=height)
 

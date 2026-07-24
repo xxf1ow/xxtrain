@@ -38,9 +38,8 @@ Coordinate rules:
 
 - Annotation coordinates are `float`, including `Bbox` fields, point tuples, translation offsets, geometry results, and YOLO normalization inputs.
 - LabelImg and LabelMe readers convert coordinates to `float`; do not truncate or round them in the data/model layer.
-- `ImageInfo.width` and `ImageInfo.height` are positive `int` values because they describe raster dimensions, not annotation coordinates.
-- Quantization is allowed only at an explicit raster boundary such as OpenCV array slicing. Keep the original float geometry available for matching and encoding.
-- `CropMatches` currently derives crop `ImageInfo` with `int(x2 - x1)` / `int(y2 - y1)`. This differs from the legacy float geometric extent for fractional parent boxes and is a known migration-parity issue; do not treat the cast as the intended coordinate contract.
+- `ImageInfo.width` and `ImageInfo.height` use a single `float` memory representation. Integer raster dimensions are accepted at construction and normalized to `float`; a virtual crop-local coordinate extent retains its fractional value.
+- Do not truncate or round coordinates or coordinate extents in sources, processors, matching, or encoding. Quantization is allowed only at an explicit raster boundary such as OpenCV array slicing.
 
 ### `xxtrain.pipeline`
 
@@ -135,6 +134,6 @@ Non-classification outputs are written under `<root_path>/<task_name>/` as image
 
 - Behavior baseline: complete.
 - Data layer migration: complete.
-- Typed pipeline and conversion-entry cutover: implemented; the fractional crop-size parity issue above remains to be resolved before declaring the pipeline migration gate closed.
+- Typed pipeline and conversion-entry cutover: complete.
 - Training workflow/package entry migration: not started.
 - Packaging and installable CLI: not started.

@@ -260,12 +260,32 @@ class PipelineProcessorTest(unittest.TestCase):
             crops[0].sample.annotations[0].points,
         )
 
+    def test_crop_matches_preserves_fractional_coordinate_extent(self) -> None:
+        sample = self.make_sample(Path('image.jpg'))
+        context = self.make_context(Path('.'))
+        parent = Bbox(label='p', x1=0.2, y1=0.4, x2=20.8, y2=10.9)
+        child = Polygon(label='c', points=((2.2, 2.4), (10.2, 2.4), (10.2, 8.4)))
+        match_output = MatchAnnotations().transform(
+            MatchInput(sample=sample, parents=(parent,), children=(child,)),
+            context,
+        )
+
+        crop = next(CropMatches().expand(match_output, context))
+
+        self.assertEqual(parent.bbox, crop.sample.image.crop_box)
+        self.assertAlmostEqual(20.6, crop.sample.image.require_info().width)
+        self.assertAlmostEqual(10.5, crop.sample.image.require_info().height)
+        self.assertEqual(
+            ((2.0, 2.0), (10.0, 2.0), (10.0, 8.0)),
+            crop.sample.annotations[0].points,
+        )
+
     def test_crop_detection_boxes_builds_deferred_views_with_legacy_names(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         output_path = Path(temp_dir.name) / 'output'
         annotations = (
-            Bbox(label='known', x1=0, y1=0, x2=20, y2=10),
+            Bbox(label='known', x1=0.2, y1=0.3, x2=20.8, y2=10.9),
             Bbox(label='known', x1=30, y1=0, x2=50, y2=20),
         )
         sample_with_two_boxes = self.make_sample(Path('image.jpg'), annotations=annotations)
@@ -284,10 +304,9 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual((annotations[0].bbox, annotations[1].bbox), tuple(
             output.sample.image.crop_box for output in outputs
         ))
-        self.assertEqual(
-            (ImageInfo(width=20, height=10), ImageInfo(width=20, height=20)),
-            tuple(output.sample.image.info for output in outputs),
-        )
+        self.assertAlmostEqual(20.6, outputs[0].sample.image.require_info().width)
+        self.assertAlmostEqual(10.6, outputs[0].sample.image.require_info().height)
+        self.assertEqual(ImageInfo(width=20, height=20), outputs[1].sample.image.info)
         self.assertTrue(all(not output.sample.annotations for output in outputs))
         self.assertFalse(output_path.exists())
 

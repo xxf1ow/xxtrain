@@ -279,7 +279,7 @@ class CropMatches(ExpandProcessor[MatchOutput, CropOutput]):
             x1, y1, x2, y2 = match.parent.bbox
             image = item.sample.image.wrap(
                 crop_box=match.parent.bbox,
-                info=ImageInfo(width=int(x2 - x1), height=int(y2 - y1)),
+                info=ImageInfo(width=x2 - x1, height=y2 - y1),
             )
             sample = item.sample.wrap(
                 id=f'{item.sample.id}_{crop_index}',
@@ -299,7 +299,7 @@ class CropDetectionBoxes(ExpandProcessor[Sample, ClassifyOutput]):
                 raise TypeError(
                     f'CropDetectionBoxes requires Bbox, got {type(annotation).__name__}'
                 )
-            x1, y1, x2, y2 = map(int, annotation.bbox)
+            x1, y1, x2, y2 = annotation.bbox
             sample = item.wrap(
                 id=f'{item.id}_{crop_index}',
                 image=item.image.wrap(
