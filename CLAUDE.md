@@ -1,96 +1,140 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with this repository.
 
 ## Repository workflow constraints
 
 - Superpowers-generated artifacts, including specs and implementation plans, are local working files. Never stage or commit them to Git.
 - Do not create or use Git worktrees for this repository. Perform all work in the current checkout.
+- Source migration is behavior-preserving work. Do not mix algorithm changes, stricter validation, or new conversion features into a migration commit unless the change is explicitly approved.
 
 ## What this is
 
-A training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It takes raw annotation files (labelimg XML for detection boxes, labelme JSON for segment/pose/obb), converts them into YOLO-format datasets, generates a model `.yaml`, downloads pretrained weights, trains, validates, and exports to ONNX. The novel/non-obvious part is the **annotation conversion pipeline** (`src/annconverter.py` + `src/annprocessor.py` + `src/annparser.py`); `src/train.py` is a relatively thin Ultralytics wrapper on top.
+xxtrain is a training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It converts LabelImg/LabelMe annotations into YOLO datasets, generates model configuration, downloads pretrained weights, trains, validates, and exports ONNX models.
 
-All Python source lives under `src/`. The legacy pipeline modules import each other as flat siblings (`import annconverter`, `from annprocessor import ...`), which works because running `python src/train.py` puts `src/` on `sys.path`. **Do not confuse the project's `src/` (code) with a dataset's `root_path/src/` (input images/annotations) — they are unrelated despite the shared name.**
+All Python source lives under `src/`. `src/train.py` is still the executable training entry point. Dataset conversion is implemented by the installable-package-shaped source tree under `src/xxtrain/`; do not recreate or import the removed flat modules `annparser.py`, `annprocessor.py`, or `annconverter.py`.
 
-The source migration has established `src/xxtrain/` as the new package boundary. `xxtrain.task` owns only the five basic task types; `xxtrain.data` owns immutable annotations, label ordering, geometry, one-way LabelImg/LabelMe readers, pure YOLO encoders, and dataset artifact helpers. New data-layer code must use this package and must not import or re-export the legacy flat modules. The flat `annparser.py`, `annprocessor.py`, and `annconverter.py` remain only because the pipeline has not yet migrated; do not add new data behavior to them.
+Do not confuse the repository's `src/` directory with a dataset's `<root_path>/src/` input directory. They are unrelated despite the shared name.
+
+## Current source boundaries
+
+### `xxtrain.task`
+
+`xxtrain.task` defines only the five basic `TaskType` values. Task-name parsing, custom recipe names, label catalogs, and other stable conversion parameters belong to the pipeline recipe layer, not the common task header.
+
+### `xxtrain.data`
+
+The data package owns:
+
+- immutable annotation values and geometry;
+- ordered label catalogs;
+- one-way LabelImg and LabelMe readers;
+- pure YOLO line encoders;
+- dataset split and artifact helpers.
+
+Annotation identity uses UUIDs and grouping is independent from labels. Concrete shapes expose immutable tuple geometry. Readers preserve input order and numeric label names remain strings.
+
+Coordinate rules:
+
+- Annotation coordinates are `float`, including `Bbox` fields, point tuples, translation offsets, geometry results, and YOLO normalization inputs.
+- LabelImg and LabelMe readers convert coordinates to `float`; do not truncate or round them in the data/model layer.
+- `ImageInfo.width` and `ImageInfo.height` are positive `int` values because they describe raster dimensions, not annotation coordinates.
+- Quantization is allowed only at an explicit raster boundary such as OpenCV array slicing. Keep the original float geometry available for matching and encoding.
+- `CropMatches` currently derives crop `ImageInfo` with `int(x2 - x1)` / `int(y2 - y1)`. This differs from the legacy float geometric extent for fractional parent boxes and is a known migration-parity issue; do not treat the cast as the intended coordinate contract.
+
+### `xxtrain.pipeline`
+
+Conversion uses a typed, streaming `Source -> Pipeline -> Sink` architecture:
+
+- `DirectorySource` discovers samples in deterministic directory/image order.
+- Immutable records (`Sample`, `ImageRef`, and stage-specific `*Input` / `*Output` values) carry data between processors.
+- `ItemProcessor` maps one input to at most one output; `ExpandProcessor` maps one input to multiple ordered outputs.
+- `Pipeline` validates neighboring processor types and streams values without a shared payload dictionary.
+- Sinks are the only layer that writes dataset images, labels, lists, and YAML. Crop processors defer image materialization by storing a crop box in `ImageRef`.
+- `convert_dataset()` selects one of the supported recipes, executes the stream, finalizes the sink, and returns a `ConversionReport`.
+
+The stable `xxtrain.pipeline` public API is deliberately limited to:
+
+`Context`, `ConversionConfig`, `ConversionReport`, `ExpandProcessor`, `ImageRef`, `ItemProcessor`, `Pipeline`, `Sample`, and `convert_dataset`.
+
+Stage-specific records, discovery classes, concrete processors, recipes, and sinks are internal implementation details and should be imported from their defining modules only when implementing or testing those internals.
 
 ## Commands
 
-The repository has a standard-library `unittest` conversion baseline. Production workflows run through `src/train.py`.
+Production workflows run through `src/train.py`.
 
 ```bash
-# Full pipeline: convert annotations -> generate model.yaml -> download weights -> train -> export ONNX
+# Full pipeline: convert -> generate model.yaml -> download weights -> train -> export ONNX
 python src/train.py --task_type point-detect --root_path data/point
 
-# Standard tasks (no hyphen) read labels from <root_path>/src/labels.txt; custom tasks hardcode their label list.
+# Standard task; labels come from <root_path>/src/labels.txt
 python src/train.py --task_type detect --root_path data/<dataset> --model_version v8 --model_scale n
 
-# Export an existing checkpoint to ONNX
+# Export an existing checkpoint
 python src/train.py --mode export --root_path data/point --task_type point-classify --weights runs/classify/train9/weights/best.pt
 
-# Validate a checkpoint against a directory of images (classify mode reports mismatched samples;
-# other tasks run predict+save). Task is inferred from the loaded weights, NOT --task_type.
+# Validate a checkpoint; task is inferred from the weights
 python src/train.py --mode val --weights runs/classify/train16/weights/best.pt --directory data/light/light-classify
 
-# Full conversion baseline (fixtures + semantic snapshots + failure/reproducibility checks)
+# Canonical test command
 python -m unittest discover -s test -t . -p 'test_*.py' -v
 
-# Static verification used by the baseline
+# Static verification
 ruff check src test
 python -m compileall -q src test
+git diff --check
 
-# Lint / format (config in pyproject.toml: line-length 120, single quotes, lf, skip-magic-trailing-comma)
-ruff check .
-ruff format .
+# Formatting (configuration is in pyproject.toml)
+ruff format src test
 ```
 
-Test fixtures live in `test/fixtures/`, human-reviewed snapshots in `test/expected/conversions/`, and the migration adapter boundary in `test/support/current_api.py`. `scale` is not yet covered by the conversion baseline.
+Test fixtures live in `test/fixtures/` and human-reviewed semantic snapshots live in `test/expected/conversions/`. Tests import the new package directly; there is no `test/support/current_api.py` compatibility adapter.
 
-Key CLI args: `--split N` (every Nth image goes to validation; `<=0` puts each image in both sets), `--reserve_no_label` (keep images with zero annotations). Training hyperparameters (epochs, batch, imgsz, augmentation) are **hardcoded** in `train_model()` in `src/train.py`, branched by task family.
+## Task names
 
-## Task-type naming convention
+Supported standard recipes:
 
-`task_type` is the central dispatch key throughout the codebase. Two forms:
+- `detect`
+- `segment`
+- `pose`
+- `classify`
 
-- **Standard** (no hyphen): `detect`, `segment`, `pose`, `classify` — uses `<root_path>/src/labels.txt` for the class list and the `standard_*_pipe` pipelines.
-- **Custom** `<family>-<yolotask>`: e.g. `point-detect`, `point-classify`, `point-segment`, `knob-detect`, `knob-segment`, `scale-pose`, `light1-detect`, `light2-detect`. Each is routed in `annconverter.process()` by prefix (`point`/`knob`/`scale`/`light`) to a `task_<family>_process()` builder that returns a custom `(pipeline, label_list)`.
+Supported custom recipes:
 
-The suffix after the last hyphen must end in one of `classify/detect/obb/pose/segment` — `train.py`'s `suffix_switcher` maps that to the Ultralytics model suffix (`-cls`, ``, `-obb`, `-pose`, `-seg`) and selects training imgsz/epochs/augmentation. Several families (point, knob, scale, light) are *composite* real-world tasks (e.g. gauge reading = detect dial + segment/pose the needle + classify position) split across multiple `task_type` invocations that share one `data/<family>/` root.
+- `point-detect`
+- `point-classify`
+- `point-segment`
+- `knob-detect`
+- `knob-segment`
+- `light1-detect`
+- `light2-detect`
 
-## Dataset directory convention
+`scale-pose` is intentionally unsupported in the new pipeline. Unknown names fail before filesystem access with `ValueError("Unsupported task type: <name>")`.
 
-Input layout the converter expects (defined by `GlobalContext` + `DirectoryIterator` in `src/annprocessor.py`):
+The final suffix still selects the Ultralytics model family in `src/train.py`: `classify`, `detect`, `obb`, `pose`, or `segment`. OBB has no conversion recipe yet.
 
-```
+## Dataset convention
+
+Input layout:
+
+```text
 root_path/
 └── src/
-    ├── <subdir>/
-    │   ├── imgs/       # images
-    │   ├── anns/       # labelimg XML  (detection boxes)        -> in_det_path
-    │   └── anns_seg/   # labelme JSON  (segment / instance)     -> in_seg_path
-    └── labels.txt      # class list, one per line (standard tasks only)
+    ├── <group>/
+    │   ├── imgs/
+    │   ├── anns/       # LabelImg XML
+    │   └── anns_seg/   # LabelMe JSON
+    └── labels.txt      # standard recipes only
 ```
 
-Non-crop YOLO task output is written to `root_path/<task_type>/` as `.txt` labels next to source images, plus `train.txt`, `val.txt`, and `dataset.yaml`. These tasks and standard `classify` first call `os.symlink` for each source image and fall back to `shutil.copy2` when it raises `OSError`; standard `classify` writes whole images under `train/<class>/` and `val/<class>/`. Only `point-classify` writes JPEG crops padded to a square. Bbox-crop tasks, including `point-segment`, `knob-segment`, and `light2-detect`, save ordinary JPEG crops directly and do not link source images. Trained runs land in `runs/<yolotask>/`; exported ONNX in `root_path/weights/`. Pretrained `.pt` weights are cached in `.weights/`.
+Non-classification outputs are written under `<root_path>/<task_name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are written under `train/<class>/` and `val/<class>/`.
 
-## Pipeline architecture (the core abstraction)
+`--split N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `--reserve_no_label` keeps zero-annotation images in split lists. `src/train.py` still skips conversion when its expected output already exists; source-change detection and forced rebuilding remain future work.
 
-Conversion is a composable pipeline of small **processors**. Understand these three building blocks before editing `src/annprocessor.py`:
+## Migration status
 
-- **`TaskPayload`** — a per-image data bag (`set/get/has`) that also records which processor produced each key (`_trace`), and warns on overwrite. Processors communicate *only* through payload keys (`img_size`, `det_anns`, `seg_anns`, `matched_map`, `ann_count`, `out_img_path`, `output_path`, `in_*_path`, etc.).
-- **`BaseProcessor`** — every processor declares `required_inputs()` (validated before `process()` runs) and writes outputs via `self.set(payload, ...)`. `Pipeline` is itself a `BaseProcessor` (composite pattern), so pipelines nest.
-- **Iterators create fresh sub-payloads.** `DirectoryIterator` walks `src/*/imgs/` and runs the per-image sub-pipeline with a brand-new `TaskPayload` per image (no cross-image state leaks). `DetectBboxCropIterator` crops each matched detection box, translates child annotations into crop-local coordinates, and runs a *sub-pipeline* per crop — this is how detect→classify/segment/pose "drill-down" tasks are built.
-
-A pipeline is assembled in `src/annconverter.py` (e.g. `standard_detect_pipe`, or the `pipe`/`subpipe` lists inside each `task_*_process`), wrapped in `DirectoryIterator`, then driven once by `process()` which builds a `GlobalContext`, runs the pipeline, and calls `ctx.dataset_finalize()` + `ctx.print_summary()`.
-
-Typical processor chain: `ImageSizeParser` → `*AnnsParser` (parse + drop labels not in the label set) → optionally `DetectAndSegAnnsMatcher` (assigns child shapes to parent boxes via `map_parent_child_annotations` / geometric containment) → `*AnnsGenerator` (emit YOLO `.txt`) → `DatasetSplitter` (train/val split + stat counting). Generators set `ann_count`/`out_img_path`, which `DatasetSplitter` consumes — so a generator must run before the splitter.
-
-## Legacy annotation layer (`src/annparser.py`)
-
-- **`Annotation`** dataclass is the universal shape: `label`, `type` (`ShapeType`), `parts` (list of `np.ndarray` point arrays — `parts[0]` via `.points`), `instance` (UUID, or `(label, group_id)` for grouped labelme shapes), with computed `.bbox` and `.translate()`.
-- `parse_det_anns_from_labelimg` (XML) and `parse_seg_anns_from_labelme` (JSON) are the two parsers; both assert that the annotation's recorded image size matches the actual image.
-- `TaskProcessor.transform` enforces which `ShapeType`s a `TaskType` accepts and converts shapes (e.g. circle→polygon, rectangle 2-pt→4-pt).
-- Geometry helpers (`calculate_iou`, `rectangle_include_shape` with tolerance via `calculate_wide`, `map_parent_child_annotations`) implement the parent-box/child-shape matching, with `strict`/`wide` knobs to tolerate sloppy annotations.
-
-Several functions and code paths are explicitly marked `# todo: fix it` (e.g. `calculate_nms`, `create_labelimg`, `shape_to_mask`, mask generation in the labelme parser, OBB conversion in `TaskProcessor.transform`) — treat these as known-incomplete, not as load-bearing.
+- Behavior baseline: complete.
+- Data layer migration: complete.
+- Typed pipeline and conversion-entry cutover: implemented; the fractional crop-size parity issue above remains to be resolved before declaring the pipeline migration gate closed.
+- Training workflow/package entry migration: not started.
+- Packaging and installable CLI: not started.
