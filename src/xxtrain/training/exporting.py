@@ -30,7 +30,7 @@ def copy_class_reference_images(
         shutil.copy(image_path, references_path / f'{class_index}_{class_name}{image_path.suffix}')
 
 
-def export_model_to_onnx(best_model: YOLO, root_path: str | Path, name: str) -> Path | None:
+def export_model_to_onnx(best_model: YOLO, root_path: str | Path, name: str) -> Path:
     print('🚀 Exporting best model to ONNX format ...')
     temp_onnx_path = best_model.export(format='onnx', simplify=True)
     formatted_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -46,6 +46,6 @@ def export(scenario_path: str | Path, weights: str | Path) -> Path:
     root = Path(scenario_path).resolve().parent
     best_model = YOLO(weights)
     onnx_path = export_model_to_onnx(best_model, root, model_name(scenario))
-    if onnx_path is not None and scenario.dataset.task_type is TaskType.CLASSIFY:
+    if scenario.dataset.task_type is TaskType.CLASSIFY:
         copy_class_reference_images(root, scenario.dataset.name, onnx_path, best_model.names)
     return onnx_path

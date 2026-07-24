@@ -3,6 +3,7 @@ import textwrap
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import get_type_hints
 from unittest.mock import MagicMock, patch
 
 from xxtrain.training import export
@@ -10,6 +11,9 @@ from xxtrain.training.exporting import export_model_to_onnx
 
 
 class TrainingExportingTest(unittest.TestCase):
+    def test_export_model_to_onnx_return_type_is_path(self) -> None:
+        self.assertIs(Path, get_type_hints(export_model_to_onnx)['return'])
+
     def write_scenario(self, root: Path, task: str) -> Path:
         path = root / 'scenario.py'
         path.write_text(

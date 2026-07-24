@@ -97,11 +97,26 @@ class TrainingPresetTest(unittest.TestCase):
             tuple(type(value) for value in digit.dataset.pipeline.processors),
         )
         self.assertIs(type(standard.dataset.sink), type(digit.dataset.sink))
-        self.assertEqual(80, digit.train_args['epochs'])
-        self.assertEqual(16, digit.train_args['batch'])
-        self.assertEqual(320, digit.train_args['imgsz'])
-        self.assertEqual('AdamW', digit.train_args['optimizer'])
-        self.assertTrue(digit.train_args['cos_lr'])
+        self.assertEqual(
+            {
+                'epochs': 80,
+                'batch': 16,
+                'imgsz': 320,
+                'patience': 15,
+                'optimizer': 'AdamW',
+                'lr0': 0.0005,
+                'lrf': 0.05,
+                'weight_decay': 0.001,
+                'warmup_epochs': 3.0,
+                'cos_lr': True,
+                'dropout': 0.15,
+                'fliplr': 0.0,
+                'flipud': 0.0,
+                'auto_augment': None,
+                'erasing': 0.0,
+            },
+            digit.train_args,
+        )
 
     def test_special_preset_processor_sequences_and_label_catalogs(self) -> None:
         for name, expected_types in EXPECTED_SPECIAL_PROCESSORS.items():

@@ -52,5 +52,5 @@ def train(scenario_path: str | Path) -> None:
         best_model = YOLO(best_path)
 
     onnx_path = export_model_to_onnx(best_model, root, name)
-    if onnx_path is not None and scenario.dataset.task_type is TaskType.CLASSIFY:
+    if scenario.dataset.task_type is TaskType.CLASSIFY:
         copy_class_reference_images(root, scenario.dataset.name, onnx_path, best_model.names)
