@@ -42,7 +42,7 @@ class DirectorySource:
                     id=f'{group_path.name}/{image_path.stem}',
                     source_group=group_path.name,
                     source_index=index,
-                    image=ImageRef(path=image_path.resolve()),
+                    image=ImageRef(path=image_path.absolute()),
                 )
 
 

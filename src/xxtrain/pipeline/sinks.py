@@ -71,10 +71,10 @@ class YoloDatasetSink:
                 return
 
         in_train, in_val = split_membership(sample.source_index, context.config.split)
-        absolute_path = str(image_path.absolute())
+        output_path = str(image_path)
         context.report.record_output(
-            train_item=absolute_path if in_train else None,
-            val_item=absolute_path if in_val else None,
+            train_item=output_path if in_train else None,
+            val_item=output_path if in_val else None,
             annotation_count=item.annotation_count,
         )
 
@@ -111,10 +111,10 @@ class ClassificationDatasetSink:
             else:
                 self._write_crop(item, target)
 
-            absolute_path = str(target.absolute())
+            output_path = str(target)
             context.report.record_output(
-                train_item=absolute_path if split_name == 'train' else None,
-                val_item=absolute_path if split_name == 'val' else None,
+                train_item=output_path if split_name == 'train' else None,
+                val_item=output_path if split_name == 'val' else None,
                 annotation_count=1,
             )
 

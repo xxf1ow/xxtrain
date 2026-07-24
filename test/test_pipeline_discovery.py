@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from xxtrain.data import LabelCatalog
 from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport
@@ -41,6 +42,19 @@ class PipelineDiscoveryTest(unittest.TestCase):
             )
             self.assertTrue(all(sample.image.info is None for sample in samples))
             self.assertTrue(all(sample.image.path.is_absolute() for sample in samples))
+
+    def test_directory_source_preserves_logical_image_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / 'src' / 'group' / 'imgs' / 'logical.jpg'
+            image_path.parent.mkdir(parents=True)
+            image_path.write_bytes(b'image')
+            resolved_target = root / 'external' / 'physical.jpg'
+
+            with patch.object(Path, 'resolve', return_value=resolved_target):
+                samples = list(DirectorySource().read(self.make_context(root)))
+
+            self.assertEqual(image_path.absolute(), samples[0].image.path)
 
     def test_classification_validation_rejects_mismatched_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

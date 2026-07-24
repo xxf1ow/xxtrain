@@ -1,7 +1,7 @@
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -70,6 +70,19 @@ class PipelineSinkTest(unittest.TestCase):
             self.assertTrue((root / 'detect' / 'dataset.yaml').is_file())
             self.assertEqual((1, 1), (context.report.train_image_count, context.report.train_annotation_count))
 
+    def test_yolo_sink_preserves_relative_output_paths_in_split_lists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
+            root = Path('dataset')
+            source = self.make_image(root)
+            context = self.make_context(root)
+            sink = YoloDatasetSink()
+
+            sink.write(EncodeOutput(sample=self.make_sample(source), lines=('0 0.5 0.5 0.2 0.2',)), context)
+            sink.finalize(context)
+
+            expected = str(root / 'detect' / 'group' / 'image.png')
+            self.assertEqual(expected, (root / 'detect' / 'train.txt').read_text(encoding='utf-8'))
+
     def test_yolo_sink_materializes_deferred_crop_as_rgb_jpeg(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -137,6 +150,23 @@ class PipelineSinkTest(unittest.TestCase):
             self.assertTrue(target.is_file())
             self.assertFalse((root / 'classify' / 'val' / 'label' / 'source.png').exists())
             self.assertEqual([str(target.absolute())], context.report.train_items)
+
+    def test_classification_sink_preserves_relative_output_paths_in_split_lists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
+            root = Path('dataset')
+            source = self.make_image(root)
+            context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            output = ClassifyOutput(
+                sample=self.make_sample(source),
+                class_name='label',
+                output_name='image.png',
+            )
+
+            ClassificationDatasetSink().write(output, context)
+            ClassificationDatasetSink().finalize(context)
+
+            expected = str(root / 'classify' / 'train' / 'label' / 'image.png')
+            self.assertEqual(expected, (root / 'classify' / 'train.txt').read_text(encoding='utf-8'))
 
     def test_point_classification_uses_integer_crop_and_square_padding(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

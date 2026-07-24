@@ -268,6 +268,27 @@ class PipelineRecipeTest(unittest.TestCase):
                 recipe, _ = build_recipe(task_name, root_path)
                 self.assertEqual(expected, recipe.labels.names)
 
+    def test_non_classification_recipes_preserve_legacy_empty_and_duplicate_labels(self) -> None:
+        fixtures = {
+            'detect': 'standard-detect',
+            'segment': 'standard-segment',
+            'pose': 'standard-pose',
+        }
+        for task_name, fixture_name in fixtures.items():
+            with self.subTest(task_name=task_name):
+                root_path = self.copy_fixture(fixture_name)
+                labels_path = root_path / 'src' / 'labels.txt'
+                original_label = labels_path.read_text(encoding='utf-8').splitlines()[0]
+                expected = ('unused', '', original_label, original_label)
+                labels_path.write_text('\n'.join(expected), encoding='utf-8')
+
+                try:
+                    recipe, _ = build_recipe(task_name, root_path)
+                except ValueError as error:
+                    self.fail(f'legacy labels were rejected: {error}')
+
+                self.assertEqual(expected, recipe.labels.names)
+
     def test_classification_labels_are_sorted(self) -> None:
         root_path = self.copy_fixture('standard-classify')
         (root_path / 'src' / 'labels.txt').write_text('Uab\nIA\nP\n', encoding='utf-8')

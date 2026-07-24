@@ -66,12 +66,18 @@ class Recipe:
         self.pipeline.validate_boundaries(self.source.output_type, self.sink.input_type)
 
 
-def _read_labels(root_path: Path) -> LabelCatalog:
+class _LegacyLabelCatalog(LabelCatalog):
+    def __post_init__(self) -> None:
+        if type(self.names) is not tuple or not self.names or any(not isinstance(name, str) for name in self.names):
+            raise ValueError('Legacy label catalog names must be a non-empty tuple of strings')
+
+
+def _read_labels(root_path: Path, *, strict: bool) -> LabelCatalog:
     labels_path = root_path / 'src' / 'labels.txt'
     assert labels_path.is_file(), f'标签列表不存在: {labels_path}'
     labels = tuple(line.strip() for line in labels_path.read_text(encoding='utf-8').splitlines())
     assert labels, f'标签列表为空: {labels_path}'
-    return LabelCatalog(labels)
+    return LabelCatalog(labels) if strict else _LegacyLabelCatalog(labels)
 
 
 def build_recipe(
@@ -103,7 +109,7 @@ def build_recipe(
     elif task_name == 'light2-detect':
         labels = LabelCatalog(('0',))
     else:
-        labels = _read_labels(root)
+        labels = _read_labels(root, strict=task_type is TaskType.CLASSIFY)
         if task_type is TaskType.CLASSIFY:
             labels = validate_classification_source(root, labels, split)
 
