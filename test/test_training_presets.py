@@ -30,6 +30,24 @@ FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 
 DIRECTION_SENSITIVE_TRAIN_ARGS = {'fliplr': 0.0, 'flipud': 0.0, 'degrees': 0.0, 'auto_augment': None}
 
+TUNED_CLASSIFY_TRAIN_ARGS = {
+    'epochs': 80,
+    'batch': 16,
+    'imgsz': 320,
+    'patience': 15,
+    'optimizer': 'AdamW',
+    'lr0': 0.0005,
+    'lrf': 0.05,
+    'weight_decay': 0.001,
+    'warmup_epochs': 3.0,
+    'cos_lr': True,
+    'dropout': 0.15,
+    'fliplr': 0.0,
+    'flipud': 0.0,
+    'auto_augment': None,
+    'erasing': 0.0,
+}
+
 DEFAULT_TRAINING_PRESETS = {
     'detect',
     'segment',
@@ -89,8 +107,8 @@ EXPECTED_SPECIAL_LABELS = {
 
 
 class TrainingPresetTest(unittest.TestCase):
-    def test_all_twelve_presets_load(self) -> None:
-        self.assertEqual(12, len(SCENARIO_PATHS))
+    def test_all_thirteen_presets_load(self) -> None:
+        self.assertEqual(13, len(SCENARIO_PATHS))
         for name in SCENARIO_PATHS:
             with self.subTest(name=name):
                 self.assertIsNotNone(load_case_scenario(name))
@@ -105,36 +123,31 @@ class TrainingPresetTest(unittest.TestCase):
 
         self.assertEqual(DIRECTION_SENSITIVE_TRAIN_ARGS, scenario.train_args)
 
-    def test_digit_cls_reuses_standard_classify_recipe_with_overrides(self) -> None:
+    def test_standard_classification_variants_reuse_standard_recipe(self) -> None:
         standard = load_case_scenario('classify')
-        digit = load_case_scenario('digit-cls')
-        self.assertIs(TaskType.CLASSIFY, digit.dataset.task_type)
-        self.assertEqual(standard.dataset.name, digit.dataset.name)
-        self.assertEqual(
-            tuple(type(value) for value in standard.dataset.pipeline.processors),
-            tuple(type(value) for value in digit.dataset.pipeline.processors),
-        )
-        self.assertIs(type(standard.dataset.sink), type(digit.dataset.sink))
-        self.assertEqual(
-            {
-                'epochs': 80,
-                'batch': 16,
-                'imgsz': 320,
-                'patience': 15,
-                'optimizer': 'AdamW',
-                'lr0': 0.0005,
-                'lrf': 0.05,
-                'weight_decay': 0.001,
-                'warmup_epochs': 3.0,
-                'cos_lr': True,
-                'dropout': 0.15,
-                'fliplr': 0.0,
-                'flipud': 0.0,
-                'auto_augment': None,
-                'erasing': 0.0,
-            },
-            digit.train_args,
-        )
+
+        for name in ('direction-sensitive-classify', 'tuned-classify'):
+            with self.subTest(name=name):
+                variant = load_case_scenario(name)
+                self.assertIs(TaskType.CLASSIFY, variant.dataset.task_type)
+                self.assertEqual(standard.dataset.name, variant.dataset.name)
+                self.assertEqual(
+                    tuple(type(value) for value in standard.dataset.pipeline.processors),
+                    tuple(type(value) for value in variant.dataset.pipeline.processors),
+                )
+                self.assertIs(type(standard.dataset.sink), type(variant.dataset.sink))
+
+    def test_direction_sensitive_standard_classification_matches_point_policy(self) -> None:
+        direction_sensitive = load_case_scenario('direction-sensitive-classify')
+        point = load_case_scenario('point-classify')
+
+        self.assertEqual(DIRECTION_SENSITIVE_TRAIN_ARGS, direction_sensitive.train_args)
+        self.assertEqual(point.train_args, direction_sensitive.train_args)
+
+    def test_tuned_classification_preserves_digit_training_overrides(self) -> None:
+        tuned = load_case_scenario('tuned-classify')
+
+        self.assertEqual(TUNED_CLASSIFY_TRAIN_ARGS, tuned.train_args)
 
     def test_special_preset_processor_sequences_and_label_catalogs(self) -> None:
         for name, expected_types in EXPECTED_SPECIAL_PROCESSORS.items():
@@ -215,11 +228,11 @@ class TrainingPresetTest(unittest.TestCase):
         self.assertIsInstance(recipe.sink, ClassificationDatasetSink)
         self.assertTrue(recipe.sink.indexed_class_directories)
 
-    def test_digit_cls_converts_standard_classify_fixture(self) -> None:
-        with tempfile.TemporaryDirectory(prefix='xxtrain-digit-cls-') as temp_dir:
-            root_path = Path(temp_dir) / 'digit-cls'
+    def test_tuned_classify_converts_standard_classify_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix='xxtrain-tuned-classify-') as temp_dir:
+            root_path = Path(temp_dir) / 'tuned-classify'
             shutil.copytree(FIXTURES_PATH / 'standard-classify', root_path)
-            scenario = load_case_scenario('digit-cls')
+            scenario = load_case_scenario('tuned-classify')
 
             report = convert_dataset(
                 scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label

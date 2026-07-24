@@ -9,6 +9,8 @@ SCENARIO_PATHS = {
     'segment': PROJECT_ROOT / 'data/standard-segment/standard_segment.py',
     'pose': PROJECT_ROOT / 'data/standard-pose/standard_pose.py',
     'classify': PROJECT_ROOT / 'data/standard-classify/standard_classify.py',
+    'direction-sensitive-classify': (PROJECT_ROOT / 'data/standard-classify/direction_sensitive_classify.py'),
+    'tuned-classify': PROJECT_ROOT / 'data/standard-classify/tuned_classify.py',
     'point-detect': PROJECT_ROOT / 'data/point/point_detect.py',
     'point-classify': PROJECT_ROOT / 'data/point/point_classify.py',
     'point-segment': PROJECT_ROOT / 'data/point/point_segment.py',
@@ -16,7 +18,6 @@ SCENARIO_PATHS = {
     'knob-segment': PROJECT_ROOT / 'data/knob/knob_segment.py',
     'light1-detect': PROJECT_ROOT / 'data/light/light1_detect.py',
     'light2-detect': PROJECT_ROOT / 'data/light/light2_detect.py',
-    'digit-cls': PROJECT_ROOT / 'data/digit-cls/digit_cls.py',
 }
 
 
