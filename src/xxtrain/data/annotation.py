@@ -219,9 +219,14 @@ class Circle(Shape):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ImageInfo:
-    width: int
-    height: int
+    width: float
+    height: float
 
     def __post_init__(self) -> None:
-        if type(self.width) is not int or type(self.height) is not int or self.width <= 0 or self.height <= 0:
-            raise ValueError('ImageInfo width and height must be positive integers')
+        dimensions = (self.width, self.height)
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in dimensions):
+            raise ValueError('ImageInfo width and height must be positive finite numbers')
+        object.__setattr__(self, 'width', _finite_float(self.width))
+        object.__setattr__(self, 'height', _finite_float(self.height))
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError('ImageInfo width and height must be positive finite numbers')

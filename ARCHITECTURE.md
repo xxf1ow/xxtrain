@@ -31,7 +31,7 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 
 #### 任务定义
 
-`task_type` 描述业务任务及其目标模型类型，例如 detect、segment、pose、classify 或 obb。任务定义提供标签、模型选择、数据划分和训练参数等稳定差异。
+`xxtrain.task.TaskType` 只描述 detect、segment、pose、classify、obb 五种基础模型类型。业务任务名、标签目录、数据划分规则和特殊处理组合由 pipeline recipe 层负责；训练参数仍暂时留在 `src/train.py`，等待 training 阶段迁移。
 
 配置不需要描述所有处理细节。通用差异进入配置；特殊几何处理或业务转换继续由代码实现，避免把配置发展成另一套编程语言。
 
@@ -43,7 +43,7 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 
 #### 可组合转换管线
 
-标注转换由小型 Processor 组成，通过 `TaskPayload` 传递单张图像的中间结果，并由 `Pipeline` 按顺序组合。主要职责包括：
+标注转换采用 `Source -> Pipeline -> Sink`。`DirectorySource` 按稳定顺序发现样本；不可变的 `Sample`、`ImageRef` 和阶段专用 `*Input` / `*Output` 记录在 Processor 之间传递，不使用共享 payload 字典；Sink 是唯一的数据集写入边界。主要职责包括：
 
 - 解析图像与标注；
 - 过滤和变换标注；
@@ -51,7 +51,7 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 - 裁剪复合任务的局部区域；
 - 生成训练标签并划分数据集。
 
-迭代器为每张图像、每个裁剪实例创建独立 payload，避免跨样本状态泄漏。Processor 保持单一职责；任务管线负责组合，不把所有任务分支堆入训练入口。
+`ItemProcessor` 表示一对零或一，`ExpandProcessor` 表示一对多。每张图像和每个裁剪实例都使用独立值对象，裁剪内容延迟到 Sink 才物化，避免跨样本状态泄漏。Processor 保持单一职责；recipe 负责组合，不把任务分支堆入训练入口。
 
 #### 数据集产物
 
@@ -69,12 +69,15 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 
 当前代码的职责划分如下：
 
-- `annparser.py`：外部标注解析、统一标注对象与基础几何能力；
-- `annprocessor.py`：Processor、Pipeline、上下文及具体转换步骤；
-- `annconverter.py`：按 `task_type` 组装转换管线；
-- `train.py`：命令入口及 Ultralytics 训练、验证、导出编排。
+- `xxtrain.task`：只定义五种基础 `TaskType`；
+- `xxtrain.data`：不可变标注、格式读取、几何、YOLO 编码和数据集产物工具；
+- `xxtrain.pipeline.discovery`：稳定顺序的样本发现；
+- `xxtrain.pipeline.core` / `processors`：typed records、Pipeline 和具体转换步骤；
+- `xxtrain.pipeline.recipes`：11 条现有任务的管线组合与稳定参数；
+- `xxtrain.pipeline.sinks` / `workflow`：数据集写入边界和 `convert_dataset()` 公共入口；
+- `train.py`：当前命令入口及 Ultralytics 训练、验证、导出编排，等待 training/CLI 阶段迁移。
 
-后续整理优先保持这些职责清晰，再根据实际变化拆分文件。总架构不预先规定最终目录、类名或接口数量。
+旧的 `annparser.py`、`annprocessor.py`、`annconverter.py` 已在 typed pipeline 承接全部既有任务后删除。`xxtrain.pipeline` 包级公共 API 保持最小，其余阶段记录、Source、Processor、recipe 和 Sink 均为内部实现。
 
 ### 2.4 第一阶段完成标准
 

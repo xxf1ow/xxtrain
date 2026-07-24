@@ -4,74 +4,129 @@
 
 在保持现有训练与数据转换行为稳定的前提下，整理源码边界，并将项目建设为可安装、可测试的 Python 包。
 
-迁移只调整架构和组织方式。发现的既有问题与新增能力原则上单独处理，避免与迁移混在一起。
+迁移只调整架构和组织方式。既有问题修复、校验收紧和新增能力原则上单独处理，避免与迁移混在一起。
+
+## 当前状态
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 第一阶段：测试基线 | 完成 | 固定输入、语义快照、失败行为和可复现性测试已建立 |
+| 第二阶段 A：data 迁移 | 完成 | 不可变标注、格式读取、几何、编码和数据集产物已进入 `xxtrain.data` |
+| 第二阶段 B：pipeline 迁移 | 完成 | typed pipeline、全部 11 条任务基线、执行入口切换和小数裁剪范围回归测试均已完成 |
+| 第二阶段 C：training 迁移 | 未开始 | 训练、验证、导出仍在 `src/train.py` |
+| 第三阶段：打包与 CLI | 未开始 | 尚未建立完整项目元数据、安装入口和 `xxtrain` CLI |
 
 ## 第一阶段：建立测试基线
 
-- 用固定输入和期望输出记录当前可观察行为，而不是绑定当前函数名和文件位置。
-- 重点覆盖标注解析、关键几何处理、任务管线和数据集产物。
-- 迁移期间允许替换测试适配入口，但不随意修改测试输入、断言和期望结果。
+- 用固定输入和期望输出记录可观察行为，不绑定内部函数名和文件位置。
+- 覆盖标注解析、几何处理、11 种任务转换、数据集产物、失败行为和可复现性。
+- 迁移期间测试直接使用当前公共入口，不保留新旧模块适配层。
 
-完成标准：核心数据转换行为可以自动验证，迁移前测试全部通过。
+完成标准：核心数据转换行为可以自动验证，迁移前基线全部通过。
+
+状态：已完成。规范命令为：
+
+```bash
+python -m unittest discover -s test -t . -p 'test_*.py' -v
+ruff check src test
+python -m compileall -q src test
+git diff --check
+```
 
 ## 第二阶段：迁移源码
 
-- 将源码整理到 `src/xxtrain`，按 `data`、`pipeline`、`training` 三块核心能力组织。
-- 建立统一标注表示、现有格式转换的公共边界和清晰的依赖方向；迁移中不补充当前不存在的转换方向。
-- 分步迁移，每一步都保持测试通过；不在迁移中顺带重写算法或扩展功能。
-
-目标目录结构：
+### 已确认的目标结构
 
 ```text
 src/
-└── xxtrain/                         # 可安装的 Python 包
-    ├── __init__.py                  # 包入口与少量稳定公共接口
-    ├── cli.py                       # 命令行参数和顶层调用
-    ├── task.py                      # 任务类型、标签和稳定任务参数
-    ├── data/                        # 数据表示、格式转换和数据集产物
-    │   ├── __init__.py              # data 子包公共接口
-    │   ├── annotation.py            # Annotation、ShapeType、ImageInfo
-    │   ├── geometry.py              # 几何计算与坐标变换
+├── train.py                         # 当前训练入口；待 training/CLI 阶段迁移
+└── xxtrain/
+    ├── __init__.py
+    ├── task.py                      # 仅包含基础 TaskType
+    ├── data/
+    │   ├── __init__.py
+    │   ├── annotation.py            # 不可变 Annotation、Shape、ImageInfo
+    │   ├── geometry.py              # 几何计算与匹配
+    │   ├── labels.py                # 有序 LabelCatalog
     │   ├── dataset.py               # 数据划分和数据集描述文件
-    │   └── formats/                 # 外部标注格式适配器
-    │       ├── __init__.py          # 格式类公共接口
-    │       ├── base.py              # 现有格式转换的公共抽象；双向接口迁移后补齐
-    │       ├── labelimg.py          # LabelImg XML 与 Annotation 转换
-    │       ├── labelme.py           # LabelMe JSON 与 Annotation 转换
-    │       └── yolo.py              # YOLO 标签与 Annotation 转换
-    ├── pipeline/                    # Annotation 转换管线
-    │   ├── __init__.py              # 管线公共接口
-    │   ├── core.py                  # Payload、Processor、Pipeline、Context
-    │   ├── processors.py            # 具体转换步骤
-    │   └── recipes.py               # 按任务组合处理管线
-    └── training/                    # Ultralytics 训练闭环
-        ├── __init__.py              # 训练子包公共接口
-        ├── ultralytics.py           # 训练、验证和导出的具体调用
-        └── workflow.py              # 数据构建到模型导出的流程编排
+    │   └── formats/
+    │       ├── __init__.py
+    │       ├── base.py
+    │       ├── labelimg.py          # LabelImg -> Annotation
+    │       ├── labelme.py           # LabelMe -> Annotation
+    │       └── yolo.py              # Annotation -> YOLO 文本
+    └── pipeline/
+        ├── __init__.py              # 九个稳定公共符号
+        ├── core.py                  # typed records、Processor、Pipeline、Context
+        ├── discovery.py             # 有序 Source
+        ├── processors.py            # 纯转换步骤和延迟裁剪描述
+        ├── recipes.py               # 标准与定制任务组合
+        ├── sinks.py                 # 唯一的数据集写入边界
+        └── workflow.py              # convert_dataset
 ```
 
-完成标准：新结构承接现有能力，关键输入输出与迁移前一致。
+后续 training 迁移仍计划引入 `xxtrain.training`；是否新增 `xxtrain.cli` 在打包阶段确定。仅供多个内部模块复用的工具函数可以进入内部模块，但不得扩大包级公共 API。
+
+### Data 层迁移结果
+
+- `Annotation` 是抽象基类，具体几何由 `Bbox`、`Polygon`、`Line`、`Polyline`、`Points`、`Circle` 和 `RotatedBbox` 表示。
+- 标注 `id` 表示对象身份；`label` 表示类别；`group` 表示外部格式中的分组关系，三者语义不重复。
+- 几何值不可变，`wrap()` 和 `translate()` 返回新对象。
+- 标签目录保持声明顺序，数字形式的标签名仍按字符串处理。
+- LabelImg/LabelMe 读取保持文件顺序；YOLO 编码器保持纯函数边界。
+- `task.py` 只定义基础任务类型。任务名称解析、任务配方和稳定参数不进入公共基础头文件。
+
+### 坐标契约
+
+标注坐标仍为浮点数，没有迁移为整数：
+
+- `Point = tuple[float, float]`；
+- `Bbox.x1/y1/x2/y2` 为 `float`；
+- LabelImg 和 LabelMe 坐标读取后统一转为 `float`；
+- 平移、外接框、匹配、圆半径和 YOLO 归一化都按浮点数计算。
+
+`ImageInfo.width/height` 使用统一的 `float` 内存表示。原图的整数栅格尺寸可以作为构造输入，但进入模型后立即规范化为浮点数；由浮点裁剪框产生的局部坐标范围保留小数。整数化只能发生在明确的栅格操作边界，例如 OpenCV 数组切片；Source、Processor、匹配和编码都必须保留原始浮点几何。
+
+#### 已解决的迁移一致性问题：裁剪尺寸截断
+
+问题代码曾使用：
+
+```python
+ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
+```
+
+它会截断小数父框的局部坐标范围，改变 `point-segment`、`knob-segment` 和 `light2-detect` 的归一化结果。现已删除 `CropMatches` 和 `CropDetectionBoxes` 处理器中的提前整数化，局部宽高直接使用 `x2 - x1`、`y2 - y1`。真正的像素索引转换仍保留在 Classification Sink 的 OpenCV 切片边界。
+
+回归测试使用带小数的父框，锁定裁剪框、局部坐标和浮点宽高不会被截断。
+
+### Pipeline 层迁移结果
+
+- 用不可变 `Sample`、`ImageRef` 和阶段专用的 `*Input` / `*Output` 记录替代无类型 `Payload`。
+- 处理顺序为 `Source -> Pipeline -> Sink`；处理器只转换数据，Sink 负责全部文件写入。
+- `ItemProcessor` 表示一对零或一，`ExpandProcessor` 表示一对多；所有输出保持输入顺序。
+- 裁剪处理器只生成延迟裁剪描述，不在处理器阶段写图像。
+- 标注匹配通过 UUID 关联父子对象，保持父组与组内子项顺序。
+- `scale-pose` 按已确认范围跳过；未知任务在访问文件系统前失败。
+- 新架构完成后一次性删除旧 `annparser.py`、`annprocessor.py`、`annconverter.py` 和测试适配层，并将 `src/train.py` 的转换调用切换到 `xxtrain.pipeline.convert_dataset`。
+- `xxtrain.pipeline` 包级公共 API 固定为九个符号：`Context`、`ConversionConfig`、`ConversionReport`、`ExpandProcessor`、`ImageRef`、`ItemProcessor`、`Pipeline`、`Sample`、`convert_dataset`。
 
 ## 第三阶段：建立打包配置
 
-- 完善 `pyproject.toml`、依赖声明、包发现和命令行入口。
-- 确保项目可以安装、调用和运行测试，并处理安装后资源与缓存路径。
-- 是否保留旧入口及兼容周期，在本阶段结合实际使用方式决定。
+- 完善 `pyproject.toml` 的项目元数据、依赖声明和包发现。
+- 迁移训练、验证、导出编排到 `xxtrain.training`。
+- 建立安装后的命令行入口，处理资源文件和缓存路径。
+- 确保 editable install、标准安装、CLI 和测试都不依赖 `sys.path` 偶然行为。
 
-完成标准：项目可以通过标准 Python 包方式安装和执行。
+完成标准：项目可以通过标准 Python 包方式安装、测试和执行完整训练工作流。
 
 ## 已确认的迁移边界
 
-- `LabelImg`、`LabelMe`、`YOLO` 的统一双向导入导出接口属于迁移完成后的功能补齐。迁移前和迁移过程中只处理现有代码、承接现有转换方向。
-- 当前工作流在目标数据集的 `dataset.yaml` 已存在时跳过转换。同一输出目录的源数据变化检测、失效判断和强制重建机制留待后续设计，本阶段不实现。
-
-## 总体原则
-
-- 先记录行为，再调整结构。
-- 小步迁移，每步可验证、可回退。
-- 测试关注外部行为，内部名称和组织允许变化。
-- 阶段内只解决当前目标，具体实现决策在进入对应阶段时确定。
+- LabelImg、LabelMe、YOLO 的统一双向导入导出接口属于迁移后的功能补齐。当前只承接原有转换方向。
+- 当前工作流在目标数据集产物已存在时跳过转换。源数据变化检测、失效判断和强制重建机制留待后续设计。
+- 不保留新旧管线兼容层。开发期间允许整体功能暂时不可用，但入口切换只能在新架构承接全部既有配方后进行。
+- 发现的算法缺陷和校验策略变化单独处理；迁移提交只承担结构变化与经确认的行为等价转换。
 
 ## 下一步
 
-进入第二阶段源码迁移的 spec，逐项确定模块迁移顺序、兼容边界和每一步的验收方式。
+1. 进入 training 迁移设计。
+2. 最后建立打包配置和 CLI。

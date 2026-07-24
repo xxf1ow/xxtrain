@@ -9,8 +9,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from test.support.current_api import convert_dataset
 from test.support.output_manifest import collect_output_manifest
+from xxtrain.pipeline import convert_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_PATH = PROJECT_ROOT / 'test' / 'fixtures'

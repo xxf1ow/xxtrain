@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test.support.current_api import convert_dataset
 from test.support.output_manifest import collect_output_manifest
 from test.test_conversion_baseline import BASELINE_CASES, FIXTURES_PATH
+from xxtrain.pipeline import convert_dataset
 
 
 def snapshot_tree(root_path: Path) -> dict[str, str]:

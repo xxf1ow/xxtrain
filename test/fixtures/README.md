@@ -18,11 +18,12 @@
 
 - `fixtures/`：不可变的微型输入数据集。
 - `expected/conversions/`：11 组经人工审阅的语义快照。
-- `support/current_api.py`：迁移期间唯一允许调整的兼容层。
 - `support/output_manifest.py`：统一规范化路径、文本、YAML 和图片尺寸。
 - `test_*.py`：完整覆盖转换、解析、特殊变换、失败场景和可复现性。
 
-完整测试命令：`.venv\Scripts\python.exe -m unittest discover -s test -p 'test_*.py' -v`
+测试直接导入 `xxtrain` 新包，不保留新旧模块兼容层。
+
+完整测试命令：`.venv\Scripts\python.exe -m unittest discover -s test -t . -p 'test_*.py' -v`
 
 显式更新快照：`.venv\Scripts\python.exe -m test.test_conversion_baseline --update-snapshots`
 
