@@ -156,11 +156,7 @@ class PipelineSinkTest(unittest.TestCase):
             root = Path('dataset')
             source = self.make_image(root)
             context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
-            output = ClassifyOutput(
-                sample=self.make_sample(source),
-                class_name='label',
-                output_name='image.png',
-            )
+            output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='image.png')
 
             ClassificationDatasetSink().write(output, context)
             ClassificationDatasetSink().finalize(context)

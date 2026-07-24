@@ -11,10 +11,7 @@ from .scenario import load_scenario
 
 
 def copy_class_reference_images(
-    root_path: str | Path,
-    task_type: str,
-    onnx_path: str | Path,
-    class_names: dict[int, str],
+    root_path: str | Path, task_type: str, onnx_path: str | Path, class_names: dict[int, str]
 ) -> None:
     root = Path(root_path)
     references = []

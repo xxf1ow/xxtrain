@@ -1,12 +1,6 @@
 from xxtrain.data import LabelCatalog
 from xxtrain.pipeline import DatasetRecipe, Pipeline
-from xxtrain.pipeline.processors import (
-    EncodeDetection,
-    FilterLabels,
-    ReadImageInfo,
-    ReadLabelImg,
-    RelabelAnnotations,
-)
+from xxtrain.pipeline.processors import EncodeDetection, FilterLabels, ReadImageInfo, ReadLabelImg, RelabelAnnotations
 from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
 from xxtrain.training import TrainingScenario

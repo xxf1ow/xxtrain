@@ -72,11 +72,7 @@ def calculate_iou(box1: BboxTuple, box2: BboxTuple) -> float:
 
 
 def match_parent_children(
-    parents: Sequence[Shape],
-    children: Sequence[Shape],
-    image_path: str = '',
-    wide: float = 0,
-    strict: bool = True,
+    parents: Sequence[Shape], children: Sequence[Shape], image_path: str = '', wide: float = 0, strict: bool = True
 ) -> dict[UUID, list[UUID]]:
     mapping: dict[UUID, list[UUID]] = {}
     for child in children:

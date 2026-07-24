@@ -27,7 +27,7 @@ class TrainingScenarioTest(unittest.TestCase):
             root = Path(temp_dir)
             path = self.write_scenario(
                 root,
-                '''
+                """
                 from pathlib import Path
                 from xxtrain.pipeline import standard_recipe
                 from xxtrain.task import TaskType
@@ -41,7 +41,7 @@ class TrainingScenarioTest(unittest.TestCase):
                         'plain': 'relative-string',
                     },
                 )
-                ''',
+                """,
             )
             scenario = load_scenario(path)
             self.assertEqual(root / 'cache', scenario.train_args['cache'])

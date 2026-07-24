@@ -62,28 +62,27 @@ class PipelineRecipeTest(unittest.TestCase):
 
         self.assertTrue(callable(convert_dataset))
         self.assertTrue(callable(standard_recipe))
-        self.assertTrue(all(value is not None for value in (
-            Context,
-            ConversionConfig,
-            ConversionReport,
-            DatasetRecipe,
-            ExpandProcessor,
-            ImageRef,
-            ItemProcessor,
-            Pipeline,
-            Sample,
-        )))
+        self.assertTrue(
+            all(
+                value is not None
+                for value in (
+                    Context,
+                    ConversionConfig,
+                    ConversionReport,
+                    DatasetRecipe,
+                    ExpandProcessor,
+                    ImageRef,
+                    ItemProcessor,
+                    Pipeline,
+                    Sample,
+                )
+            )
+        )
 
     def test_standard_recipe_processor_sequences(self) -> None:
         expected = {
             TaskType.DETECT: (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
-            TaskType.SEGMENT: (
-                ReadImageInfo,
-                ReadLabelMe,
-                FilterLabels,
-                PrepareSegmentShapes,
-                EncodeSegment,
-            ),
+            TaskType.SEGMENT: (ReadImageInfo, ReadLabelMe, FilterLabels, PrepareSegmentShapes, EncodeSegment),
             TaskType.POSE: (
                 ReadImageInfo,
                 ReadMatchingAnnotations,
@@ -97,10 +96,7 @@ class PipelineRecipeTest(unittest.TestCase):
         for task_type, processor_types in expected.items():
             with self.subTest(task_type=task_type):
                 recipe = standard_recipe(task_type)
-                self.assertEqual(
-                    processor_types,
-                    tuple(type(processor) for processor in recipe.pipeline.processors),
-                )
+                self.assertEqual(processor_types, tuple(type(processor) for processor in recipe.pipeline.processors))
                 self.assertIsNone(recipe.labels)
 
     def test_convert_dataset_uses_recipe_and_false_reserve_default(self) -> None:
@@ -126,27 +122,18 @@ class PipelineRecipeTest(unittest.TestCase):
                 self.assertFalse(hasattr(recipes, name))
 
     def test_detection_segmentation_and_pose_preserve_label_order(self) -> None:
-        fixtures = {
-            'detect': 'standard-detect',
-            'segment': 'standard-segment',
-            'pose': 'standard-pose',
-        }
+        fixtures = {'detect': 'standard-detect', 'segment': 'standard-segment', 'pose': 'standard-pose'}
         for task_name, fixture_name in fixtures.items():
             with self.subTest(task_name=task_name):
                 root_path = self.copy_fixture(fixture_name)
                 expected = tuple(
-                    line.strip()
-                    for line in (root_path / 'src' / 'labels.txt').read_text(encoding='utf-8').splitlines()
+                    line.strip() for line in (root_path / 'src' / 'labels.txt').read_text(encoding='utf-8').splitlines()
                 )
                 labels = self.converted_labels(TaskType(task_name), root_path)
                 self.assertEqual(expected, labels.names)
 
     def test_non_classification_recipes_preserve_legacy_empty_and_duplicate_labels(self) -> None:
-        fixtures = {
-            'detect': 'standard-detect',
-            'segment': 'standard-segment',
-            'pose': 'standard-pose',
-        }
+        fixtures = {'detect': 'standard-detect', 'segment': 'standard-segment', 'pose': 'standard-pose'}
         for task_name, fixture_name in fixtures.items():
             with self.subTest(task_name=task_name):
                 root_path = self.copy_fixture(fixture_name)

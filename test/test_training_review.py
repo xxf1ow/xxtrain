@@ -33,13 +33,13 @@ class TrainingReviewTest(unittest.TestCase):
         path = root / 'scenario.py'
         path.write_text(
             textwrap.dedent(
-                '''
+                """
                 from xxtrain.pipeline import standard_recipe
                 from xxtrain.task import TaskType
                 from xxtrain.training import TrainingScenario
 
                 SCENARIO = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
-                '''
+                """
             ),
             encoding='utf-8',
         )
@@ -77,8 +77,7 @@ class TrainingReviewTest(unittest.TestCase):
             model.predict.assert_called_once_with(source=self.image_root, verbose=False, save=True, stream=True)
             self.assertEqual([True], consumed)
             self.assertIn(
-                call(f'✅ Inference completed. Results are saved in {model.predictor.save_dir}'),
-                printed.call_args_list,
+                call(f'✅ Inference completed. Results are saved in {model.predictor.save_dir}'), printed.call_args_list
             )
 
     def test_classification_review_uses_parent_label_and_writes_mismatch_report(self) -> None:
@@ -98,9 +97,7 @@ class TrainingReviewTest(unittest.TestCase):
             self.assertEqual(b'image', (save_dir / 'cat - dog' / image.name).read_bytes())
             report = (save_dir / 'mismatched_samples.txt').read_text(encoding='utf-8')
             self.assertEqual(
-                '# Mismatched Samples Report\n'
-                '# Total mismatched: 1 / 1\n'
-                f'expect: 0-cat, actual: 1-dog ==> {image}',
+                f'# Mismatched Samples Report\n# Total mismatched: 1 / 1\nexpect: 0-cat, actual: 1-dog ==> {image}',
                 report,
             )
 

@@ -109,14 +109,7 @@ class AnnotationTest(unittest.TestCase):
         self.assertIs(type(integer_info.height), float)
         self.assertIs(type(fractional_info.width), float)
         self.assertIs(type(fractional_info.height), float)
-        for width, height in (
-            (0, 1),
-            (1, 0),
-            (-1, 2),
-            (float('nan'), 2),
-            (float('inf'), 2),
-            (True, 2),
-        ):
+        for width, height in ((0, 1), (1, 0), (-1, 2), (float('nan'), 2), (float('inf'), 2), (True, 2)):
             with self.subTest(width=width, height=height), self.assertRaises(ValueError):
                 ImageInfo(width=width, height=height)
 

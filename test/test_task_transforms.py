@@ -26,10 +26,7 @@ class TaskTransformsTest(unittest.TestCase):
         for task_type in ('point-detect', 'point-classify', 'point-segment'):
             scenario = load_case_scenario(task_type)
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
         dataset = yaml.safe_load((root_path / 'point-detect' / 'dataset.yaml').read_text(encoding='utf-8'))
@@ -50,12 +47,7 @@ class TaskTransformsTest(unittest.TestCase):
     def test_knob_segment_transforms(self) -> None:
         root_path = self.copy_fixture('knob')
         scenario = load_case_scenario('knob-segment')
-        convert_dataset(
-            scenario.dataset,
-            root_path,
-            split=scenario.split,
-            reserve_no_label=scenario.reserve_no_label,
-        )
+        convert_dataset(scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label)
 
         output_path = root_path / 'knob-segment' / '251010'
         self.assertEqual(6, len(list(output_path.glob('*.txt'))))
@@ -69,10 +61,7 @@ class TaskTransformsTest(unittest.TestCase):
         for task_type in ('light1-detect', 'light2-detect'):
             scenario = load_case_scenario(task_type)
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
         light1_lines = (root_path / 'light1-detect' / 'set1' / '000000.txt').read_text(encoding='utf-8').splitlines()
@@ -88,12 +77,7 @@ class TaskTransformsTest(unittest.TestCase):
     def test_standard_pose_transform(self) -> None:
         root_path = self.copy_fixture('standard-pose')
         scenario = load_case_scenario('pose')
-        convert_dataset(
-            scenario.dataset,
-            root_path,
-            split=scenario.split,
-            reserve_no_label=scenario.reserve_no_label,
-        )
+        convert_dataset(scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label)
 
         self.assertEqual(
             '0 0.476750 0.539333 0.143000 0.747111 0.467045 0.625253 2',

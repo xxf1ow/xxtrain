@@ -4,26 +4,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from xxtrain.data import (
-    Bbox,
-    Circle,
-    ImageInfo,
-    LabelCatalog,
-    Line,
-    Points,
-    Polygon,
-    Polyline,
-    RotatedBbox,
-)
-from xxtrain.pipeline.core import (
-    Context,
-    ConversionConfig,
-    ConversionReport,
-    CropOutput,
-    ImageRef,
-    MatchInput,
-    Sample,
-)
+from xxtrain.data import Bbox, Circle, ImageInfo, LabelCatalog, Line, Points, Polygon, Polyline, RotatedBbox
+from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, CropOutput, ImageRef, MatchInput, Sample
 from xxtrain.pipeline.processors import (
     CropDetectionBoxes,
     CropMatches,
@@ -107,10 +89,7 @@ class PipelineProcessorTest(unittest.TestCase):
 
     def test_strict_filter_records_file_and_unknown_label(self) -> None:
         image_path = Path('image.jpg')
-        annotations = (
-            Bbox(label='known', x1=0, y1=0, x2=2, y2=2),
-            Bbox(label='unknown', x1=3, y1=3, x2=5, y2=5),
-        )
+        annotations = (Bbox(label='known', x1=0, y1=0, x2=2, y2=2), Bbox(label='unknown', x1=3, y1=3, x2=5, y2=5))
         sample = self.make_sample(image_path, annotations=annotations)
         context = self.make_context(Path('.'))
         output = FilterLabels(labels=('known',), strict=True).transform(sample, context)
@@ -122,19 +101,13 @@ class PipelineProcessorTest(unittest.TestCase):
         sample = self.make_sample(Path('image.jpg'))
         item = MatchInput(
             sample=sample,
-            parents=(
-                Bbox(label='parent', x1=0, y1=0, x2=2, y2=2),
-                Bbox(label='other-parent', x1=3, y1=3, x2=5, y2=5),
-            ),
-            children=(
-                Points(label='child', points=((1, 1),)),
-                Points(label='other-child', points=((4, 4),)),
-            ),
+            parents=(Bbox(label='parent', x1=0, y1=0, x2=2, y2=2), Bbox(label='other-parent', x1=3, y1=3, x2=5, y2=5)),
+            children=(Points(label='child', points=((1, 1),)), Points(label='other-child', points=((4, 4),))),
         )
         context = self.make_context(Path('.'))
-        output = FilterMatchingAnnotations(
-            parent_labels=('parent',), child_labels=('child',), strict=False
-        ).transform(item, context)
+        output = FilterMatchingAnnotations(parent_labels=('parent',), child_labels=('child',), strict=False).transform(
+            item, context
+        )
         self.assertEqual(('parent',), tuple(value.label for value in output.parents))
         self.assertEqual(('child',), tuple(value.label for value in output.children))
         self.assertEqual(set(), context.report.skipped_labels)
@@ -175,11 +148,7 @@ class PipelineProcessorTest(unittest.TestCase):
 
     def test_prepare_match_children_rejects_pose_bbox(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
-        item = MatchInput(
-            sample=sample,
-            parents=(),
-            children=(Bbox(label='known', x1=0, y1=0, x2=2, y2=2),),
-        )
+        item = MatchInput(sample=sample, parents=(), children=(Bbox(label='known', x1=0, y1=0, x2=2, y2=2),))
         with self.assertRaisesRegex(Exception, "Task pose usually doesn't use"):
             PrepareMatchChildren(TaskType.POSE).transform(item, self.make_context(Path('.')))
 
@@ -207,19 +176,13 @@ class PipelineProcessorTest(unittest.TestCase):
     def test_match_order_follows_first_child_hit(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
         context = self.make_context(Path('.'))
-        parents = (
-            Bbox(label='p', x1=0, y1=0, x2=20, y2=20),
-            Bbox(label='p', x1=30, y1=0, x2=50, y2=20),
-        )
+        parents = (Bbox(label='p', x1=0, y1=0, x2=20, y2=20), Bbox(label='p', x1=30, y1=0, x2=50, y2=20))
         children = (
             Polygon(label='c', points=((32, 2), (40, 2), (40, 10))),
             Polygon(label='c', points=((2, 2), (10, 2), (10, 10))),
             Polygon(label='c', points=((34, 12), (42, 12), (42, 18))),
         )
-        output = MatchAnnotations().transform(
-            MatchInput(sample=sample, parents=parents, children=children),
-            context,
-        )
+        output = MatchAnnotations().transform(MatchInput(sample=sample, parents=parents, children=children), context)
         self.assertEqual((parents[1], parents[0]), tuple(match.parent for match in output.matches))
         self.assertEqual((children[0], children[2]), output.matches[0].children)
         self.assertEqual((children[1],), output.matches[1].children)
@@ -230,35 +193,22 @@ class PipelineProcessorTest(unittest.TestCase):
         output_path = Path(temp_dir.name) / 'output'
         sample = self.make_sample(Path('image.jpg'))
         context = self.make_context(output_path)
-        parents = (
-            Bbox(label='p', x1=0, y1=0, x2=20, y2=20),
-            Bbox(label='p', x1=30, y1=0, x2=50, y2=20),
-        )
+        parents = (Bbox(label='p', x1=0, y1=0, x2=20, y2=20), Bbox(label='p', x1=30, y1=0, x2=50, y2=20))
         children = (
             Polygon(label='c', points=((32, 2), (40, 2), (40, 10))),
             Polygon(label='c', points=((2, 2), (10, 2), (10, 10))),
         )
         match_output = MatchAnnotations().transform(
-            MatchInput(sample=sample, parents=parents, children=children),
-            context,
+            MatchInput(sample=sample, parents=parents, children=children), context
         )
         crops = tuple(CropMatches().expand(match_output, context))
         self.assertEqual(('group/image_0', 'group/image_1'), tuple(crop.sample.id for crop in crops))
-        self.assertEqual(
-            (sample.source_index, sample.source_index),
-            tuple(crop.sample.source_index for crop in crops),
-        )
-        self.assertEqual(
-            (sample.source_group, sample.source_group),
-            tuple(crop.sample.source_group for crop in crops),
-        )
+        self.assertEqual((sample.source_index, sample.source_index), tuple(crop.sample.source_index for crop in crops))
+        self.assertEqual((sample.source_group, sample.source_group), tuple(crop.sample.source_group for crop in crops))
         self.assertEqual(parents[1].bbox, crops[0].sample.image.crop_box)
         self.assertEqual(ImageInfo(width=20, height=20), crops[0].sample.image.info)
         self.assertFalse(output_path.exists())
-        self.assertEqual(
-            ((2.0, 2.0), (10.0, 2.0), (10.0, 10.0)),
-            crops[0].sample.annotations[0].points,
-        )
+        self.assertEqual(((2.0, 2.0), (10.0, 2.0), (10.0, 10.0)), crops[0].sample.annotations[0].points)
 
     def test_crop_matches_preserves_fractional_coordinate_extent(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
@@ -266,8 +216,7 @@ class PipelineProcessorTest(unittest.TestCase):
         parent = Bbox(label='p', x1=0.2, y1=0.4, x2=20.8, y2=10.9)
         child = Polygon(label='c', points=((2.2, 2.4), (10.2, 2.4), (10.2, 8.4)))
         match_output = MatchAnnotations().transform(
-            MatchInput(sample=sample, parents=(parent,), children=(child,)),
-            context,
+            MatchInput(sample=sample, parents=(parent,), children=(child,)), context
         )
 
         crop = next(CropMatches().expand(match_output, context))
@@ -275,10 +224,7 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(parent.bbox, crop.sample.image.crop_box)
         self.assertAlmostEqual(20.6, crop.sample.image.require_info().width)
         self.assertAlmostEqual(10.5, crop.sample.image.require_info().height)
-        self.assertEqual(
-            ((2.0, 2.0), (10.0, 2.0), (10.0, 8.0)),
-            crop.sample.annotations[0].points,
-        )
+        self.assertEqual(((2.0, 2.0), (10.0, 2.0), (10.0, 8.0)), crop.sample.annotations[0].points)
 
     def test_crop_detection_boxes_builds_deferred_views_with_legacy_names(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
@@ -291,19 +237,13 @@ class PipelineProcessorTest(unittest.TestCase):
         sample_with_two_boxes = self.make_sample(Path('image.jpg'), annotations=annotations)
         context = self.make_context(output_path)
         outputs = tuple(CropDetectionBoxes().expand(sample_with_two_boxes, context))
-        self.assertEqual(
-            ('group_3_0.jpg', 'group_3_1.jpg'),
-            tuple(output.output_name for output in outputs),
-        )
-        self.assertEqual(
-            ('group/image_0', 'group/image_1'),
-            tuple(output.sample.id for output in outputs),
-        )
+        self.assertEqual(('group_3_0.jpg', 'group_3_1.jpg'), tuple(output.output_name for output in outputs))
+        self.assertEqual(('group/image_0', 'group/image_1'), tuple(output.sample.id for output in outputs))
         self.assertEqual((3, 3), tuple(output.sample.source_index for output in outputs))
         self.assertEqual(('known', 'known'), tuple(output.class_name for output in outputs))
-        self.assertEqual((annotations[0].bbox, annotations[1].bbox), tuple(
-            output.sample.image.crop_box for output in outputs
-        ))
+        self.assertEqual(
+            (annotations[0].bbox, annotations[1].bbox), tuple(output.sample.image.crop_box for output in outputs)
+        )
         self.assertAlmostEqual(20.6, outputs[0].sample.image.require_info().width)
         self.assertAlmostEqual(10.6, outputs[0].sample.image.require_info().height)
         self.assertEqual(ImageInfo(width=20, height=20), outputs[1].sample.image.info)
@@ -313,10 +253,7 @@ class PipelineProcessorTest(unittest.TestCase):
     def test_relabel_crop_annotations_preserves_crop_parent(self) -> None:
         annotation = Polygon(label='source', points=((1, 1), (2, 1), (2, 2)))
         parent = Bbox(label='parent', x1=0, y1=0, x2=4, y2=4)
-        crop = CropOutput(
-            sample=self.make_sample(Path('image.jpg'), annotations=(annotation,)),
-            parent=parent,
-        )
+        crop = CropOutput(sample=self.make_sample(Path('image.jpg'), annotations=(annotation,)), parent=parent)
         output = RelabelCropAnnotations('target').transform(crop, self.make_context(Path('.')))
         self.assertEqual('source', crop.sample.annotations[0].label)
         self.assertEqual('target', output.sample.annotations[0].label)

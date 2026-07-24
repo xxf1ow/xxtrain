@@ -10,14 +10,7 @@ SCENARIO = TrainingScenario(
         name='knob-detect',
         task_type=TaskType.DETECT,
         labels=LabelCatalog(('switch',)),
-        pipeline=Pipeline(
-            (
-                ReadImageInfo(),
-                ReadLabelImg(),
-                FilterLabels(('switch',)),
-                EncodeDetection(),
-            )
-        ),
+        pipeline=Pipeline((ReadImageInfo(), ReadLabelImg(), FilterLabels(('switch',)), EncodeDetection())),
         sink=YoloDatasetSink(),
     )
 )

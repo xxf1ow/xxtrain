@@ -36,23 +36,14 @@ class TrainingEntriesTest(unittest.TestCase):
         module = load_entry('review')
 
         with patch.object(module, 'review') as run:
-            module.main(
-                ['scenario.py', '--weights', 'best.pt', '--directory', 'images']
-            )
+            module.main(['scenario.py', '--weights', 'best.pt', '--directory', 'images'])
 
-        run.assert_called_once_with(
-            Path('scenario.py'),
-            Path('best.pt'),
-            Path('images'),
-        )
+        run.assert_called_once_with(Path('scenario.py'), Path('best.pt'), Path('images'))
 
     def test_required_arguments_are_enforced(self) -> None:
         invalid_arguments = {
             'train': [[]],
-            'export': [
-                ['--weights', 'best.pt'],
-                ['scenario.py'],
-            ],
+            'export': [['--weights', 'best.pt'], ['scenario.py']],
             'review': [
                 ['--weights', 'best.pt', '--directory', 'images'],
                 ['scenario.py', '--directory', 'images'],

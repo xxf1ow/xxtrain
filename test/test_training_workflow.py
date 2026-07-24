@@ -53,9 +53,7 @@ class TrainingWorkflowTest(unittest.TestCase):
             recorded_calls.append('load_scenario')
             return scenario
 
-        def generate_model_yaml(
-            loaded_scenario: TrainingScenario, root: Path
-        ) -> tuple[str, Path]:
+        def generate_model_yaml(loaded_scenario: TrainingScenario, root: Path) -> tuple[str, Path]:
             recorded_calls.append('generate_model_yaml')
             return model_name, model_yaml_path
 
@@ -79,14 +77,11 @@ class TrainingWorkflowTest(unittest.TestCase):
                 'xxtrain.training.workflow.generate_model_yaml', side_effect=generate_model_yaml
             ) as generate_model_yaml_mock,
             patch(
-                'xxtrain.training.workflow.prepare_pretrained_weights',
-                side_effect=prepare_pretrained_weights,
+                'xxtrain.training.workflow.prepare_pretrained_weights', side_effect=prepare_pretrained_weights
             ) as prepare_pretrained_weights_mock,
             patch('xxtrain.training.workflow.YOLO', side_effect=construct_yolo) as yolo_mock,
             patch('xxtrain.training.workflow.export_model_to_onnx') as export_model_to_onnx_mock,
-            patch(
-                'xxtrain.training.workflow.copy_class_reference_images'
-            ) as copy_class_reference_images_mock,
+            patch('xxtrain.training.workflow.copy_class_reference_images') as copy_class_reference_images_mock,
             patch(
                 'xxtrain.training.workflow.shutil.copy',
                 side_effect=lambda source, target: (
@@ -95,9 +90,7 @@ class TrainingWorkflowTest(unittest.TestCase):
                 )[1],
             ),
         ):
-            convert_dataset_mock.side_effect = lambda *args, **kwargs: recorded_calls.append(
-                'convert_dataset'
-            )
+            convert_dataset_mock.side_effect = lambda *args, **kwargs: recorded_calls.append('convert_dataset')
             if export_error is None:
                 export_model_to_onnx_mock.side_effect = lambda *args: (
                     recorded_calls.append('export_model_to_onnx'),
@@ -134,36 +127,16 @@ class TrainingWorkflowTest(unittest.TestCase):
         )
 
     def test_standard_training_args_match_current_xxtrain_defaults(self) -> None:
-        self.assertEqual(
-            {'epochs': 72, 'batch': 128, 'imgsz': 224},
-            standard_train_args(TaskType.CLASSIFY),
-        )
-        for task_type in (
-            TaskType.DETECT,
-            TaskType.SEGMENT,
-            TaskType.POSE,
-            TaskType.OBB,
-        ):
+        self.assertEqual({'epochs': 72, 'batch': 128, 'imgsz': 224}, standard_train_args(TaskType.CLASSIFY))
+        for task_type in (TaskType.DETECT, TaskType.SEGMENT, TaskType.POSE, TaskType.OBB):
             with self.subTest(task_type=task_type):
-                self.assertEqual(
-                    {'epochs': 100, 'batch': 32, 'imgsz': 640},
-                    standard_train_args(task_type),
-                )
+                self.assertEqual({'epochs': 100, 'batch': 32, 'imgsz': 640}, standard_train_args(task_type))
 
     def test_scenario_arguments_override_standard_arguments(self) -> None:
         scenario = TrainingScenario(
-            dataset=standard_recipe(TaskType.CLASSIFY),
-            train_args={'epochs': 80, 'optimizer': 'AdamW'},
+            dataset=standard_recipe(TaskType.CLASSIFY), train_args={'epochs': 80, 'optimizer': 'AdamW'}
         )
-        self.assertEqual(
-            {
-                'epochs': 80,
-                'batch': 128,
-                'imgsz': 224,
-                'optimizer': 'AdamW',
-            },
-            merged_train_args(scenario),
-        )
+        self.assertEqual({'epochs': 80, 'batch': 128, 'imgsz': 224, 'optimizer': 'AdamW'}, merged_train_args(scenario))
 
     def test_classification_workflow_uses_fixed_order_and_reloads_present_best(self) -> None:
         calls: list[str] = []
@@ -193,9 +166,7 @@ class TrainingWorkflowTest(unittest.TestCase):
             result.yolo.call_args_list,
         )
         result.model.load.assert_called_once_with(result.pretrained_path)
-        result.export_model_to_onnx.assert_called_once_with(
-            result.best_model, self.root, result.model_name
-        )
+        result.export_model_to_onnx.assert_called_once_with(result.best_model, self.root, result.model_name)
 
     def test_existing_classification_output_skips_conversion(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.CLASSIFY))
@@ -216,35 +187,21 @@ class TrainingWorkflowTest(unittest.TestCase):
         result.convert_dataset.assert_not_called()
 
     def test_missing_output_converts_with_scenario_split_and_reserve_no_label(self) -> None:
-        scenario = TrainingScenario(
-            dataset=standard_recipe(TaskType.DETECT),
-            split=7,
-            reserve_no_label=True,
-        )
+        scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT), split=7, reserve_no_label=True)
 
         result = self.run_workflow(scenario)
 
-        result.convert_dataset.assert_called_once_with(
-            scenario.dataset,
-            self.root,
-            split=7,
-            reserve_no_label=True,
-        )
+        result.convert_dataset.assert_called_once_with(scenario.dataset, self.root, split=7, reserve_no_label=True)
 
     def test_classification_trains_with_output_directory_and_merged_arguments(self) -> None:
         scenario = TrainingScenario(
-            dataset=standard_recipe(TaskType.CLASSIFY),
-            train_args={'epochs': 80, 'optimizer': 'AdamW'},
+            dataset=standard_recipe(TaskType.CLASSIFY), train_args={'epochs': 80, 'optimizer': 'AdamW'}
         )
 
         result = self.run_workflow(scenario)
 
         result.model.train.assert_called_once_with(
-            data=self.root / 'classify',
-            epochs=80,
-            batch=128,
-            imgsz=224,
-            optimizer='AdamW',
+            data=self.root / 'classify', epochs=80, batch=128, imgsz=224, optimizer='AdamW'
         )
 
     def test_non_classification_trains_with_dataset_yaml_and_standard_arguments(self) -> None:
@@ -253,10 +210,7 @@ class TrainingWorkflowTest(unittest.TestCase):
         result = self.run_workflow(scenario)
 
         result.model.train.assert_called_once_with(
-            data=self.root / 'detect' / 'dataset.yaml',
-            epochs=100,
-            batch=32,
-            imgsz=640,
+            data=self.root / 'detect' / 'dataset.yaml', epochs=100, batch=32, imgsz=640
         )
 
     def test_non_file_best_keeps_trained_model_for_export(self) -> None:
@@ -265,9 +219,7 @@ class TrainingWorkflowTest(unittest.TestCase):
         result = self.run_workflow(scenario)
 
         result.yolo.assert_called_once_with(result.model_yaml_path)
-        result.export_model_to_onnx.assert_called_once_with(
-            result.model, self.root, result.model_name
-        )
+        result.export_model_to_onnx.assert_called_once_with(result.model, self.root, result.model_name)
 
     def test_absent_best_keeps_trained_model_for_export(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
@@ -275,9 +227,7 @@ class TrainingWorkflowTest(unittest.TestCase):
         result = self.run_workflow(scenario, best_present=False)
 
         result.yolo.assert_called_once_with(result.model_yaml_path)
-        result.export_model_to_onnx.assert_called_once_with(
-            result.model, self.root, result.model_name
-        )
+        result.export_model_to_onnx.assert_called_once_with(result.model, self.root, result.model_name)
 
     def test_original_scenario_is_copied_into_trainer_save_dir(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
@@ -291,10 +241,7 @@ class TrainingWorkflowTest(unittest.TestCase):
         classify = TrainingScenario(dataset=standard_recipe(TaskType.CLASSIFY))
         classify_result = self.run_workflow(classify)
         classify_result.copy_class_reference_images.assert_called_once_with(
-            self.root,
-            'classify',
-            classify_result.onnx_path,
-            classify_result.model.names,
+            self.root, 'classify', classify_result.onnx_path, classify_result.model.names
         )
 
         detect = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
@@ -304,10 +251,7 @@ class TrainingWorkflowTest(unittest.TestCase):
     def test_onnx_export_failure_propagates(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
 
-        result = self.run_workflow(
-            scenario,
-            export_error=RuntimeError('export failed'),
-        )
+        result = self.run_workflow(scenario, export_error=RuntimeError('export failed'))
 
         result.copy_class_reference_images.assert_not_called()
 

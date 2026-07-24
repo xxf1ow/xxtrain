@@ -22,10 +22,7 @@ SCENARIO = TrainingScenario(
             (
                 ReadImageInfo(),
                 ReadLabelImg(),
-                PartitionAnnotations(
-                    parent_labels=('1008',),
-                    child_labels=('0', '1', '2'),
-                ),
+                PartitionAnnotations(parent_labels=('1008',), child_labels=('0', '1', '2')),
                 MatchAnnotations(wide=0.1, strict=False),
                 CropMatches(),
                 RelabelCropAnnotations('0'),

@@ -58,11 +58,7 @@ class TrainingModelTest(unittest.TestCase):
             self.assertTrue(target_path.is_file())
 
     def test_task_specific_model_names_use_ultralytics_suffixes(self) -> None:
-        expected = {
-            TaskType.CLASSIFY: 'yolov8n-cls',
-            TaskType.SEGMENT: 'yolov8n-seg',
-            TaskType.POSE: 'yolov8n-pose',
-        }
+        expected = {TaskType.CLASSIFY: 'yolov8n-cls', TaskType.SEGMENT: 'yolov8n-seg', TaskType.POSE: 'yolov8n-pose'}
         for task_type, expected_name in expected.items():
             with self.subTest(task_type=task_type):
                 self.assertEqual(expected_name, model_name(self.scenario(task_type)))

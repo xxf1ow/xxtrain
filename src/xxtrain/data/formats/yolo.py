@@ -31,10 +31,7 @@ def encode_segment(annotation: Shape, image_info: ImageInfo, labels: LabelCatalo
 
 
 def encode_pose(
-    bbox: Bbox,
-    keypoints: Mapping[str, Points],
-    image_info: ImageInfo,
-    keypoint_labels: LabelCatalog,
+    bbox: Bbox, keypoints: Mapping[str, Points], image_info: ImageInfo, keypoint_labels: LabelCatalog
 ) -> str:
     if set(keypoints) != set(keypoint_labels.names):
         raise ValueError('关键点标签与目录不匹配')

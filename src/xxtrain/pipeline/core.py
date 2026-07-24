@@ -101,13 +101,7 @@ class ConversionReport:
     skipped_files: set[Path] = field(default_factory=set)
     missing_annotation_counts: dict[str, int] = field(default_factory=dict)
 
-    def record_output(
-        self,
-        *,
-        train_item: str | None,
-        val_item: str | None,
-        annotation_count: int,
-    ) -> None:
+    def record_output(self, *, train_item: str | None, val_item: str | None, annotation_count: int) -> None:
         if train_item is not None:
             self.train_items.append(train_item)
             self.train_image_count += 1
@@ -159,9 +153,7 @@ class ItemProcessor(ABC, Generic[InputT, OutputT]):
 
     def _validate_input(self, item: object) -> None:
         if not isinstance(item, self.input_type):
-            raise TypeError(
-                f'{type(self).__name__} expected {_type_name(self.input_type)}, got {type(item).__name__}'
-            )
+            raise TypeError(f'{type(self).__name__} expected {_type_name(self.input_type)}, got {type(item).__name__}')
 
     def _validate_output(self, output: object) -> None:
         if not isinstance(output, self.output_type):
@@ -187,8 +179,7 @@ class ExpandProcessor(ABC, Generic[InputT, OutputT]):
             for output in self.expand(item, context):
                 if not isinstance(output, self.output_type):
                     raise TypeError(
-                        f'{type(self).__name__} declared {_type_name(self.output_type)}, '
-                        f'got {type(output).__name__}'
+                        f'{type(self).__name__} declared {_type_name(self.output_type)}, got {type(output).__name__}'
                     )
                 yield output
 
@@ -211,9 +202,7 @@ class Pipeline:
     def validate_boundaries(self, source_type: type, sink_type: type) -> None:
         if not self.processors:
             if not issubclass(source_type, sink_type):
-                raise TypeError(
-                    f'source produces {_type_name(source_type)}, but sink expects {_type_name(sink_type)}'
-                )
+                raise TypeError(f'source produces {_type_name(source_type)}, but sink expects {_type_name(sink_type)}')
             return
         first, last = self.processors[0], self.processors[-1]
         if not issubclass(source_type, first.input_type):

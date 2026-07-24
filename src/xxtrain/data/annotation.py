@@ -211,9 +211,7 @@ class Circle(Shape):
     def translate(self, dx: float, dy: float) -> Self:
         dx, dy = _finite_float(dx), _finite_float(dy)
         return replace(
-            self,
-            center=(self.center[0] + dx, self.center[1] + dy),
-            edge=(self.edge[0] + dx, self.edge[1] + dy),
+            self, center=(self.center[0] + dx, self.center[1] + dy), edge=(self.edge[0] + dx, self.edge[1] + dy)
         )
 
 

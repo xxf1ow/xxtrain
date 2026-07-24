@@ -107,10 +107,7 @@ class TrainingPresetTest(unittest.TestCase):
         for name, expected_types in EXPECTED_SPECIAL_PROCESSORS.items():
             with self.subTest(name=name):
                 recipe = load_case_scenario(name).dataset
-                self.assertEqual(
-                    expected_types,
-                    tuple(type(value) for value in recipe.pipeline.processors),
-                )
+                self.assertEqual(expected_types, tuple(type(value) for value in recipe.pipeline.processors))
                 self.assertEqual(EXPECTED_SPECIAL_LABELS[name], recipe.labels.names)
 
     def test_special_preset_processor_configuration(self) -> None:
@@ -118,17 +115,13 @@ class TrainingPresetTest(unittest.TestCase):
             with self.subTest(name=name):
                 recipe = load_case_scenario(name).dataset
                 filter_processors = tuple(
-                    processor
-                    for processor in recipe.pipeline.processors
-                    if isinstance(processor, FilterLabels)
+                    processor for processor in recipe.pipeline.processors if isinstance(processor, FilterLabels)
                 )
                 if not filter_processors:
                     continue
                 (filter_labels,) = filter_processors
                 expected_input_labels = (
-                    ('tl', 'tc', 'cl', 'cc')
-                    if name.startswith('point-')
-                    else EXPECTED_SPECIAL_LABELS[name]
+                    ('tl', 'tc', 'cl', 'cc') if name.startswith('point-') else EXPECTED_SPECIAL_LABELS[name]
                 )
                 self.assertEqual(expected_input_labels, filter_labels.labels)
                 self.assertEqual(name != 'light1-detect', filter_labels.strict)
@@ -155,14 +148,10 @@ class TrainingPresetTest(unittest.TestCase):
                     if isinstance(processor, FilterMatchingAnnotations)
                 )
                 prepare = next(
-                    processor
-                    for processor in recipe.pipeline.processors
-                    if isinstance(processor, PrepareMatchChildren)
+                    processor for processor in recipe.pipeline.processors if isinstance(processor, PrepareMatchChildren)
                 )
                 matcher = next(
-                    processor
-                    for processor in recipe.pipeline.processors
-                    if isinstance(processor, MatchAnnotations)
+                    processor for processor in recipe.pipeline.processors if isinstance(processor, MatchAnnotations)
                 )
                 self.assertEqual(parent_labels, matching_filter.parent_labels)
                 self.assertEqual(child_labels, matching_filter.child_labels)
@@ -177,17 +166,9 @@ class TrainingPresetTest(unittest.TestCase):
 
         processors = recipe.pipeline.processors
         self.assertEqual(1, sum(isinstance(value, ReadLabelImg) for value in processors))
-        partition = next(
-            processor for processor in processors if isinstance(processor, PartitionAnnotations)
-        )
-        matcher = next(
-            processor for processor in processors if isinstance(processor, MatchAnnotations)
-        )
-        relabel = next(
-            processor
-            for processor in processors
-            if isinstance(processor, RelabelCropAnnotations)
-        )
+        partition = next(processor for processor in processors if isinstance(processor, PartitionAnnotations))
+        matcher = next(processor for processor in processors if isinstance(processor, MatchAnnotations))
+        relabel = next(processor for processor in processors if isinstance(processor, RelabelCropAnnotations))
         self.assertEqual({'1008'}, partition.parent_labels)
         self.assertEqual({'0', '1', '2'}, partition.child_labels)
         self.assertEqual(0.1, matcher.wide)
@@ -208,10 +189,7 @@ class TrainingPresetTest(unittest.TestCase):
             scenario = load_case_scenario('digit-cls')
 
             report = convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
             self.assertEqual(6, report.train_image_count + report.val_image_count)

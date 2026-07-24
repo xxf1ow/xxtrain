@@ -9,18 +9,11 @@ from .sinks import print_conversion_report
 
 
 def convert_dataset(
-    recipe: DatasetRecipe,
-    root_path: str | Path,
-    *,
-    split: int = 10,
-    reserve_no_label: bool = False,
+    recipe: DatasetRecipe, root_path: str | Path, *, split: int = 10, reserve_no_label: bool = False
 ) -> ConversionReport:
     root = Path(root_path)
     if recipe.labels is None:
-        labels = _read_labels(
-            root,
-            strict=recipe.task_type is TaskType.CLASSIFY,
-        )
+        labels = _read_labels(root, strict=recipe.task_type is TaskType.CLASSIFY)
         if recipe.task_type is TaskType.CLASSIFY:
             labels = validate_classification_source(root, labels, split)
     else:

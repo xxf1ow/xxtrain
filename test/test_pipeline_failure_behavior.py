@@ -26,10 +26,7 @@ class NewPipelineFailureBehaviorTest(unittest.TestCase):
         scenario = load_case_scenario('classify')
         with self.assertRaisesRegex(ValueError, 'Classification labels mismatch'):
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
     def test_classification_rejects_unusable_split(self) -> None:
@@ -42,26 +39,17 @@ class NewPipelineFailureBehaviorTest(unittest.TestCase):
         scenario = load_case_scenario('classify')
         with self.assertRaisesRegex(ValueError, 'without train or val samples'):
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
     def test_symlink_failure_falls_back_to_copy(self) -> None:
-        for task_name, fixture_name in (
-            ('detect', 'standard-detect'),
-            ('classify', 'standard-classify'),
-        ):
+        for task_name, fixture_name in (('detect', 'standard-detect'), ('classify', 'standard-classify')):
             with self.subTest(task_name=task_name):
                 root_path = self.copy_fixture(fixture_name)
                 scenario = load_case_scenario(task_name)
                 with patch('xxtrain.pipeline.sinks.os.symlink', side_effect=OSError('unavailable')):
                     convert_dataset(
-                        scenario.dataset,
-                        root_path,
-                        split=scenario.split,
-                        reserve_no_label=scenario.reserve_no_label,
+                        scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
                     )
                 actual = collect_output_manifest(root_path, task_name)
                 expected = json.loads((EXPECTED_PATH / f'{task_name}.json').read_text(encoding='utf-8'))
@@ -87,10 +75,7 @@ class NewPipelineFailureBehaviorTest(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'second output failed'):
                 scenario = load_case_scenario('detect')
                 convert_dataset(
-                    scenario.dataset,
-                    root_path,
-                    split=scenario.split,
-                    reserve_no_label=scenario.reserve_no_label,
+                    scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
                 )
         self.assertTrue((root_path / 'detect' / '20260620' / '0000.jpg').exists())
         self.assertTrue((root_path / 'detect' / '20260620' / '0000.txt').exists())

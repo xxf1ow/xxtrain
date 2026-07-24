@@ -41,10 +41,7 @@ def update_snapshots() -> None:
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
             scenario = load_case_scenario(task_type)
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
             manifest = collect_output_manifest(root_path, task_type)
         snapshot = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
@@ -63,10 +60,7 @@ class ConversionBaselineTest(unittest.TestCase):
             with warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter('always', ResourceWarning)
                 convert_dataset(
-                    scenario.dataset,
-                    root_path,
-                    split=scenario.split,
-                    reserve_no_label=scenario.reserve_no_label,
+                    scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
                 )
                 gc.collect()
             resource_warnings = [item for item in caught_warnings if issubclass(item.category, ResourceWarning)]
@@ -102,21 +96,14 @@ class OutputManifestTest(unittest.TestCase):
                     f'  - {resolved_root}\\detect\\images\\train\r\n'
                 ).encode()
             )
-            (output_path / 'train.txt').write_bytes(
-                f'{resolved_root}\\detect\\images\\train\\sample.png\r\n'.encode()
-            )
+            (output_path / 'train.txt').write_bytes(f'{resolved_root}\\detect\\images\\train\\sample.png\r\n'.encode())
             label_path.write_bytes(b'0 0.5 0.5 0.25 0.5\r\n')
             with Image.new('RGB', (3, 2), color=(12, 34, 56)) as image:
                 image.save(image_path)
 
             self.assertEqual(
                 {
-                    'files': [
-                        'dataset.yaml',
-                        'images/train/sample.png',
-                        'labels/train/sample.txt',
-                        'train.txt',
-                    ],
+                    'files': ['dataset.yaml', 'images/train/sample.png', 'labels/train/sample.txt', 'train.txt'],
                     'text_files': {
                         'labels/train/sample.txt': '0 0.5 0.5 0.25 0.5\n',
                         'train.txt': '<ROOT>/detect/images/train/sample.png\n',

@@ -14,13 +14,13 @@ class TrainingExportingTest(unittest.TestCase):
         path = root / 'scenario.py'
         path.write_text(
             textwrap.dedent(
-                f'''
+                f"""
                 from xxtrain.pipeline import standard_recipe
                 from xxtrain.task import TaskType
                 from xxtrain.training import TrainingScenario
 
                 SCENARIO = TrainingScenario(dataset=standard_recipe(TaskType.{task}))
-                '''
+                """
             ),
             encoding='utf-8',
         )

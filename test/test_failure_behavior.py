@@ -14,10 +14,7 @@ from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 EXPECTED_PATH = Path(__file__).resolve().parent / 'expected' / 'conversions'
-SYMLINK_FALLBACK_CASES = [
-    ('detect', 'standard-detect'),
-    ('classify', 'standard-classify'),
-]
+SYMLINK_FALLBACK_CASES = [('detect', 'standard-detect'), ('classify', 'standard-classify')]
 
 
 @contextmanager
@@ -63,10 +60,7 @@ class FailureBehaviorTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, 'Classification labels mismatch'):
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
     def test_classification_rejects_split_without_train_samples(self) -> None:
@@ -81,10 +75,7 @@ class FailureBehaviorTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, 'without train or val samples'):
             convert_dataset(
-                scenario.dataset,
-                root_path,
-                split=scenario.split,
-                reserve_no_label=scenario.reserve_no_label,
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
             )
 
     def test_symlink_failure_falls_back_to_copied_images(self) -> None:
@@ -94,10 +85,7 @@ class FailureBehaviorTest(unittest.TestCase):
                 scenario = load_case_scenario(task_type)
                 with unavailable_symlinks():
                     convert_dataset(
-                        scenario.dataset,
-                        root_path,
-                        split=scenario.split,
-                        reserve_no_label=scenario.reserve_no_label,
+                        scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
                     )
 
                 actual = collect_output_manifest(root_path, task_type)

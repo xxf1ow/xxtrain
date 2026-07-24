@@ -35,6 +35,7 @@ class DatasetRecipe:
     def __post_init__(self) -> None:
         self.pipeline.validate_boundaries(DirectorySource.output_type, self.sink.input_type)
 
+
 class _LegacyLabelCatalog(LabelCatalog):
     def __post_init__(self) -> None:
         if type(self.names) is not tuple or not self.names or any(not isinstance(name, str) for name in self.names):

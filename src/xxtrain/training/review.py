@@ -56,9 +56,7 @@ def _review_classification(best_model: YOLO, directory: str | Path) -> None:
             save_dir = Path(best_model.predictor.save_dir) / f'{true_name} - {pred_name}'
             save_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(image_path, save_dir / os.path.basename(image_path))
-            mismatched.append(
-                f'expect: {true_idx}-{true_name}, actual: {pred_idx}-{pred_name} ==> {image_path}'
-            )
+            mismatched.append(f'expect: {true_idx}-{true_name}, actual: {pred_idx}-{pred_name} ==> {image_path}')
 
     print('✅ Validation completed!')
     print(f'📊 Total samples processed: {total_count}')

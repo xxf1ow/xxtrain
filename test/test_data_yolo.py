@@ -24,39 +24,22 @@ class YoloEncoderTest(unittest.TestCase):
 
     def test_segment_rejects_shapes_with_fewer_than_three_points(self) -> None:
         with self.assertRaisesRegex(ValueError, '至少三点'):
-            encode_segment(
-                Line(label='line', points=[[0, 0], [1, 1]]),
-                self.image,
-                LabelCatalog(names=('line',)),
-            )
+            encode_segment(Line(label='line', points=[[0, 0], [1, 1]]), self.image, LabelCatalog(names=('line',)))
 
     def test_encodes_pose_in_catalog_order_with_fixed_class_zero(self) -> None:
         bbox = Bbox(label='object', x1=20, y1=10, x2=100, y2=50)
-        keypoints = {
-            'end': Points(label='end', points=[[100, 50]]),
-            'start': Points(label='start', points=[[20, 10]]),
-        }
+        keypoints = {'end': Points(label='end', points=[[100, 50]]), 'start': Points(label='start', points=[[20, 10]])}
 
         self.assertEqual(
             '0 0.300000 0.300000 0.400000 0.400000 0.100000 0.100000 2 0.500000 0.500000 2',
-            encode_pose(
-                bbox,
-                keypoints,
-                self.image,
-                LabelCatalog(names=('start', 'end')),
-            ),
+            encode_pose(bbox, keypoints, self.image, LabelCatalog(names=('start', 'end'))),
         )
 
     def test_pose_requires_exact_single_point_catalog_mapping(self) -> None:
         bbox = Bbox(label='object', x1=20, y1=10, x2=100, y2=50)
         catalog = LabelCatalog(names=('start', 'end'))
         with self.assertRaisesRegex(ValueError, '关键点标签与目录不匹配'):
-            encode_pose(
-                bbox,
-                {'start': Points(label='start', points=[[20, 10]])},
-                self.image,
-                catalog,
-            )
+            encode_pose(bbox, {'start': Points(label='start', points=[[20, 10]])}, self.image, catalog)
         with self.assertRaisesRegex(ValueError, '单点'):
             encode_pose(
                 bbox,

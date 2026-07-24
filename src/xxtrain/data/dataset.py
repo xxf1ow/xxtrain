@@ -30,21 +30,13 @@ def split_membership(index: int, split: int) -> tuple[bool, bool]:
 
 
 def write_split_lists(
-    root_path: str | Path,
-    output_name: str,
-    train_items: Sequence[str],
-    val_items: Sequence[str],
+    root_path: str | Path, output_name: str, train_items: Sequence[str], val_items: Sequence[str]
 ) -> None:
     train_list_path(root_path, output_name).write_text('\n'.join(train_items), encoding='utf-8')
     val_list_path(root_path, output_name).write_text('\n'.join(val_items), encoding='utf-8')
 
 
-def write_dataset_yaml(
-    root_path: str | Path,
-    output_name: str,
-    task_type: TaskType,
-    labels: LabelCatalog,
-) -> None:
+def write_dataset_yaml(root_path: str | Path, output_name: str, task_type: TaskType, labels: LabelCatalog) -> None:
     content = f'path: {os.path.abspath(root_path)}\n'
     content += f'train: {output_name}/train.txt\n'
     content += f'val: {output_name}/val.txt\n'

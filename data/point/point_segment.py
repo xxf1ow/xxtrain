@@ -22,11 +22,7 @@ SCENARIO = TrainingScenario(
             (
                 ReadImageInfo(),
                 ReadMatchingAnnotations(),
-                FilterMatchingAnnotations(
-                    parent_labels=('tl', 'tc', 'cl', 'cc'),
-                    child_labels=('1',),
-                    strict=True,
-                ),
+                FilterMatchingAnnotations(parent_labels=('tl', 'tc', 'cl', 'cc'), child_labels=('1',), strict=True),
                 PrepareMatchChildren(TaskType.SEGMENT),
                 MatchAnnotations(wide=0, strict=False),
                 CropMatches(),

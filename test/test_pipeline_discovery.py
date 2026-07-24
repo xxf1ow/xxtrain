@@ -37,8 +37,7 @@ class PipelineDiscoveryTest(unittest.TestCase):
 
             self.assertEqual(['a/z', 'b/1', 'b/2'], [sample.id for sample in samples])
             self.assertEqual(
-                [('a', 0), ('b', 0), ('b', 1)],
-                [(sample.source_group, sample.source_index) for sample in samples],
+                [('a', 0), ('b', 0), ('b', 1)], [(sample.source_group, sample.source_index) for sample in samples]
             )
             self.assertTrue(all(sample.image.info is None for sample in samples))
             self.assertTrue(all(sample.image.path.is_absolute() for sample in samples))
