@@ -10,11 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## What this is
 
-xxtrain is a training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It converts LabelImg/LabelMe annotations into YOLO datasets, generates model configuration, downloads pretrained weights, trains, validates, and exports ONNX models.
+xxtrain is a training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It converts LabelImg/LabelMe annotations into YOLO datasets, generates model configuration, downloads pretrained weights, trains, inspects prediction results, and exports ONNX models.
 
-All Python source lives under `src/`. `src/train.py` is still the executable training entry point. Dataset conversion is implemented by the installable-package-shaped source tree under `src/xxtrain/`; do not recreate or import the removed flat modules `annparser.py`, `annprocessor.py`, or `annconverter.py`.
+All Python source lives under `src/`. `src/train.py`, `src/export.py`, and `src/review.py` are the current checkout-based entry points. Dataset conversion and training orchestration live in the installable-package-shaped source tree under `src/xxtrain/`; do not recreate or import the removed flat modules `annparser.py`, `annprocessor.py`, or `annconverter.py`.
 
-Do not confuse the repository's `src/` directory with a dataset's `<root_path>/src/` input directory. They are unrelated despite the shared name.
+Do not confuse the repository's `src/` directory with a Scenario's `<scenario_dir>/src/` input directory. They are unrelated despite the shared name.
 
 ## Current source boundaries
 
@@ -50,36 +50,49 @@ Conversion uses a typed, streaming `Source -> Pipeline -> Sink` architecture:
 - `ItemProcessor` maps one input to at most one output; `ExpandProcessor` maps one input to multiple ordered outputs.
 - `Pipeline` validates neighboring processor types and streams values without a shared payload dictionary.
 - Sinks are the only layer that writes dataset images, labels, lists, and YAML. Crop processors defer image materialization by storing a crop box in `ImageRef`.
-- `convert_dataset()` selects one of the supported recipes, executes the stream, finalizes the sink, and returns a `ConversionReport`.
+- `convert_dataset(recipe, root, *, split=10, reserve_no_label=False)` executes the supplied `DatasetRecipe`, finalizes its sink, and returns a `ConversionReport`.
 
 The stable `xxtrain.pipeline` public API is deliberately limited to:
 
-`Context`, `ConversionConfig`, `ConversionReport`, `ExpandProcessor`, `ImageRef`, `ItemProcessor`, `Pipeline`, `Sample`, and `convert_dataset`.
+`Context`, `ConversionConfig`, `ConversionReport`, `DatasetRecipe`, `ExpandProcessor`, `ImageRef`, `ItemProcessor`, `Pipeline`, `Sample`, `convert_dataset`, and `standard_recipe`.
 
-Stage-specific records, discovery classes, concrete processors, recipes, and sinks are internal implementation details and should be imported from their defining modules only when implementing or testing those internals.
+`standard_recipe()` owns the detect, segment, pose, and classify pipelines. Special point, knob, and light recipes are composed in their corresponding Scenario files under `data/`, not in a central task-name registry. Stage-specific records, discovery classes, concrete processors, and sinks are internal implementation details; the tracked preset Scenarios may import them from their defining modules, but they are not a general third-party plugin API.
+
+### `xxtrain.training`
+
+A Python Scenario file is the composition root for one dataset and training workflow. It exports `SCENARIO: TrainingScenario`, which contains:
+
+- a `DatasetRecipe` (`labels + Pipeline + Sink`);
+- model version and scale;
+- split settings with `reserve_no_label=False` by default;
+- overrides passed to `YOLO.train()`.
+
+Relative `Path` values inside Scenario `train_args` resolve against the Scenario file's directory. Ordinary strings are unchanged. The stable `xxtrain.training` public API is:
+
+`TrainingScenario`, `load_scenario`, `train`, `export`, and `review`.
+
+Model-template handling, pretrained-weight preparation, classification mismatch reporting, and other orchestration details remain internal.
 
 ## Commands
 
-Production workflows run through `src/train.py`.
+Current source-checkout workflows take a Scenario file:
 
-```bash
+```powershell
 # Full pipeline: convert -> generate model.yaml -> download weights -> train -> export ONNX
-python src/train.py --task_type point-detect --root_path data/point
-
-# Standard task; labels come from <root_path>/src/labels.txt
-python src/train.py --task_type detect --root_path data/<dataset> --model_version v8 --model_scale n
+python src/train.py data/standard-detect/standard_detect.py
 
 # Export an existing checkpoint
-python src/train.py --mode export --root_path data/point --task_type point-classify --weights runs/classify/train9/weights/best.pt
+python src/export.py data/standard-detect/standard_detect.py --weights runs/detect/train/weights/best.pt
 
-# Validate a checkpoint; task is inferred from the weights
-python src/train.py --mode val --weights runs/classify/train16/weights/best.pt --directory data/light/light-classify
+# Inspect prediction results for an existing checkpoint
+python src/review.py data/standard-detect/standard_detect.py --weights runs/detect/train/weights/best.pt --directory path/to/images
 
 # Canonical test command
 python -m unittest discover -s test -t . -p 'test_*.py' -v
 
 # Static verification
 ruff check src test
+ruff format --check src test
 python -m compileall -q src test
 git diff --check
 
@@ -87,18 +100,20 @@ git diff --check
 ruff format src test
 ```
 
+`review.py` performs prediction result inspection; it does not call `model.val()`. Detect, segment, pose, and OBB checkpoints save prediction visualizations. Classification checkpoints infer the expected class from each image's parent directory, collect mismatches, and write a report.
+
 Test fixtures live in `test/fixtures/` and human-reviewed semantic snapshots live in `test/expected/conversions/`. Tests import the new package directly; there is no `test/support/current_api.py` compatibility adapter.
 
-## Task names
+## Recipe ownership
 
-Supported standard recipes:
+`standard_recipe(TaskType)` supports four standard recipes:
 
 - `detect`
 - `segment`
 - `pose`
 - `classify`
 
-Supported custom recipes:
+Seven special recipes are owned by tracked Scenario files:
 
 - `point-detect`
 - `point-classify`
@@ -108,32 +123,41 @@ Supported custom recipes:
 - `light1-detect`
 - `light2-detect`
 
-`scale-pose` is intentionally unsupported in the new pipeline. Unknown names fail before filesystem access with `ValueError("Unsupported task type: <name>")`.
+There is no task-name registry, legacy `Recipe`, or `build_recipe()`. `DatasetRecipe.task_type` directly selects the Ultralytics model family; OBB has no standard conversion recipe yet. `scale-pose` remains unsupported.
 
-The final suffix still selects the Ultralytics model family in `src/train.py`: `classify`, `detect`, `obb`, `pose`, or `segment`. OBB has no conversion recipe yet.
+## Scenario and dataset convention
 
-## Dataset convention
-
-Input layout:
+The Scenario file's parent directory is the dataset root:
 
 ```text
-root_path/
-└── src/
-    ├── <group>/
-    │   ├── imgs/
-    │   ├── anns/       # LabelImg XML
-    │   └── anns_seg/   # LabelMe JSON
-    └── labels.txt      # standard recipes only
+<scenario_dir>/
+├── <scenario>.py
+├── src/
+│   ├── <group>/
+│   │   ├── imgs/
+│   │   ├── anns/       # LabelImg XML
+│   │   └── anns_seg/   # LabelMe JSON
+│   └── labels.txt      # standard recipes only
+├── <recipe.name>/      # generated dataset and model YAML
+└── weights/            # exported ONNX and classification references
 ```
 
-Non-classification outputs are written under `<root_path>/<task_name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are written under `train/<class>/` and `val/<class>/`.
+Standard recipes read labels at conversion time from `<scenario_dir>/src/labels.txt`; special recipes carry a fixed `LabelCatalog` in their Scenario. Non-classification outputs are written under `<scenario_dir>/<recipe.name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are written under `train/<class>/` and `val/<class>/`.
 
-`--split N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `--reserve_no_label` keeps zero-annotation images in split lists. `src/train.py` still skips conversion when its expected output already exists; source-change detection and forced rebuilding remain future work.
+`TrainingScenario.split=N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `TrainingScenario.reserve_no_label` defaults to `False`; set it to `True` in the Scenario only when zero-annotation images must remain in split lists. Training still skips conversion when the expected output exists; source-change detection and forced rebuilding remain future work.
+
+The repository ignores `data/` by default. New Scenario files therefore require forced staging:
+
+```powershell
+git add -f data/<dataset>/<scenario>.py
+```
+
+Do not force-add raw datasets or generated outputs.
 
 ## Migration status
 
 - Behavior baseline: complete.
 - Data layer migration: complete.
 - Typed pipeline and conversion-entry cutover: complete.
-- Training workflow/package entry migration: not started.
+- Scenario-driven training, export, and prediction-review migration: complete.
 - Packaging and installable CLI: not started.
