@@ -47,9 +47,11 @@ def train(scenario_path: str | Path) -> None:
         shutil.copy(resolved_scenario_path, Path(save_dir) / resolved_scenario_path.name)
 
     best_model = model
-    best_path = getattr(trainer, 'best', None)
-    if best_path is not None and Path(best_path).is_file():
+    best_path = getattr(trainer, 'best', '')
+    if best_path and Path(best_path).is_file():
         best_model = YOLO(best_path)
+    else:
+        print(f'❌ Training completed! But the best model checkpoint not found at {best_path} ...')
 
     onnx_path = export_model_to_onnx(best_model, root, name)
     if scenario.dataset.task_type is TaskType.CLASSIFY:

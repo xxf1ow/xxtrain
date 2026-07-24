@@ -216,18 +216,24 @@ class TrainingWorkflowTest(unittest.TestCase):
     def test_non_file_best_keeps_trained_model_for_export(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
 
-        result = self.run_workflow(scenario)
+        with patch('builtins.print') as print_mock:
+            result = self.run_workflow(scenario)
 
         result.yolo.assert_called_once_with(result.model_yaml_path)
         result.export_model_to_onnx.assert_called_once_with(result.model, self.root, result.model_name)
+        print_mock.assert_any_call(
+            f'❌ Training completed! But the best model checkpoint not found at {result.best_path} ...'
+        )
 
     def test_absent_best_keeps_trained_model_for_export(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
 
-        result = self.run_workflow(scenario, best_present=False)
+        with patch('builtins.print') as print_mock:
+            result = self.run_workflow(scenario, best_present=False)
 
         result.yolo.assert_called_once_with(result.model_yaml_path)
         result.export_model_to_onnx.assert_called_once_with(result.model, self.root, result.model_name)
+        print_mock.assert_any_call('❌ Training completed! But the best model checkpoint not found at  ...')
 
     def test_original_scenario_is_copied_into_trainer_save_dir(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
