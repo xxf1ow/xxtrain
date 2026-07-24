@@ -50,7 +50,7 @@ Conversion uses a typed, streaming `Source -> Pipeline -> Sink` architecture:
 - `ItemProcessor` maps one input to at most one output; `ExpandProcessor` maps one input to multiple ordered outputs.
 - `Pipeline` validates neighboring processor types and streams values without a shared payload dictionary.
 - Sinks are the only layer that writes dataset images, labels, lists, and YAML. Crop processors defer image materialization by storing a crop box in `ImageRef`.
-- `convert_dataset(recipe, root, *, split=10, reserve_no_label=False)` executes the supplied `DatasetRecipe`, finalizes its sink, and returns a `ConversionReport`.
+- `convert_dataset(recipe, root_path, *, split=10, reserve_no_label=False)` executes the supplied `DatasetRecipe`, finalizes its sink, and returns a `ConversionReport`.
 
 The stable `xxtrain.pipeline` public API is deliberately limited to:
 

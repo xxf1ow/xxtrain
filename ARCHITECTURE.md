@@ -112,7 +112,7 @@ Scenario 文件必须导出 `SCENARIO: TrainingScenario`。其中 `DatasetRecipe
 
 旧的 `annparser.py`、`annprocessor.py`、`annconverter.py` 已在 typed pipeline 承接全部既有任务后删除。
 
-`xxtrain.pipeline` 包级受支持 API 为 `Context`、`ConversionConfig`、`ConversionReport`、`DatasetRecipe`、`ExpandProcessor`、`ImageRef`、`ItemProcessor`、`Pipeline`、`Sample`、`convert_dataset` 和 `standard_recipe`。`convert_dataset(recipe, root, *, split=10, reserve_no_label=False)` 直接接收 Recipe，不保留旧任务名注册表或旧转换签名。
+`xxtrain.pipeline` 包级受支持 API 为 `Context`、`ConversionConfig`、`ConversionReport`、`DatasetRecipe`、`ExpandProcessor`、`ImageRef`、`ItemProcessor`、`Pipeline`、`Sample`、`convert_dataset` 和 `standard_recipe`。`convert_dataset(recipe, root_path, *, split=10, reserve_no_label=False)` 直接接收 Recipe，不保留旧任务名注册表或旧转换签名。
 
 `xxtrain.training` 包级受支持 API 为 `TrainingScenario`、`load_scenario`、`train`、`export` 和 `review`。模型模板处理、预训练下载、分类错分整理等细节保持内部实现。
 

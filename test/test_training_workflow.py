@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,7 @@ class TrainingWorkflowTest(unittest.TestCase):
         best_model.names = {0: 'alpha'}
         onnx_path = self.root / 'weights' / f'{model_name}.onnx'
         recorded_calls = calls if calls is not None else []
+        copy_scenario = shutil.copy
 
         def load_scenario(path: Path) -> TrainingScenario:
             recorded_calls.append('load_scenario')
@@ -85,6 +87,13 @@ class TrainingWorkflowTest(unittest.TestCase):
             patch(
                 'xxtrain.training.workflow.copy_class_reference_images'
             ) as copy_class_reference_images_mock,
+            patch(
+                'xxtrain.training.workflow.shutil.copy',
+                side_effect=lambda source, target: (
+                    recorded_calls.append('copy_scenario'),
+                    copy_scenario(source, target),
+                )[1],
+            ),
         ):
             convert_dataset_mock.side_effect = lambda *args, **kwargs: recorded_calls.append(
                 'convert_dataset'
@@ -171,6 +180,7 @@ class TrainingWorkflowTest(unittest.TestCase):
                 'YOLO',
                 'load',
                 'train',
+                'copy_scenario',
                 'reload_best',
                 'export_model_to_onnx',
                 'copy_class_reference_images',
@@ -183,6 +193,9 @@ class TrainingWorkflowTest(unittest.TestCase):
             result.yolo.call_args_list,
         )
         result.model.load.assert_called_once_with(result.pretrained_path)
+        result.export_model_to_onnx.assert_called_once_with(
+            result.best_model, self.root, result.model_name
+        )
 
     def test_existing_classification_output_skips_conversion(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.CLASSIFY))
