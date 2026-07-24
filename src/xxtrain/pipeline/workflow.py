@@ -16,12 +16,15 @@ def convert_dataset(
     reserve_no_label: bool = False,
 ) -> ConversionReport:
     root = Path(root_path)
-    labels = recipe.labels or _read_labels(
-        root,
-        strict=recipe.task_type is TaskType.CLASSIFY,
-    )
-    if recipe.task_type is TaskType.CLASSIFY and isinstance(recipe, DatasetRecipe):
-        labels = validate_classification_source(root, labels, split)
+    if recipe.labels is None:
+        labels = _read_labels(
+            root,
+            strict=recipe.task_type is TaskType.CLASSIFY,
+        )
+        if recipe.task_type is TaskType.CLASSIFY:
+            labels = validate_classification_source(root, labels, split)
+    else:
+        labels = recipe.labels
     context = Context(
         config=ConversionConfig(
             task_name=recipe.name,

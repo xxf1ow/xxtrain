@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from test.support.output_manifest import collect_output_manifest
-from test.support.scenarios import recipe_for_case
+from test.support.scenarios import load_case_scenario
 from xxtrain.pipeline import convert_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,11 +39,12 @@ def update_snapshots() -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
             root_path = Path(temp_dir) / fixture_name
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
+            scenario = load_case_scenario(task_type)
             convert_dataset(
-                recipe_for_case(task_type, root_path),
+                scenario.dataset,
                 root_path,
-                split=10,
-                reserve_no_label=False,
+                split=scenario.split,
+                reserve_no_label=scenario.reserve_no_label,
             )
             manifest = collect_output_manifest(root_path, task_type)
         snapshot = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
@@ -57,14 +58,15 @@ class ConversionBaselineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
             root_path = Path(temp_dir) / fixture_name
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
+            scenario = load_case_scenario(task_type)
 
             with warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter('always', ResourceWarning)
                 convert_dataset(
-                    recipe_for_case(task_type, root_path),
+                    scenario.dataset,
                     root_path,
-                    split=10,
-                    reserve_no_label=False,
+                    split=scenario.split,
+                    reserve_no_label=scenario.reserve_no_label,
                 )
                 gc.collect()
             resource_warnings = [item for item in caught_warnings if issubclass(item.category, ResourceWarning)]

@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-from test.support.scenarios import recipe_for_case
+from test.support.scenarios import load_case_scenario
 from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
@@ -24,11 +24,12 @@ class TaskTransformsTest(unittest.TestCase):
         root_path = self.copy_fixture('point')
 
         for task_type in ('point-detect', 'point-classify', 'point-segment'):
+            scenario = load_case_scenario(task_type)
             convert_dataset(
-                recipe_for_case(task_type, root_path),
+                scenario.dataset,
                 root_path,
-                split=10,
-                reserve_no_label=False,
+                split=scenario.split,
+                reserve_no_label=scenario.reserve_no_label,
             )
 
         dataset = yaml.safe_load((root_path / 'point-detect' / 'dataset.yaml').read_text(encoding='utf-8'))
@@ -48,11 +49,12 @@ class TaskTransformsTest(unittest.TestCase):
 
     def test_knob_segment_transforms(self) -> None:
         root_path = self.copy_fixture('knob')
+        scenario = load_case_scenario('knob-segment')
         convert_dataset(
-            recipe_for_case('knob-segment', root_path),
+            scenario.dataset,
             root_path,
-            split=10,
-            reserve_no_label=False,
+            split=scenario.split,
+            reserve_no_label=scenario.reserve_no_label,
         )
 
         output_path = root_path / 'knob-segment' / '251010'
@@ -65,11 +67,12 @@ class TaskTransformsTest(unittest.TestCase):
     def test_light_stage_transforms(self) -> None:
         root_path = self.copy_fixture('light')
         for task_type in ('light1-detect', 'light2-detect'):
+            scenario = load_case_scenario(task_type)
             convert_dataset(
-                recipe_for_case(task_type, root_path),
+                scenario.dataset,
                 root_path,
-                split=10,
-                reserve_no_label=False,
+                split=scenario.split,
+                reserve_no_label=scenario.reserve_no_label,
             )
 
         light1_lines = (root_path / 'light1-detect' / 'set1' / '000000.txt').read_text(encoding='utf-8').splitlines()
@@ -84,11 +87,12 @@ class TaskTransformsTest(unittest.TestCase):
 
     def test_standard_pose_transform(self) -> None:
         root_path = self.copy_fixture('standard-pose')
+        scenario = load_case_scenario('pose')
         convert_dataset(
-            recipe_for_case('pose', root_path),
+            scenario.dataset,
             root_path,
-            split=10,
-            reserve_no_label=False,
+            split=scenario.split,
+            reserve_no_label=scenario.reserve_no_label,
         )
 
         self.assertEqual(

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from test.support.output_manifest import collect_output_manifest
-from test.support.scenarios import recipe_for_case
+from test.support.scenarios import load_case_scenario
 from test.test_conversion_baseline import BASELINE_CASES, FIXTURES_PATH
 from xxtrain.pipeline import convert_dataset
 
@@ -41,12 +41,13 @@ class ReproducibilityTest(unittest.TestCase):
                         root_path = Path(temp_dir) / copy_name
                         shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
                         source_snapshot = snapshot_tree(root_path / 'src')
+                        scenario = load_case_scenario(task_type)
 
                         convert_dataset(
-                            recipe_for_case(task_type, root_path),
+                            scenario.dataset,
                             root_path,
-                            split=10,
-                            reserve_no_label=False,
+                            split=scenario.split,
+                            reserve_no_label=scenario.reserve_no_label,
                         )
 
                         self.assertEqual(
