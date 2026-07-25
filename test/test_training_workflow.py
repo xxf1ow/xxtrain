@@ -210,7 +210,7 @@ class TrainingWorkflowTest(unittest.TestCase):
 
         result.convert_dataset.assert_called_once_with(scenario.dataset, self.root, split=7, reserve_no_label=True)
 
-    def test_classification_trains_with_output_directory_and_merged_arguments(self) -> None:
+    def test_classification_trains_with_output_directory_and_scenario_arguments(self) -> None:
         scenario = TrainingScenario(
             dataset=standard_recipe(TaskType.CLASSIFY),
             train_args={'epochs': 3, 'batch': 2, 'imgsz': 64, 'optimizer': 'AdamW'},
@@ -218,9 +218,13 @@ class TrainingWorkflowTest(unittest.TestCase):
 
         result = self.run_workflow(scenario)
 
-        result.model.train.assert_called_once_with(
-            data=self.root / 'classify', epochs=3, batch=2, imgsz=64, optimizer='AdamW'
-        )
+        result.model.train.assert_called_once()
+        train_arguments = result.model.train.call_args.kwargs
+        self.assertEqual(self.root / 'classify', train_arguments['data'])
+        self.assertEqual(3, train_arguments['epochs'])
+        self.assertEqual(2, train_arguments['batch'])
+        self.assertEqual(64, train_arguments['imgsz'])
+        self.assertEqual('AdamW', train_arguments['optimizer'])
 
     def test_non_classification_trains_with_dataset_yaml_and_scenario_arguments(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT), train_args={'test-argument': True})

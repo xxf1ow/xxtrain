@@ -5,10 +5,7 @@ from xxtrain.training import TrainingScenario
 SCENARIO = TrainingScenario(
     dataset=standard_recipe(TaskType.CLASSIFY),
     train_args={
-        'epochs': 80,
         'batch': 16,
-        'imgsz': 320,
-        'patience': 15,
         'optimizer': 'AdamW',
         'lr0': 0.0005,
         'lrf': 0.05,
