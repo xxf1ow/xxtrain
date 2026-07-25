@@ -180,34 +180,61 @@ class PipelineSinkTest(unittest.TestCase):
                 unlink.assert_called_once_with()
                 copy2.assert_called_once_with(source, target)
 
-    def test_classification_sink_can_repeat_an_interrupted_write_when_symlinks_are_unavailable(self) -> None:
+    def test_classification_sink_can_repeat_an_interrupted_write(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source = self.make_image(root)
-            context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            source = self.make_image(root, size=(10, 7))
+            source_bytes = source.read_bytes()
             output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='image.png')
 
-            with patch('xxtrain.pipeline.sinks.os.symlink', side_effect=OSError('unavailable')):
-                ClassificationDatasetSink().write(output, context)
-                restarted_context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
-                ClassificationDatasetSink().write(output, restarted_context)
-
+            first_context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            ClassificationDatasetSink().write(output, first_context)
             target = root / 'classify' / 'train' / 'label' / 'image.png'
-            self.assertEqual(source.read_bytes(), target.read_bytes())
-            self.assertFalse(target.is_symlink())
+            first_output = target.read_bytes()
+
+            restarted_context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            ClassificationDatasetSink().write(output, restarted_context)
+
+            self.assertEqual(first_output, target.read_bytes())
+            self.assertEqual(source_bytes, source.read_bytes())
             self.assertEqual([str(target.absolute())], restarted_context.report.train_items)
 
-    def test_standard_classification_preserves_original_name(self) -> None:
+    def test_standard_classification_letterboxes_wide_image_to_224(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source = self.make_image(root, name='source.png')
+            source = self.make_image(root, size=(10, 7), name='source.png')
+            source_bytes = source.read_bytes()
             context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
             output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='source.png')
+
             ClassificationDatasetSink().write(output, context)
+
             target = root / 'classify' / 'train' / 'label' / 'source.png'
-            self.assertTrue(target.is_file())
-            self.assertFalse((root / 'classify' / 'val' / 'label' / 'source.png').exists())
+            with Image.open(target).convert('RGB') as image:
+                self.assertEqual((224, 224), image.size)
+                self.assertEqual((114, 114, 114), image.getpixel((0, 32)))
+                self.assertEqual((10, 20, 30), image.getpixel((0, 33)))
+                self.assertEqual((10, 20, 30), image.getpixel((223, 189)))
+                self.assertEqual((114, 114, 114), image.getpixel((0, 190)))
+            self.assertEqual(source_bytes, source.read_bytes())
             self.assertEqual([str(target.absolute())], context.report.train_items)
+
+    def test_standard_classification_letterboxes_tall_image_to_224(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root, size=(7, 10), name='source.png')
+            context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='source.png')
+
+            ClassificationDatasetSink().write(output, context)
+
+            target = root / 'classify' / 'train' / 'label' / 'source.png'
+            with Image.open(target).convert('RGB') as image:
+                self.assertEqual((224, 224), image.size)
+                self.assertEqual((114, 114, 114), image.getpixel((32, 0)))
+                self.assertEqual((10, 20, 30), image.getpixel((33, 0)))
+                self.assertEqual((10, 20, 30), image.getpixel((189, 223)))
+                self.assertEqual((114, 114, 114), image.getpixel((190, 0)))
 
     def test_classification_sink_preserves_relative_output_paths_in_split_lists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
@@ -234,14 +261,15 @@ class PipelineSinkTest(unittest.TestCase):
                 crop_box=(1.9, 1.9, 7.9, 5.9),
                 info=ImageInfo(width=6, height=4),
             )
-            output = ClassifyOutput(sample=sample, class_name='label', output_name='group_0_0.jpg')
+            output = ClassifyOutput(sample=sample, class_name='label', output_name='group_0_0.png')
             ClassificationDatasetSink(indexed_class_directories=True).write(output, context)
-            target = root / 'point-classify' / 'val' / '00-label' / 'group_0_0.jpg'
-            with Image.open(target) as image:
-                self.assertEqual((6, 6), image.size)
-                self.assertLess(sum(image.getpixel((3, 0))), 30)
-                self.assertGreater(sum(image.getpixel((3, 2))), 30)
-                self.assertLess(sum(image.getpixel((3, 5))), 30)
+            target = root / 'point-classify' / 'val' / '00-label' / 'group_0_0.png'
+            with Image.open(target).convert('RGB') as image:
+                self.assertEqual((224, 224), image.size)
+                self.assertEqual((114, 114, 114), image.getpixel((112, 36)))
+                self.assertEqual((10, 20, 30), image.getpixel((112, 37)))
+                self.assertEqual((10, 20, 30), image.getpixel((112, 185)))
+                self.assertEqual((114, 114, 114), image.getpixel((112, 186)))
             self.assertEqual((0, 1), (context.report.train_image_count, context.report.val_image_count))
             self.assertEqual(1, context.report.val_annotation_count)
 
@@ -271,6 +299,9 @@ class PipelineSinkTest(unittest.TestCase):
             val = root / 'classify' / 'val' / 'label' / 'image.png'
             self.assertTrue(train.is_file())
             self.assertTrue(val.is_file())
+            self.assertEqual(train.read_bytes(), val.read_bytes())
+            with Image.open(train) as image:
+                self.assertEqual((224, 224), image.size)
             self.assertEqual(
                 ([str(train.absolute())], [str(val.absolute())]), (context.report.train_items, context.report.val_items)
             )

@@ -92,7 +92,8 @@ class YoloDatasetSink:
 class ClassificationDatasetSink:
     input_type = ClassifyOutput
 
-    def __init__(self, *, indexed_class_directories: bool = False):
+    def __init__(self, *, image_size: int = 224, indexed_class_directories: bool = False):
+        self.image_size = image_size
         self.indexed_class_directories = indexed_class_directories
 
     def write(self, item: ClassifyOutput, context: Context) -> None:
@@ -104,6 +105,7 @@ class ClassificationDatasetSink:
             label_index = context.config.labels.index(item.class_name)
             class_directory = f'{label_index:02d}-{item.class_name}'
 
+        image = self._prepare_image(item)
         in_train, in_val = split_membership(item.sample.source_index, context.config.split)
         selected_splits = (('train', in_train), ('val', in_val))
         for split_name, selected in selected_splits:
@@ -113,10 +115,7 @@ class ClassificationDatasetSink:
                 context.config.root_path / context.config.task_name / split_name / class_directory / item.output_name
             )
             target.parent.mkdir(parents=True, exist_ok=True)
-            if item.sample.image.crop_box is None:
-                _symlink_or_copy(item.sample.image.path, target)
-            else:
-                self._write_crop(item, target)
+            assert cv2.imwrite(str(target), image)
 
             output_path = str(target)
             context.report.record_output(
@@ -125,20 +124,27 @@ class ClassificationDatasetSink:
                 annotation_count=1,
             )
 
-    def _write_crop(self, item: ClassifyOutput, target: Path) -> None:
+    def _prepare_image(self, item: ClassifyOutput) -> np.ndarray:
         image = cv2.imread(str(item.sample.image.path))
         assert image is not None
         crop_box = item.sample.image.crop_box
-        assert crop_box is not None
-        x1, y1, x2, y2 = map(int, crop_box)
-        roi = image[y1:y2, x1:x2]
-        height, width = roi.shape[:2]
-        size = max(height, width)
-        square_image = np.zeros((size, size, 3), dtype=np.uint8)
-        offset_y = (size - height) // 2
-        offset_x = (size - width) // 2
-        square_image[offset_y : offset_y + height, offset_x : offset_x + width] = roi
-        cv2.imwrite(str(target), square_image)
+        if crop_box is not None:
+            x1, y1, x2, y2 = map(int, crop_box)
+            image = image[y1:y2, x1:x2]
+
+        height, width = image.shape[:2]
+        scale = min(self.image_size / width, self.image_size / height)
+        if abs(scale - 1.0) >= 1e-6:
+            image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+        resized_height, resized_width = image.shape[:2]
+        pad_width = self.image_size - resized_width
+        pad_height = self.image_size - resized_height
+        top = pad_height // 2
+        left = pad_width // 2
+        return cv2.copyMakeBorder(
+            image, top, pad_height - top, left, pad_width - left, cv2.BORDER_CONSTANT, value=(114, 114, 114)
+        )
 
     def finalize(self, context: Context) -> None:
         _finalize_dataset(context)
