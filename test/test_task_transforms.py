@@ -37,7 +37,7 @@ class TaskTransformsTest(unittest.TestCase):
         )
 
         with Image.open(root_path / 'point-classify' / 'val' / '03-cc' / '20260620_0_0.jpg') as crop:
-            self.assertEqual((489, 489), crop.size)
+            self.assertEqual((224, 224), crop.size)
 
         self.assertEqual(
             '0 0.460208 0.490227 0.449131 0.496201 0.278136 0.073777',
