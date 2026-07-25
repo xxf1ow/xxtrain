@@ -73,6 +73,8 @@ Relative `Path` values inside Scenario `train_args` resolve against the Scenario
 
 Tracked classification Scenarios demonstrate three training policies under `data/standard-classify/`: `standard_classify.py` keeps the standard arguments, `direction_sensitive_classify.py` disables horizontal/vertical flips, rotation, and automatic augmentation, and `tuned_classify.py` shows a larger experimentally selected override set. The special `data/point/point_classify.py` Scenario declares the same four direction-sensitive constraints while retaining its crop-based Dataset Recipe. Non-standard arguments belong in each Scenario and must not be added to task-wide classification defaults.
 
+Classification dataset conversion materializes every whole image or deferred crop as a centered `224×224` Letterbox image using OpenCV linear interpolation and padding value 114. The task-wide classification defaults use `imgsz=224` and `scale=0.0`, so Ultralytics does not randomly crop the already-square generated image. Scenario overrides remain allowed and are responsible for staying aligned with deployment.
+
 Model-template handling, pretrained-weight preparation, classification mismatch reporting, and other orchestration details remain internal.
 
 ## Commands
@@ -146,7 +148,7 @@ The Scenario file's parent directory is the dataset root:
 └── weights/            # exported ONNX and classification references
 ```
 
-Standard recipes read labels at conversion time from `<scenario_dir>/src/labels.txt`; special recipes carry a fixed `LabelCatalog` in their Scenario. Non-classification outputs are written under `<scenario_dir>/<recipe.name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are written under `train/<class>/` and `val/<class>/`; their finalization also writes `train.txt`, `val.txt`, and `dataset.yaml`.
+Standard recipes read labels at conversion time from `<scenario_dir>/src/labels.txt`; special recipes carry a fixed `LabelCatalog` in their Scenario. Non-classification outputs are written under `<scenario_dir>/<recipe.name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are materialized under `train/<class>/` and `val/<class>/` as centered `224×224` Letterbox images; their finalization also writes `train.txt`, `val.txt`, and `dataset.yaml`. Existing generated classification directories from before this contract must be deleted and rebuilt from the sibling `src/` input directory. Generated outputs are disposable, but a Scenario's `src/` directory is immutable source data and must never be deleted or modified during rebuilding.
 
 `TrainingScenario.split=N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `TrainingScenario.reserve_no_label` defaults to `False`; set it to `True` in the Scenario only when zero-annotation images must remain in split lists. For every task type, training treats `<scenario_dir>/<recipe.name>/dataset.yaml` as the conversion-completion signal and skips conversion only when that file exists. A classification output directory without `dataset.yaml` is incomplete and must be converted again. Source-change detection and forced rebuilding remain future work.
 
