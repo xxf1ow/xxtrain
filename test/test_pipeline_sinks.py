@@ -1,4 +1,5 @@
 import io
+import shutil
 import tempfile
 import unittest
 from contextlib import chdir, redirect_stdout
@@ -17,7 +18,7 @@ from xxtrain.pipeline.core import (
     ImageRef,
     Sample,
 )
-from xxtrain.pipeline.sinks import ClassificationDatasetSink, YoloDatasetSink, print_conversion_report
+from xxtrain.pipeline.sinks import ClassificationDatasetSink, YoloDatasetSink, _symlink_or_copy, print_conversion_report
 from xxtrain.task import TaskType
 
 
@@ -138,6 +139,63 @@ class PipelineSinkTest(unittest.TestCase):
             target = root / 'detect' / 'group' / 'image.png'
             self.assertTrue(target.is_file())
             self.assertFalse(target.is_symlink())
+
+    def test_existing_same_source_symlink_is_already_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            target = root / 'classify' / 'train' / 'label' / 'image.png'
+            with (
+                patch('xxtrain.pipeline.sinks.os.symlink', side_effect=FileExistsError),
+                patch.object(Path, 'is_symlink', return_value=True),
+                patch.object(Path, 'samefile', return_value=True),
+                patch(
+                    'xxtrain.pipeline.sinks.shutil.copy2', side_effect=shutil.SameFileError(source, target, 'same file')
+                ) as copy2,
+            ):
+                _symlink_or_copy(source, target)
+
+            copy2.assert_not_called()
+            self.assertTrue(source.is_file())
+
+    def test_existing_different_or_broken_symlink_is_replaced_without_following_it(self) -> None:
+        for samefile_result in (False, FileNotFoundError()):
+            with self.subTest(samefile_result=samefile_result):
+                source = Path('source.png')
+                target = Path('target.png')
+                samefile = (
+                    patch.object(Path, 'samefile', side_effect=samefile_result)
+                    if isinstance(samefile_result, OSError)
+                    else patch.object(Path, 'samefile', return_value=samefile_result)
+                )
+                with (
+                    patch('xxtrain.pipeline.sinks.os.symlink', side_effect=FileExistsError),
+                    patch.object(Path, 'is_symlink', return_value=True),
+                    samefile,
+                    patch.object(Path, 'unlink') as unlink,
+                    patch('xxtrain.pipeline.sinks.shutil.copy2') as copy2,
+                ):
+                    _symlink_or_copy(source, target)
+
+                unlink.assert_called_once_with()
+                copy2.assert_called_once_with(source, target)
+
+    def test_classification_sink_can_repeat_an_interrupted_write_when_symlinks_are_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='image.png')
+
+            with patch('xxtrain.pipeline.sinks.os.symlink', side_effect=OSError('unavailable')):
+                ClassificationDatasetSink().write(output, context)
+                restarted_context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+                ClassificationDatasetSink().write(output, restarted_context)
+
+            target = root / 'classify' / 'train' / 'label' / 'image.png'
+            self.assertEqual(source.read_bytes(), target.read_bytes())
+            self.assertFalse(target.is_symlink())
+            self.assertEqual([str(target.absolute())], restarted_context.report.train_items)
 
     def test_standard_classification_preserves_original_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

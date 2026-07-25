@@ -29,6 +29,13 @@ def _symlink_or_copy(source: Path, target: Path) -> None:
     try:
         os.symlink(source, target)
     except OSError:
+        if target.is_symlink():
+            try:
+                if target.samefile(source):
+                    return
+            except OSError:
+                pass
+            target.unlink()
         shutil.copy2(source, target)
 
 

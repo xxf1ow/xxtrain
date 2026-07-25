@@ -95,7 +95,9 @@ python -m unittest discover -s test -t . -p 'test_*.py' -v
 # Static verification
 ruff check src test
 ruff format --check src test
-python -m compileall -q src test
+ruff check --no-respect-gitignore data
+ruff format --check --no-respect-gitignore data
+python -m compileall -q src test data
 git diff --check
 
 # Formatting (configuration is in pyproject.toml)
