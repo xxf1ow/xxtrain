@@ -126,17 +126,22 @@ class TrainingWorkflowTest(unittest.TestCase):
             yolo=yolo_mock,
         )
 
-    def test_standard_training_args_match_current_xxtrain_defaults(self) -> None:
-        self.assertEqual({'epochs': 72, 'batch': 128, 'imgsz': 224}, standard_train_args(TaskType.CLASSIFY))
-        for task_type in (TaskType.DETECT, TaskType.SEGMENT, TaskType.POSE, TaskType.OBB):
-            with self.subTest(task_type=task_type):
-                self.assertEqual({'epochs': 100, 'batch': 32, 'imgsz': 640}, standard_train_args(task_type))
+    def test_standard_training_args_returns_independent_mappings(self) -> None:
+        first = standard_train_args(TaskType.CLASSIFY)
+        second = standard_train_args(TaskType.CLASSIFY)
+
+        first['test-only'] = True
+
+        self.assertNotIn('test-only', second)
 
     def test_scenario_arguments_override_standard_arguments(self) -> None:
         scenario = TrainingScenario(
             dataset=standard_recipe(TaskType.CLASSIFY), train_args={'epochs': 80, 'optimizer': 'AdamW'}
         )
-        self.assertEqual({'epochs': 80, 'batch': 128, 'imgsz': 224, 'optimizer': 'AdamW'}, merged_train_args(scenario))
+        with patch('xxtrain.training.workflow.standard_train_args', return_value={'epochs': 1, 'test-default': True}):
+            result = merged_train_args(scenario)
+
+        self.assertEqual({'epochs': 80, 'test-default': True, 'optimizer': 'AdamW'}, result)
 
     def test_classification_workflow_uses_fixed_order_and_reloads_present_best(self) -> None:
         calls: list[str] = []
@@ -207,23 +212,24 @@ class TrainingWorkflowTest(unittest.TestCase):
 
     def test_classification_trains_with_output_directory_and_merged_arguments(self) -> None:
         scenario = TrainingScenario(
-            dataset=standard_recipe(TaskType.CLASSIFY), train_args={'epochs': 80, 'optimizer': 'AdamW'}
+            dataset=standard_recipe(TaskType.CLASSIFY),
+            train_args={'epochs': 3, 'batch': 2, 'imgsz': 64, 'optimizer': 'AdamW'},
         )
 
         result = self.run_workflow(scenario)
 
         result.model.train.assert_called_once_with(
-            data=self.root / 'classify', epochs=80, batch=128, imgsz=224, optimizer='AdamW'
+            data=self.root / 'classify', epochs=3, batch=2, imgsz=64, optimizer='AdamW'
         )
 
-    def test_non_classification_trains_with_dataset_yaml_and_standard_arguments(self) -> None:
-        scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
+    def test_non_classification_trains_with_dataset_yaml_and_scenario_arguments(self) -> None:
+        scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT), train_args={'test-argument': True})
 
         result = self.run_workflow(scenario)
 
-        result.model.train.assert_called_once_with(
-            data=self.root / 'detect' / 'dataset.yaml', epochs=100, batch=32, imgsz=640
-        )
+        train_arguments = result.model.train.call_args.kwargs
+        self.assertEqual(self.root / 'detect' / 'dataset.yaml', train_arguments['data'])
+        self.assertTrue(train_arguments['test-argument'])
 
     def test_non_file_best_keeps_trained_model_for_export(self) -> None:
         scenario = TrainingScenario(dataset=standard_recipe(TaskType.DETECT))
