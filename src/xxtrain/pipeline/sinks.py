@@ -115,7 +115,8 @@ class ClassificationDatasetSink:
                 context.config.root_path / context.config.task_name / split_name / class_directory / item.output_name
             )
             target.parent.mkdir(parents=True, exist_ok=True)
-            assert cv2.imwrite(str(target), image)
+            if not cv2.imwrite(str(target), image):
+                raise OSError(f'failed to write classification image: {target}')
 
             output_path = str(target)
             context.report.record_output(

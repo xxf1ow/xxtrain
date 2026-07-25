@@ -316,6 +316,21 @@ class PipelineSinkTest(unittest.TestCase):
                 ),
             )
 
+    def test_classification_write_failure_raises_before_recording_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='image.png')
+            target = root / 'classify' / 'train' / 'label' / 'image.png'
+
+            with patch('xxtrain.pipeline.sinks.cv2.imwrite', return_value=False), self.assertRaises(OSError) as raised:
+                ClassificationDatasetSink().write(output, context)
+
+            self.assertEqual(f'failed to write classification image: {target}', str(raised.exception))
+            self.assertEqual(([], []), (context.report.train_items, context.report.val_items))
+            self.assertEqual((0, 0), (context.report.train_image_count, context.report.val_image_count))
+
     def test_sinks_reject_wrong_runtime_input_type(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             context = self.make_context(Path(temp_dir))
