@@ -236,6 +236,26 @@ class PipelineSinkTest(unittest.TestCase):
                 self.assertEqual((10, 20, 30), image.getpixel((189, 223)))
                 self.assertEqual((114, 114, 114), image.getpixel((190, 0)))
 
+    def test_standard_classification_downscale_uses_linear_interpolation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / 'src' / 'group' / 'imgs' / 'source.png'
+            source.parent.mkdir(parents=True)
+            checkerboard = bytes(255 if (x + y) % 2 else 0 for y in range(224) for x in range(448))
+            with Image.frombytes('L', (448, 224), checkerboard).convert('RGB') as image:
+                image.save(source)
+            context = self.make_context(root, task_name='classify', task_type=TaskType.CLASSIFY)
+            output = ClassifyOutput(sample=self.make_sample(source), class_name='label', output_name='source.png')
+
+            ClassificationDatasetSink().write(output, context)
+
+            target = root / 'classify' / 'train' / 'label' / 'source.png'
+            with Image.open(target).convert('RGB') as image:
+                self.assertEqual((114, 114, 114), image.getpixel((0, 55)))
+                self.assertEqual((128, 128, 128), image.getpixel((0, 56)))
+                self.assertEqual((128, 128, 128), image.getpixel((223, 167)))
+                self.assertEqual((114, 114, 114), image.getpixel((0, 168)))
+
     def test_classification_sink_preserves_relative_output_paths_in_split_lists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
             root = Path('dataset')
