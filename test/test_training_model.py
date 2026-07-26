@@ -137,13 +137,13 @@ class TrainingModelTest(unittest.TestCase):
 
     def test_cached_pretrained_weights_are_reused(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            fake_module_file = Path(temp_dir) / 'src' / 'xxtrain' / 'training' / 'model.py'
-            cache_path = Path(temp_dir) / 'src' / '.weights' / 'yolov8n.pt'
+            cache_root = Path(temp_dir)
+            cache_path = cache_root / 'weights' / 'yolov8n.pt'
             cache_path.parent.mkdir(parents=True)
             cache_path.touch()
 
             with (
-                patch('xxtrain.training.model.__file__', str(fake_module_file)),
+                patch('xxtrain.training.model.user_cache_path', return_value=cache_root),
                 patch('xxtrain.training.model.YOLO') as yolo,
             ):
                 result = prepare_pretrained_weights('yolov8n')
@@ -151,13 +151,13 @@ class TrainingModelTest(unittest.TestCase):
             self.assertEqual(cache_path, result)
             yolo.assert_not_called()
 
-    def test_missing_pretrained_weights_are_downloaded_and_saved_in_source_cache(self) -> None:
+    def test_missing_pretrained_weights_are_downloaded_to_user_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            fake_module_file = Path(temp_dir) / 'src' / 'xxtrain' / 'training' / 'model.py'
-            cache_path = Path(temp_dir) / 'src' / '.weights' / 'yolov8n.pt'
+            cache_root = Path(temp_dir)
+            cache_path = cache_root / 'weights' / 'yolov8n.pt'
 
             with (
-                patch('xxtrain.training.model.__file__', str(fake_module_file)),
+                patch('xxtrain.training.model.user_cache_path', return_value=cache_root),
                 patch('xxtrain.training.model.YOLO') as yolo,
             ):
                 result = prepare_pretrained_weights('yolov8n')
