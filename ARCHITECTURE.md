@@ -6,11 +6,11 @@
 
 xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据集，并完成模型训练、验证和导出。项目按三个阶段演进：
 
-1. **基础训练架构整理（进行中）**：稳定标注转换、数据集构建与训练流程。
+1. **基础训练架构整理（当前实现完成）**：稳定标注转换、数据集构建与训练流程。
 2. **离线伪标签迭代训练（规划中）**：用已训练模型生成伪标签，筛选后重新训练。
 3. **在线 Teacher–Student 训练（规划中）**：训练过程中利用未标注数据，由 Teacher 为 Student 提供监督。
 
-当前重点是第一阶段。后续阶段建立在第一阶段的任务定义、数据处理和评估能力之上，不提前固定实现细节。
+第一阶段的数据、pipeline 和 training 源码边界已经完成；项目下一项迁移工作是打包和安装式 CLI。后续训练阶段建立在现有任务定义、数据处理和评估能力之上，不提前固定实现细节。
 
 ## 2. 第一阶段：基础训练架构整理
 
@@ -29,9 +29,31 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 
 ### 2.2 核心组成
 
-#### 任务定义
+#### Scenario 组合根
 
-`xxtrain.task.TaskType` 只描述 detect、segment、pose、classify、obb 五种基础模型类型。业务任务名、标签目录、数据划分规则和特殊处理组合由 pipeline recipe 层负责；训练参数仍暂时留在 `src/train.py`，等待 training 阶段迁移。
+`xxtrain.task.TaskType` 只描述 detect、segment、pose、classify、obb 五种基础模型类型。Python Scenario 是具体数据集转换与训练的组合根：
+
+```text
+Scenario file
+├── DatasetRecipe: labels + Pipeline + Sink
+├── model version/scale
+├── split + reserve_no_label=False
+└── YOLO.train() overrides
+```
+
+Scenario 文件必须导出 `SCENARIO: TrainingScenario`。其中 `DatasetRecipe` 明确数据集名、基础 `TaskType`、标签目录、Pipeline 和 Sink；`train_args` 只覆盖源码提供的标准训练参数，并原样传给 `YOLO.train()`。
+
+所有相对 `Path` 值以 Scenario 文件所在目录解析，普通相对字符串不做路径转换。该目录同时定义固定布局：
+
+```text
+<scenario_dir>/
+├── <scenario>.py
+├── src/                    # 原始图像与标注
+├── <recipe.name>/          # 可重新生成的数据集产物与模型 YAML
+└── weights/                # ONNX 与分类参考图
+```
+
+`standard_recipe()` 由 `xxtrain.pipeline.recipes` 提供，只负责 detect、segment、pose、classify 四个标准 Recipe。point、knob、light 七个特殊 Recipe 直接由对应 `data/` Scenario 文件组合；具体 Processor 和 Sink 不是承诺给任意第三方插件的稳定 API。
 
 配置不需要描述所有处理细节。通用差异进入配置；特殊几何处理或业务转换继续由代码实现，避免把配置发展成另一套编程语言。
 
@@ -61,7 +83,15 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 
 #### 训练入口
 
-训练层负责串联数据转换、模型配置、预训练权重、训练、验证和导出。当前以 Ultralytics YOLO 为唯一训练后端，保持薄封装。
+训练层负责串联 Scenario 加载、数据转换、模型配置、预训练权重、训练和 ONNX 导出。当前以 Ultralytics YOLO 为唯一训练后端，保持薄封装。
+
+三个源码入口职责独立：
+
+- `src/train.py`：运行完整训练工作流；
+- `src/export.py`：从已有 checkpoint 独立导出 ONNX；
+- `src/review.py`：运行预测并保存可视化结果或分类错分报告。
+
+预测结果检查不是 `model.val()` 指标评估。训练过程中的 Ultralytics 验证仍负责指标、曲线和样例；当前没有单独重新计算验证指标的入口。
 
 只有出现第二个真实训练后端并确认公共边界后，才抽象统一后端接口。现阶段不为假设中的框架兼容性增加复杂度。
 
@@ -73,11 +103,18 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 - `xxtrain.data`：不可变标注、格式读取、几何、YOLO 编码和数据集产物工具；
 - `xxtrain.pipeline.discovery`：稳定顺序的样本发现；
 - `xxtrain.pipeline.core` / `processors`：typed records、Pipeline 和具体转换步骤；
-- `xxtrain.pipeline.recipes`：11 条现有任务的管线组合与稳定参数；
+- `xxtrain.pipeline.recipes`：`DatasetRecipe` 和四条标准 Recipe；
 - `xxtrain.pipeline.sinks` / `workflow`：数据集写入边界和 `convert_dataset()` 公共入口；
-- `train.py`：当前命令入口及 Ultralytics 训练、验证、导出编排，等待 training/CLI 阶段迁移。
+- `xxtrain.training.scenario`：`TrainingScenario`、Python Scenario 加载和相对 `Path` 解析；
+- `xxtrain.training.model` / `workflow`：模型 YAML、预训练权重和固定训练工作流；
+- `xxtrain.training.exporting` / `review`：ONNX 导出、分类参考图和预测结果检查；
+- `train.py`、`export.py`、`review.py`：当前源码检出中的薄命令入口；安装式 CLI 留到打包阶段。
 
-旧的 `annparser.py`、`annprocessor.py`、`annconverter.py` 已在 typed pipeline 承接全部既有任务后删除。`xxtrain.pipeline` 包级公共 API 保持最小，其余阶段记录、Source、Processor、recipe 和 Sink 均为内部实现。
+旧的 `annparser.py`、`annprocessor.py`、`annconverter.py` 已在 typed pipeline 承接全部既有任务后删除。
+
+`xxtrain.pipeline` 包级受支持 API 为 `Context`、`ConversionConfig`、`ConversionReport`、`DatasetRecipe`、`ExpandProcessor`、`ImageRef`、`ItemProcessor`、`Pipeline`、`Sample`、`convert_dataset` 和 `standard_recipe`。`convert_dataset(recipe, root_path, *, split=10, reserve_no_label=False)` 直接接收 Recipe，不保留旧任务名注册表或旧转换签名。
+
+`xxtrain.training` 包级受支持 API 为 `TrainingScenario`、`load_scenario`、`train`、`export` 和 `review`。模型模板处理、预训练下载、分类错分整理等细节保持内部实现。
 
 ### 2.4 第一阶段完成标准
 

@@ -38,8 +38,7 @@ class AnnotationFormatsTest(unittest.TestCase):
         self.assertIsInstance(annotations[0], Line)
         self.assertEqual('1', annotations[0].label)
         self.assertEqual(
-            ((1133.3333333333335, 516.0683760683761), (1047.008547008547, 334.87179487179486)),
-            annotations[0].points,
+            ((1133.3333333333335, 516.0683760683761), (1047.008547008547, 334.87179487179486)), annotations[0].points
         )
 
     def test_parses_labelme_rotations_in_file_order(self) -> None:

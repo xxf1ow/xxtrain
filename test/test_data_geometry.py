@@ -38,15 +38,9 @@ class GeometryTest(unittest.TestCase):
         first_child = Points(label='c1', points=[[25, 25]])
         second_child = Points(label='c2', points=[[5, 5]])
 
-        mapping = match_parent_children(
-            [first_parent, second_parent],
-            [first_child, second_child],
-        )
+        mapping = match_parent_children([first_parent, second_parent], [first_child, second_child])
 
-        self.assertEqual(
-            {second_parent.id: [first_child.id], first_parent.id: [second_child.id]},
-            mapping,
-        )
+        self.assertEqual({second_parent.id: [first_child.id], first_parent.id: [second_child.id]}, mapping)
 
     def test_strict_matching_preserves_failure_conditions(self) -> None:
         parent = Bbox(label='p', x1=0, y1=0, x2=10, y2=10)

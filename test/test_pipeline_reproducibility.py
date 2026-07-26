@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from test.support.output_manifest import collect_output_manifest
+from test.support.scenarios import load_case_scenario
 from test.test_conversion_baseline import BASELINE_CASES, FIXTURES_PATH
 from test.test_reproducibility import snapshot_tree
 from xxtrain.pipeline.workflow import convert_dataset
@@ -19,7 +20,13 @@ class NewPipelineReproducibilityTest(unittest.TestCase):
                         root_path = Path(temp_dir) / copy_name
                         shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
                         source_snapshot = snapshot_tree(root_path / 'src')
-                        convert_dataset(task_name, root_path, split=10, reserve_no_label=False)
+                        scenario = load_case_scenario(task_name)
+                        convert_dataset(
+                            scenario.dataset,
+                            root_path,
+                            split=scenario.split,
+                            reserve_no_label=scenario.reserve_no_label,
+                        )
                         self.assertEqual(source_snapshot, snapshot_tree(root_path / 'src'))
                         manifests.append(collect_output_manifest(root_path, task_name))
                     self.assertEqual(manifests[0], manifests[1])

@@ -3,25 +3,8 @@ from pathlib import Path
 import numpy as np
 import PIL.Image
 
-from xxtrain.data import (
-    Annotation,
-    Bbox,
-    Circle,
-    ImageInfo,
-    Line,
-    Points,
-    Polygon,
-    Polyline,
-    RotatedBbox,
-    Shape,
-)
-from xxtrain.data.formats import (
-    encode_detect,
-    encode_pose,
-    encode_segment,
-    read_labelimg,
-    read_labelme,
-)
+from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline, RotatedBbox, Shape
+from xxtrain.data.formats import encode_detect, encode_pose, encode_segment, read_labelimg, read_labelme
 from xxtrain.data.geometry import match_parent_children
 from xxtrain.pipeline.core import (
     AnnotationMatch,
@@ -47,12 +30,7 @@ def _allowed(labels: tuple[str, ...] | None, context: Context) -> set[str]:
 
 
 def _filter(
-    annotations: tuple[Annotation, ...],
-    labels: set[str],
-    *,
-    strict: bool,
-    sample: Sample,
-    context: Context,
+    annotations: tuple[Annotation, ...], labels: set[str], *, strict: bool, sample: Sample, context: Context
 ) -> tuple[Annotation, ...]:
     invalid = tuple(annotation for annotation in annotations if annotation.label not in labels)
     if strict and invalid:
@@ -71,10 +49,7 @@ def _prepare_segment_shape(shape: Shape) -> Shape:
         count = max(int(np.pi / np.arccos(1 - 1 / radius)), 12)
         cx, cy = shape.center
         points = tuple(
-            (
-                cx + radius * np.sin(2 * np.pi / count * index),
-                cy + radius * np.cos(2 * np.pi / count * index),
-            )
+            (cx + radius * np.sin(2 * np.pi / count * index), cy + radius * np.cos(2 * np.pi / count * index))
             for index in range(count)
         )
         return Polygon(points=points, **common)
@@ -132,11 +107,7 @@ class FilterLabels(ItemProcessor[Sample, Sample]):
 
     def transform(self, item: Sample, context: Context) -> Sample:
         annotations = _filter(
-            item.annotations,
-            _allowed(self.labels, context),
-            strict=self.strict,
-            sample=item,
-            context=context,
+            item.annotations, _allowed(self.labels, context), strict=self.strict, sample=item, context=context
         )
         return item.wrap(annotations=annotations)
 
@@ -157,18 +128,10 @@ class FilterMatchingAnnotations(ItemProcessor[MatchInput, MatchInput]):
 
     def transform(self, item: MatchInput, context: Context) -> MatchInput:
         parents = _filter(
-            item.parents,
-            _allowed(self.parent_labels, context),
-            strict=self.strict,
-            sample=item.sample,
-            context=context,
+            item.parents, _allowed(self.parent_labels, context), strict=self.strict, sample=item.sample, context=context
         )
         children = _filter(
-            item.children,
-            _allowed(self.child_labels, context),
-            strict=self.strict,
-            sample=item.sample,
-            context=context,
+            item.children, _allowed(self.child_labels, context), strict=self.strict, sample=item.sample, context=context
         )
         return MatchInput(sample=item.sample, parents=tuple(parents), children=tuple(children))
 
@@ -252,19 +215,12 @@ class MatchAnnotations(ItemProcessor[MatchInput, MatchOutput]):
 
     def transform(self, item: MatchInput, context: Context) -> MatchOutput:
         mapping = match_parent_children(
-            item.parents,
-            item.children,
-            image_path=str(item.sample.image.path),
-            wide=self.wide,
-            strict=self.strict,
+            item.parents, item.children, image_path=str(item.sample.image.path), wide=self.wide, strict=self.strict
         )
         parents = {parent.id: parent for parent in item.parents}
         children = {child.id: child for child in item.children}
         matches = tuple(
-            AnnotationMatch(
-                parent=parents[parent_id],
-                children=tuple(children[child_id] for child_id in child_ids),
-            )
+            AnnotationMatch(parent=parents[parent_id], children=tuple(children[child_id] for child_id in child_ids))
             for parent_id, child_ids in mapping.items()
         )
         return MatchOutput(sample=item.sample, matches=matches)
@@ -277,10 +233,7 @@ class CropMatches(ExpandProcessor[MatchOutput, CropOutput]):
     def expand(self, item: MatchOutput, context: Context):
         for crop_index, match in enumerate(item.matches):
             x1, y1, x2, y2 = match.parent.bbox
-            image = item.sample.image.wrap(
-                crop_box=match.parent.bbox,
-                info=ImageInfo(width=x2 - x1, height=y2 - y1),
-            )
+            image = item.sample.image.wrap(crop_box=match.parent.bbox, info=ImageInfo(width=x2 - x1, height=y2 - y1))
             sample = item.sample.wrap(
                 id=f'{item.sample.id}_{crop_index}',
                 image=image,
@@ -296,16 +249,11 @@ class CropDetectionBoxes(ExpandProcessor[Sample, ClassifyOutput]):
     def expand(self, item: Sample, context: Context):
         for crop_index, annotation in enumerate(item.annotations):
             if not isinstance(annotation, Bbox):
-                raise TypeError(
-                    f'CropDetectionBoxes requires Bbox, got {type(annotation).__name__}'
-                )
+                raise TypeError(f'CropDetectionBoxes requires Bbox, got {type(annotation).__name__}')
             x1, y1, x2, y2 = annotation.bbox
             sample = item.wrap(
                 id=f'{item.id}_{crop_index}',
-                image=item.image.wrap(
-                    crop_box=annotation.bbox,
-                    info=ImageInfo(width=x2 - x1, height=y2 - y1),
-                ),
+                image=item.image.wrap(crop_box=annotation.bbox, info=ImageInfo(width=x2 - x1, height=y2 - y1)),
                 annotations=(),
             )
             yield ClassifyOutput(
@@ -324,9 +272,7 @@ class RelabelCropAnnotations(ItemProcessor[CropOutput, CropOutput]):
 
     def transform(self, item: CropOutput, context: Context) -> CropOutput:
         sample = item.sample.wrap(
-            annotations=tuple(
-                annotation.wrap(label=self.label) for annotation in item.sample.annotations
-            )
+            annotations=tuple(annotation.wrap(label=self.label) for annotation in item.sample.annotations)
         )
         return CropOutput(sample=sample, parent=item.parent)
 
@@ -337,15 +283,10 @@ class EncodeDetection(ItemProcessor[Sample, EncodeOutput]):
 
     def transform(self, item: Sample, context: Context) -> EncodeOutput:
         info = item.image.require_info()
-        boxes = tuple(
-            annotation for annotation in item.annotations if isinstance(annotation, Bbox)
-        )
+        boxes = tuple(annotation for annotation in item.annotations if isinstance(annotation, Bbox))
         if len(boxes) != len(item.annotations):
             raise TypeError('EncodeDetection requires only Bbox annotations')
-        return EncodeOutput(
-            sample=item,
-            lines=tuple(encode_detect(box, info, context.config.labels) for box in boxes),
-        )
+        return EncodeOutput(sample=item, lines=tuple(encode_detect(box, info, context.config.labels) for box in boxes))
 
 
 class EncodeCropDetection(ItemProcessor[CropOutput, EncodeOutput]):
@@ -362,14 +303,9 @@ class EncodeSegment(ItemProcessor[Sample, EncodeOutput]):
 
     def transform(self, item: Sample, context: Context) -> EncodeOutput:
         info = item.image.require_info()
-        shapes = tuple(
-            annotation for annotation in item.annotations if isinstance(annotation, Shape)
-        )
+        shapes = tuple(annotation for annotation in item.annotations if isinstance(annotation, Shape))
         return EncodeOutput(
-            sample=item,
-            lines=tuple(
-                encode_segment(shape, info, context.config.labels) for shape in shapes
-            ),
+            sample=item, lines=tuple(encode_segment(shape, info, context.config.labels) for shape in shapes)
         )
 
 
@@ -381,16 +317,10 @@ class EncodePose(ItemProcessor[MatchOutput, EncodeOutput]):
         info = item.sample.image.require_info()
         lines = []
         for match in item.matches:
-            keypoints = {
-                child.label: child
-                for child in match.children
-                if isinstance(child, Points)
-            }
+            keypoints = {child.label: child for child in match.children if isinstance(child, Points)}
             if len(keypoints) != len(match.children):
                 raise ValueError(f'骨骼标注必须是点类型: {item.sample.image.path}')
-            lines.append(
-                encode_pose(match.parent, keypoints, info, context.config.labels)
-            )
+            lines.append(encode_pose(match.parent, keypoints, info, context.config.labels))
         return EncodeOutput(sample=item.sample, lines=tuple(lines))
 
 
@@ -404,9 +334,7 @@ class EncodePointSegment(ItemProcessor[CropOutput, EncodeOutput]):
         lines = []
         for annotation in item.sample.annotations:
             if not isinstance(annotation, Line):
-                raise ValueError(
-                    f'标注类型错误: {item.sample.image.path} 中的 {annotation} 不是 line 类型'
-                )
+                raise ValueError(f'标注类型错误: {item.sample.image.path} 中的 {annotation} 不是 line 类型')
             p1 = np.asarray(annotation.points[0])
             p2 = np.asarray(annotation.points[1])
             vector = p2 - p1
@@ -414,11 +342,7 @@ class EncodePointSegment(ItemProcessor[CropOutput, EncodeOutput]):
             unit_vector = np.array([1.0, 0.0]) if length == 0 else vector / length
             normal_vector = np.array([-unit_vector[1], unit_vector[0]])
             half_thickness = line_thickness / 2.0
-            corners = (
-                p1 + normal_vector * half_thickness,
-                p1 - normal_vector * half_thickness,
-                p2,
-            )
+            corners = (p1 + normal_vector * half_thickness, p1 - normal_vector * half_thickness, p2)
             values = ['0']
             for x, y in corners:
                 norm_x = x / info.width
@@ -439,9 +363,7 @@ class EncodeKnobSegment(ItemProcessor[CropOutput, EncodeOutput]):
         lines = []
         for annotation in item.sample.annotations:
             if not isinstance(annotation, Shape):
-                raise TypeError(
-                    f'EncodeKnobSegment requires Shape, got {type(annotation).__name__}'
-                )
+                raise TypeError(f'EncodeKnobSegment requires Shape, got {type(annotation).__name__}')
             values = [str(label_id)]
             for x, y in annotation.points:
                 norm_x = max(0.0, min(1.0, x / info.width))

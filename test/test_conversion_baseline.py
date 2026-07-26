@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from test.support.output_manifest import collect_output_manifest
+from test.support.scenarios import load_case_scenario
 from xxtrain.pipeline import convert_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +39,10 @@ def update_snapshots() -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
             root_path = Path(temp_dir) / fixture_name
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
-            convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+            scenario = load_case_scenario(task_type)
+            convert_dataset(
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+            )
             manifest = collect_output_manifest(root_path, task_type)
         snapshot = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
         expected_path = EXPECTED_PATH / f'{task_type}.json'
@@ -51,10 +55,13 @@ class ConversionBaselineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='xxtrain-conversion-') as temp_dir:
             root_path = Path(temp_dir) / fixture_name
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
+            scenario = load_case_scenario(task_type)
 
             with warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter('always', ResourceWarning)
-                convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+                convert_dataset(
+                    scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+                )
                 gc.collect()
             resource_warnings = [item for item in caught_warnings if issubclass(item.category, ResourceWarning)]
             self.assertEqual([], resource_warnings)
@@ -89,21 +96,14 @@ class OutputManifestTest(unittest.TestCase):
                     f'  - {resolved_root}\\detect\\images\\train\r\n'
                 ).encode()
             )
-            (output_path / 'train.txt').write_bytes(
-                f'{resolved_root}\\detect\\images\\train\\sample.png\r\n'.encode()
-            )
+            (output_path / 'train.txt').write_bytes(f'{resolved_root}\\detect\\images\\train\\sample.png\r\n'.encode())
             label_path.write_bytes(b'0 0.5 0.5 0.25 0.5\r\n')
             with Image.new('RGB', (3, 2), color=(12, 34, 56)) as image:
                 image.save(image_path)
 
             self.assertEqual(
                 {
-                    'files': [
-                        'dataset.yaml',
-                        'images/train/sample.png',
-                        'labels/train/sample.txt',
-                        'train.txt',
-                    ],
+                    'files': ['dataset.yaml', 'images/train/sample.png', 'labels/train/sample.txt', 'train.txt'],
                     'text_files': {
                         'labels/train/sample.txt': '0 0.5 0.5 0.25 0.5\n',
                         'train.txt': '<ROOT>/detect/images/train/sample.png\n',

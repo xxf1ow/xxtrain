@@ -1,24 +1,36 @@
 from pathlib import Path
 
-from .core import ConversionReport
-from .recipes import build_recipe
+from xxtrain.task import TaskType
+
+from .core import Context, ConversionConfig, ConversionReport
+from .discovery import DirectorySource, validate_classification_source
+from .recipes import DatasetRecipe, _read_labels
 from .sinks import print_conversion_report
 
 
 def convert_dataset(
-    task_name: str,
-    root_path: str | Path,
-    *,
-    split: int = 10,
-    reserve_no_label: bool = True,
+    recipe: DatasetRecipe, root_path: str | Path, *, split: int = 10, reserve_no_label: bool = False
 ) -> ConversionReport:
-    recipe, context = build_recipe(
-        task_name=task_name,
-        root_path=root_path,
-        split=split,
-        reserve_no_label=reserve_no_label,
+    root = Path(root_path)
+    if recipe.labels is None:
+        labels = _read_labels(root, strict=recipe.task_type is TaskType.CLASSIFY)
+        if recipe.task_type is TaskType.CLASSIFY:
+            labels = validate_classification_source(root, labels, split)
+    else:
+        labels = recipe.labels
+    context = Context(
+        config=ConversionConfig(
+            task_name=recipe.name,
+            task_type=recipe.task_type,
+            root_path=root,
+            split=split,
+            labels=labels,
+            reserve_no_label=reserve_no_label,
+        ),
+        report=ConversionReport(),
     )
-    outputs = recipe.pipeline.run(recipe.source.read(context), context)
+    source = DirectorySource()
+    outputs = recipe.pipeline.run(source.read(context), context)
     for output in outputs:
         recipe.sink.write(output, context)
     recipe.sink.finalize(context)

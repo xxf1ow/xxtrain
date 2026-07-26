@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
+from test.support.scenarios import load_case_scenario
 from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
@@ -23,7 +24,10 @@ class TaskTransformsTest(unittest.TestCase):
         root_path = self.copy_fixture('point')
 
         for task_type in ('point-detect', 'point-classify', 'point-segment'):
-            convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+            scenario = load_case_scenario(task_type)
+            convert_dataset(
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+            )
 
         dataset = yaml.safe_load((root_path / 'point-detect' / 'dataset.yaml').read_text(encoding='utf-8'))
         self.assertEqual({0: 'Point'}, dataset['names'])
@@ -33,7 +37,7 @@ class TaskTransformsTest(unittest.TestCase):
         )
 
         with Image.open(root_path / 'point-classify' / 'val' / '03-cc' / '20260620_0_0.jpg') as crop:
-            self.assertEqual((489, 489), crop.size)
+            self.assertEqual((224, 224), crop.size)
 
         self.assertEqual(
             '0 0.460208 0.490227 0.449131 0.496201 0.278136 0.073777',
@@ -42,7 +46,8 @@ class TaskTransformsTest(unittest.TestCase):
 
     def test_knob_segment_transforms(self) -> None:
         root_path = self.copy_fixture('knob')
-        convert_dataset('knob-segment', str(root_path), split=10, reserve_no_label=False)
+        scenario = load_case_scenario('knob-segment')
+        convert_dataset(scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label)
 
         output_path = root_path / 'knob-segment' / '251010'
         self.assertEqual(6, len(list(output_path.glob('*.txt'))))
@@ -54,7 +59,10 @@ class TaskTransformsTest(unittest.TestCase):
     def test_light_stage_transforms(self) -> None:
         root_path = self.copy_fixture('light')
         for task_type in ('light1-detect', 'light2-detect'):
-            convert_dataset(task_type, str(root_path), split=10, reserve_no_label=False)
+            scenario = load_case_scenario(task_type)
+            convert_dataset(
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+            )
 
         light1_lines = (root_path / 'light1-detect' / 'set1' / '000000.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(4, len(light1_lines))
@@ -68,7 +76,8 @@ class TaskTransformsTest(unittest.TestCase):
 
     def test_standard_pose_transform(self) -> None:
         root_path = self.copy_fixture('standard-pose')
-        convert_dataset('pose', str(root_path), split=10, reserve_no_label=False)
+        scenario = load_case_scenario('pose')
+        convert_dataset(scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label)
 
         self.assertEqual(
             '0 0.476750 0.539333 0.143000 0.747111 0.467045 0.625253 2',

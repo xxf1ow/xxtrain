@@ -65,7 +65,5 @@ def validate_classification_source(root_path: Path, labels: LabelCatalog, split:
             train_count = sum(index % split != 0 for index in range(len(images)))
             val_count = sum(index % split == 0 for index in range(len(images)))
             if train_count == 0 or val_count == 0:
-                raise ValueError(
-                    f"Classification split leaves class '{class_path.name}' without train or val samples"
-                )
+                raise ValueError(f"Classification split leaves class '{class_path.name}' without train or val samples")
     return LabelCatalog(tuple(sorted(labels.names)))

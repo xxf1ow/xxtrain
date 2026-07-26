@@ -13,7 +13,7 @@
 | 第一阶段：测试基线 | 完成 | 固定输入、语义快照、失败行为和可复现性测试已建立 |
 | 第二阶段 A：data 迁移 | 完成 | 不可变标注、格式读取、几何、编码和数据集产物已进入 `xxtrain.data` |
 | 第二阶段 B：pipeline 迁移 | 完成 | typed pipeline、全部 11 条任务基线、执行入口切换和小数裁剪范围回归测试均已完成 |
-| 第二阶段 C：training 迁移 | 未开始 | 训练、验证、导出仍在 `src/train.py` |
+| 第二阶段 C：training 迁移 | 完成 | Python Scenario、训练、独立导出和预测结果检查已进入 `xxtrain.training` |
 | 第三阶段：打包与 CLI | 未开始 | 尚未建立完整项目元数据、安装入口和 `xxtrain` CLI |
 
 ## 第一阶段：建立测试基线
@@ -39,7 +39,9 @@ git diff --check
 
 ```text
 src/
-├── train.py                         # 当前训练入口；待 training/CLI 阶段迁移
+├── train.py                         # Scenario 驱动的训练入口
+├── export.py                        # 独立 ONNX 导出入口
+├── review.py                        # 独立预测结果检查入口
 └── xxtrain/
     ├── __init__.py
     ├── task.py                      # 仅包含基础 TaskType
@@ -55,17 +57,24 @@ src/
     │       ├── labelimg.py          # LabelImg -> Annotation
     │       ├── labelme.py           # LabelMe -> Annotation
     │       └── yolo.py              # Annotation -> YOLO 文本
-    └── pipeline/
-        ├── __init__.py              # 九个稳定公共符号
+    ├── pipeline/
+        ├── __init__.py              # 十一个受支持的公共符号
         ├── core.py                  # typed records、Processor、Pipeline、Context
         ├── discovery.py             # 有序 Source
         ├── processors.py            # 纯转换步骤和延迟裁剪描述
-        ├── recipes.py               # 标准与定制任务组合
+        ├── recipes.py               # DatasetRecipe 与四个标准任务组合
         ├── sinks.py                 # 唯一的数据集写入边界
         └── workflow.py              # convert_dataset
+    └── training/
+        ├── __init__.py              # 五个受支持的公共符号
+        ├── scenario.py              # TrainingScenario 与 Python Scenario 加载
+        ├── model.py                 # 模型 YAML 与预训练权重准备
+        ├── workflow.py              # 固定训练工作流
+        ├── exporting.py             # ONNX 导出与分类参考图
+        └── review.py                # 预测结果检查
 ```
 
-后续 training 迁移仍计划引入 `xxtrain.training`；是否新增 `xxtrain.cli` 在打包阶段确定。仅供多个内部模块复用的工具函数可以进入内部模块，但不得扩大包级公共 API。
+`xxtrain.training` 已完成源码边界迁移。是否新增 `xxtrain.cli`、如何安装入口以及预训练缓存的安装后路径，留到打包阶段确定。仅供多个内部模块复用的工具函数可以进入内部模块，但不得扩大包级公共 API。
 
 ### Data 层迁移结果
 
@@ -106,14 +115,29 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 - `ItemProcessor` 表示一对零或一，`ExpandProcessor` 表示一对多；所有输出保持输入顺序。
 - 裁剪处理器只生成延迟裁剪描述，不在处理器阶段写图像。
 - 标注匹配通过 UUID 关联父子对象，保持父组与组内子项顺序。
-- `scale-pose` 按已确认范围跳过；未知任务在访问文件系统前失败。
-- 新架构完成后一次性删除旧 `annparser.py`、`annprocessor.py`、`annconverter.py` 和测试适配层，并将 `src/train.py` 的转换调用切换到 `xxtrain.pipeline.convert_dataset`。
-- `xxtrain.pipeline` 包级公共 API 固定为九个符号：`Context`、`ConversionConfig`、`ConversionReport`、`ExpandProcessor`、`ImageRef`、`ItemProcessor`、`Pipeline`、`Sample`、`convert_dataset`。
+- `scale-pose` 按已确认范围跳过；`standard_recipe()` 对没有标准转换的基础类型明确失败。
+- 新架构完成后一次性删除旧 `annparser.py`、`annprocessor.py`、`annconverter.py` 和测试适配层；训练工作流通过 `xxtrain.pipeline.convert_dataset` 执行 Scenario 提供的 Recipe。
+- `xxtrain.pipeline` 包级受支持 API 固定为十一个符号：`Context`、`ConversionConfig`、`ConversionReport`、`DatasetRecipe`、`ExpandProcessor`、`ImageRef`、`ItemProcessor`、`Pipeline`、`Sample`、`convert_dataset`、`standard_recipe`。
+- `convert_dataset()` 直接接收 `DatasetRecipe` 和数据集根目录；旧任务名注册表、`Recipe`、`build_recipe()` 和旧转换签名均已删除。
+
+### Training 层迁移结果
+
+- Python Scenario 是具体数据集转换与训练的组合根：它提供 `DatasetRecipe`、模型版本与规模、数据划分参数和传给 `YOLO.train()` 的覆盖参数。
+- Scenario 文件父目录是数据集根目录。原始输入位于 `<scenario_dir>/src/`，数据集产物位于 `<scenario_dir>/<recipe.name>/`，ONNX 与分类参考图位于 `<scenario_dir>/weights/`；Scenario 中显式使用的相对 `Path` 也以该目录解析。
+- `reserve_no_label` 在 `TrainingScenario` 和 `convert_dataset()` 的新公共路径上都默认为 `False`。
+- `standard_recipe()` 只拥有 detect、segment、pose、classify 四个标准 Recipe；point、knob、light 七个特殊 Recipe 由各自的 Scenario 文件拥有，不再保留中央任务名注册表。
+- 训练、独立导出和预测结果检查分别由 `src/train.py`、`src/export.py` 和 `src/review.py` 调用 `xxtrain.training`。`review.py` 检查预测结果，不调用 `model.val()` 重新计算验证指标。
+- `xxtrain.training` 包级受支持 API 固定为：`TrainingScenario`、`load_scenario`、`train`、`export`、`review`。
+- 13 个预置 Scenario 已用强制添加方式纳入 Git。`standard_classify.py` 保留默认训练参数，`direction_sensitive_classify.py` 提供标准 Pipeline 的方向敏感参考，`tuned_classify.py` 继承标准 epochs 和输入尺寸，同时保留其优化器与增强覆盖；`point_classify.py` 同样显式禁用水平/垂直翻转、旋转和自动增强。由于 `data/` 默认被忽略，新增 Scenario 仍需执行 `git add -f data/<dataset>/<scenario>.py`。
+- 模型 YAML 继续复制当前 Ultralytics 模板，只修改 `nc`，pose 额外修改 `kpt_shape`；ONNX 导出失败直接向入口传播。
+- 所有任务统一以 `<scenario_dir>/<recipe.name>/dataset.yaml` 作为转换完成信号。分类 Sink 在 finalize 最后生成该文件；仅存在 `train/<class>/` 或 `val/<class>/` 等部分目录时必须重新转换，不能把中断后的部分数据集误判为完成。
+- 分类数据转换统一在 `ClassificationDatasetSink` 中生成 `224×224`、padding 114 的居中 Letterbox 图片；whole-image 和延迟裁剪输出使用相同几何契约。
+- 分类标准训练参数使用 `imgsz=224` 和 `scale=0.0`，避免 Ultralytics 再次随机裁掉已经规范化的方图；Scenario 仍可显式覆盖默认参数。
+- 旧分类生成目录不兼容该契约，允许整体删除后从同级 `src/` 重建；重建不得删除或修改原始 `src/` 数据集。
 
 ## 第三阶段：建立打包配置
 
 - 完善 `pyproject.toml` 的项目元数据、依赖声明和包发现。
-- 迁移训练、验证、导出编排到 `xxtrain.training`。
 - 建立安装后的命令行入口，处理资源文件和缓存路径。
 - 确保 editable install、标准安装、CLI 和测试都不依赖 `sys.path` 偶然行为。
 
@@ -122,11 +146,11 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 ## 已确认的迁移边界
 
 - LabelImg、LabelMe、YOLO 的统一双向导入导出接口属于迁移后的功能补齐。当前只承接原有转换方向。
-- 当前工作流在目标数据集产物已存在时跳过转换。源数据变化检测、失效判断和强制重建机制留待后续设计。
+- 当前工作流仅在目标数据集的 `dataset.yaml` 已存在时跳过转换。该文件表示 Sink 已执行 finalize，但不承担源数据变化检测或完整性校验；失效判断和强制重建机制留待后续设计。
 - 不保留新旧管线兼容层。开发期间允许整体功能暂时不可用，但入口切换只能在新架构承接全部既有配方后进行。
 - 发现的算法缺陷和校验策略变化单独处理；迁移提交只承担结构变化与经确认的行为等价转换。
 
 ## 下一步
 
-1. 进入 training 迁移设计。
-2. 最后建立打包配置和 CLI。
+1. 建立打包配置、依赖与包发现。
+2. 建立安装后的 `xxtrain` CLI，并确定资源文件和缓存路径。
