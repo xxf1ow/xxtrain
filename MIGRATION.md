@@ -14,7 +14,7 @@
 | 第二阶段 A：data 迁移 | 完成 | 不可变标注、格式读取、几何、编码和数据集产物已进入 `xxtrain.data` |
 | 第二阶段 B：pipeline 迁移 | 完成 | typed pipeline、全部 11 条任务基线、执行入口切换和小数裁剪范围回归测试均已完成 |
 | 第二阶段 C：training 迁移 | 完成 | Python Scenario、训练、独立导出和预测结果检查已进入 `xxtrain.training` |
-| 第三阶段：打包与 CLI | 未开始 | 尚未建立完整项目元数据、安装入口和 `xxtrain` CLI |
+| 第三阶段：打包与 CLI | 完成 | setuptools 元数据、editable/普通安装、统一 `xxtrain` CLI 和用户级权重缓存均已建立 |
 
 ## 第一阶段：建立测试基线
 
@@ -39,11 +39,9 @@ git diff --check
 
 ```text
 src/
-├── train.py                         # Scenario 驱动的训练入口
-├── export.py                        # 独立 ONNX 导出入口
-├── review.py                        # 独立预测结果检查入口
 └── xxtrain/
     ├── __init__.py
+    ├── cli.py                      # 安装后的 train/export/review 子命令
     ├── task.py                      # 仅包含基础 TaskType
     ├── data/
     │   ├── __init__.py
@@ -126,7 +124,7 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 - Scenario 文件父目录是数据集根目录。原始输入位于 `<scenario_dir>/src/`，数据集产物位于 `<scenario_dir>/<recipe.name>/`，ONNX 与分类参考图位于 `<scenario_dir>/weights/`；Scenario 中显式使用的相对 `Path` 也以该目录解析。
 - `reserve_no_label` 在 `TrainingScenario` 和 `convert_dataset()` 的新公共路径上都默认为 `False`。
 - `standard_recipe()` 只拥有 detect、segment、pose、classify 四个标准 Recipe；point、knob、light 七个特殊 Recipe 由各自的 Scenario 文件拥有，不再保留中央任务名注册表。
-- 训练、独立导出和预测结果检查分别由 `src/train.py`、`src/export.py` 和 `src/review.py` 调用 `xxtrain.training`。`review.py` 检查预测结果，不调用 `model.val()` 重新计算验证指标。
+- 训练、独立导出和预测结果检查分别由 `xxtrain train`、`xxtrain export` 和 `xxtrain review` 调用 `xxtrain.training`。`xxtrain review` 检查预测结果，不调用 `model.val()` 重新计算验证指标。
 - `xxtrain.training` 包级受支持 API 固定为：`TrainingScenario`、`load_scenario`、`train`、`export`、`review`。
 - 13 个预置 Scenario 已用强制添加方式纳入 Git。`standard_classify.py` 保留默认训练参数，`direction_sensitive_classify.py` 提供标准 Pipeline 的方向敏感参考，`tuned_classify.py` 继承标准 epochs 和输入尺寸，同时保留其优化器与增强覆盖；`point_classify.py` 同样显式禁用水平/垂直翻转、旋转和自动增强。由于 `data/` 默认被忽略，新增 Scenario 仍需执行 `git add -f data/<dataset>/<scenario>.py`。
 - 模型 YAML 继续复制当前 Ultralytics 模板，只修改 `nc`，pose 额外修改 `kpt_shape`；ONNX 导出失败直接向入口传播。
@@ -137,11 +135,16 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 
 ## 第三阶段：建立打包配置
 
-- 完善 `pyproject.toml` 的项目元数据、依赖声明和包发现。
-- 建立安装后的命令行入口，处理资源文件和缓存路径。
-- 确保 editable install、标准安装、CLI 和测试都不依赖 `sys.path` 偶然行为。
+- setuptools 按 `src` 布局发现并安装 `xxtrain`，项目版本为 `0.1.0`，Python 下限为 3.11。
+- 运行依赖在 `pyproject.toml` 中直接声明但不固定版本；当前不维护 lock 文件或包仓库发布配置。
+- 安装后统一使用 `xxtrain train`、`xxtrain export` 和 `xxtrain review`，不保留 checkout 脚本入口。
+- 预训练权重位于 `platformdirs.user_cache_path('xxtrain') / 'weights'`，不再写入源码或安装目录。
+- 测试在 editable install 后运行，`test/__init__.py` 不再注入 `src`。
+- wheel 普通安装及仓库外 CLI 帮助命令已经过验证。
 
 完成标准：项目可以通过标准 Python 包方式安装、测试和执行完整训练工作流。
+
+状态：已完成。
 
 ## 已确认的迁移边界
 
@@ -152,5 +155,4 @@ ImageInfo(width=int(x2 - x1), height=int(y2 - y1))
 
 ## 下一步
 
-1. 建立打包配置、依赖与包发现。
-2. 建立安装后的 `xxtrain` CLI，并确定资源文件和缓存路径。
+基础架构迁移已经完成。后续工作按 `ARCHITECTURE.md` 进入离线伪标签迭代训练设计，不属于本次迁移。

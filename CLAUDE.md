@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 xxtrain is a training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It converts LabelImg/LabelMe annotations into YOLO datasets, generates model configuration, downloads pretrained weights, trains, inspects prediction results, and exports ONNX models.
 
-All Python source lives under `src/`. `src/train.py`, `src/export.py`, and `src/review.py` are the current checkout-based entry points. Dataset conversion and training orchestration live in the installable-package-shaped source tree under `src/xxtrain/`; do not recreate or import the removed flat modules `annparser.py`, `annprocessor.py`, or `annconverter.py`.
+All Python source lives under `src/xxtrain/` and is installed as the `xxtrain` package. `xxtrain.cli` is the only command entry and dispatches to the package's conversion and training APIs; do not recreate the removed checkout scripts `src/train.py`, `src/export.py`, or `src/review.py`, and do not recreate or import the removed flat modules `annparser.py`, `annprocessor.py`, or `annconverter.py`.
 
 Do not confuse the repository's `src/` directory with a Scenario's `<scenario_dir>/src/` input directory. They are unrelated despite the shared name.
 
@@ -77,19 +77,23 @@ Classification dataset conversion materializes every whole image or deferred cro
 
 Model-template handling, pretrained-weight preparation, classification mismatch reporting, and other orchestration details remain internal.
 
+Pretrained model weights are shared through `platformdirs.user_cache_path('xxtrain') / 'weights'`. They are not read from or written to the checkout, installed package, or Scenario directory.
+
 ## Commands
 
-Current source-checkout workflows take a Scenario file:
+Install the project in editable mode before running the installed commands or tests:
 
 ```powershell
+python -m pip install -e ".[dev]"
+
 # Full pipeline: convert -> generate model.yaml -> download weights -> train -> export ONNX
-python src/train.py data/standard-detect/standard_detect.py
+xxtrain train data/standard-detect/standard_detect.py
 
 # Export an existing checkpoint
-python src/export.py data/standard-detect/standard_detect.py --weights runs/detect/train/weights/best.pt
+xxtrain export data/standard-detect/standard_detect.py --weights runs/detect/train/weights/best.pt
 
 # Inspect prediction results for an existing checkpoint
-python src/review.py data/standard-detect/standard_detect.py --weights runs/detect/train/weights/best.pt --directory path/to/images
+xxtrain review data/standard-detect/standard_detect.py --weights runs/detect/train/weights/best.pt --directory path/to/images
 
 # Canonical test command
 python -m unittest discover -s test -t . -p 'test_*.py' -v
@@ -166,4 +170,4 @@ Do not force-add raw datasets or generated outputs.
 - Data layer migration: complete.
 - Typed pipeline and conversion-entry cutover: complete.
 - Scenario-driven training, export, and prediction-review migration: complete.
-- Packaging and installable CLI: not started.
+- Packaging and installed CLI: complete.
