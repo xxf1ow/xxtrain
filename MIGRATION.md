@@ -72,7 +72,7 @@ src/
         └── review.py                # 预测结果检查
 ```
 
-`xxtrain.training` 已完成源码边界迁移。是否新增 `xxtrain.cli`、如何安装入口以及预训练缓存的安装后路径，留到打包阶段确定。仅供多个内部模块复用的工具函数可以进入内部模块，但不得扩大包级公共 API。
+`xxtrain.training` 已完成源码边界迁移。安装入口已统一为 `xxtrain.cli` 提供的 `xxtrain` 命令，预训练权重位于 `platformdirs.user_cache_path('xxtrain') / 'weights'`。仅供多个内部模块复用的工具函数可以进入内部模块，但不得扩大包级公共 API。
 
 ### Data 层迁移结果
 

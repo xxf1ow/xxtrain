@@ -110,7 +110,7 @@ git diff --check
 ruff format src test
 ```
 
-`review.py` performs prediction result inspection; it does not call `model.val()`. Detect, segment, pose, and OBB checkpoints save prediction visualizations. Classification checkpoints infer the expected class from each image's parent directory, collect mismatches, and write a report.
+`xxtrain review` performs prediction result inspection; it does not call `model.val()`. Detect, segment, pose, and OBB checkpoints save prediction visualizations. Classification checkpoints infer the expected class from each image's parent directory, collect mismatches, and write a report.
 
 Test fixtures live in `test/fixtures/` and human-reviewed semantic snapshots live in `test/expected/conversions/`. Tests import the new package directly; there is no `test/support/current_api.py` compatibility adapter.
 
