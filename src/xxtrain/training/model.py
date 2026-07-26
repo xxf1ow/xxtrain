@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import ultralytics
+from platformdirs import user_cache_path
 from ruamel.yaml import YAML
 from ultralytics.models import YOLO
 
@@ -61,7 +62,7 @@ def generate_model_yaml(scenario: TrainingScenario, root: Path) -> tuple[str, Pa
 
 
 def prepare_pretrained_weights(model_name: str) -> Path:
-    cache_path = Path(__file__).resolve().parents[2] / '.weights' / f'{model_name}.pt'
+    cache_path = user_cache_path('xxtrain') / 'weights' / f'{model_name}.pt'
     if cache_path.is_file():
         return cache_path
     cache_path.parent.mkdir(parents=True, exist_ok=True)

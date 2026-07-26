@@ -10,7 +10,7 @@ xxtrain 面向垂类视觉任务，负责把原始标注转换为可训练数据
 2. **离线伪标签迭代训练（规划中）**：用已训练模型生成伪标签，筛选后重新训练。
 3. **在线 Teacher–Student 训练（规划中）**：训练过程中利用未标注数据，由 Teacher 为 Student 提供监督。
 
-第一阶段的数据、pipeline 和 training 源码边界已经完成；项目下一项迁移工作是打包和安装式 CLI。后续训练阶段建立在现有任务定义、数据处理和评估能力之上，不提前固定实现细节。
+第一阶段的数据、pipeline、training、打包和安装式 CLI 已经完成。后续训练阶段建立在现有任务定义、数据处理和评估能力之上，不提前固定实现细节。
 
 ## 2. 第一阶段：基础训练架构整理
 
@@ -85,11 +85,11 @@ Scenario 文件必须导出 `SCENARIO: TrainingScenario`。其中 `DatasetRecipe
 
 训练层负责串联 Scenario 加载、数据转换、模型配置、预训练权重、训练和 ONNX 导出。当前以 Ultralytics YOLO 为唯一训练后端，保持薄封装。
 
-三个源码入口职责独立：
+安装后通过统一的 `xxtrain` 命令执行三个独立职责：
 
-- `src/train.py`：运行完整训练工作流；
-- `src/export.py`：从已有 checkpoint 独立导出 ONNX；
-- `src/review.py`：运行预测并保存可视化结果或分类错分报告。
+- `xxtrain train`：运行完整训练工作流；
+- `xxtrain export`：从已有 checkpoint 独立导出 ONNX；
+- `xxtrain review`：运行预测并保存可视化结果或分类错分报告。
 
 预测结果检查不是 `model.val()` 指标评估。训练过程中的 Ultralytics 验证仍负责指标、曲线和样例；当前没有单独重新计算验证指标的入口。
 
@@ -108,7 +108,9 @@ Scenario 文件必须导出 `SCENARIO: TrainingScenario`。其中 `DatasetRecipe
 - `xxtrain.training.scenario`：`TrainingScenario`、Python Scenario 加载和相对 `Path` 解析；
 - `xxtrain.training.model` / `workflow`：模型 YAML、预训练权重和固定训练工作流；
 - `xxtrain.training.exporting` / `review`：ONNX 导出、分类参考图和预测结果检查；
-- `train.py`、`export.py`、`review.py`：当前源码检出中的薄命令入口；安装式 CLI 留到打包阶段。
+- `xxtrain.cli`：安装后的 `train`、`export`、`review` 子命令入口。
+
+项目通过 setuptools 按 `src` 布局安装，要求 Python 3.11 及以上。预训练权重位于 `platformdirs` 提供的 xxtrain 用户缓存目录；具体数据集的 Scenario 仍留在数据集目录，不作为包资源安装。
 
 旧的 `annparser.py`、`annprocessor.py`、`annconverter.py` 已在 typed pipeline 承接全部既有任务后删除。
 
