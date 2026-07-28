@@ -26,21 +26,39 @@ class YoloFormatTest(unittest.TestCase):
 
     def test_pose_round_trip_preserves_geometry_visibility_order_and_label(self) -> None:
         pose = Pose(
-            label='nose',
+            label='person',
             x1=20,
             y1=10,
             x2=100,
             y2=50,
             keypoints=(
-                Keypoint(label='nose', x=20, y=10, visibility=2),
-                Keypoint(label='wrist', x=100, y=50, visibility=1),
+                Keypoint(label='nose', x=40, y=20, visibility=2),
+                Keypoint(label='wrist', x=80, y=40, visibility=1),
             ),
         )
-        labels = LabelCatalog(names=('nose', 'wrist'))
+        labels = LabelCatalog(names=('person', 'nose', 'wrist'))
 
         decoded = decode_pose(encode_pose(pose, self.image, labels), self.image, labels)
 
         self.assertEqual(pose, decoded.wrap(id=pose.id))
+
+    def test_pose_requires_object_label_and_keypoint_label(self) -> None:
+        with self.assertRaisesRegex(ValueError, 'at least one object label and one keypoint'):
+            decode_pose('0 0.5 0.5 0.5 0.5', self.image, LabelCatalog(('person',)))
+
+    def test_pose_label_must_match_first_catalog_label(self) -> None:
+        pose = Pose(
+            label='person',
+            x1=20,
+            y1=10,
+            x2=100,
+            y2=50,
+            keypoints=(Keypoint(label='nose', x=40, y=20, visibility=2), Keypoint(label='wrist', x=80, y=40)),
+        )
+        labels = LabelCatalog(names=('person', 'nose', 'wrist'))
+
+        with self.assertRaisesRegex(ValueError, 'Pose label must match'):
+            encode_pose(pose.wrap(label='face'), self.image, labels)
 
     def test_encodes_detect_line_with_catalog_index(self) -> None:
         annotation = Bbox(label='dial', x1=20, y1=10, x2=100, y2=50)
@@ -57,7 +75,7 @@ class YoloFormatTest(unittest.TestCase):
         )
 
     def test_decoders_require_valid_token_counts(self) -> None:
-        labels = LabelCatalog(names=('label',))
+        labels = LabelCatalog(names=('person', 'label'))
         invalid = (
             lambda: decode_detect('0 0.5 0.5 0.5', self.image, labels),
             lambda: decode_detect('0 0.5 0.5 0.5 0.5 0.5', self.image, labels),
@@ -85,7 +103,7 @@ class YoloFormatTest(unittest.TestCase):
                     decode()
 
     def test_class_tokens_reject_python_integer_conveniences(self) -> None:
-        labels = LabelCatalog(names=('label',))
+        labels = LabelCatalog(names=('person', 'label'))
         for token in ('0_0', '+0', '-0', '0.0', '0e0', '+', ''):
             with self.subTest(token=token):
                 with self.assertRaises(ValueError):
@@ -112,7 +130,7 @@ class YoloFormatTest(unittest.TestCase):
                     decode_segment(line, self.image, labels)
 
     def test_pose_decoder_rejects_visibility_outside_zero_one_two(self) -> None:
-        labels = LabelCatalog(names=('point',))
+        labels = LabelCatalog(names=('person', 'point'))
         for visibility in ('-1', '1.5', '3'):
             with self.subTest(visibility=visibility):
                 with self.assertRaises(ValueError):
@@ -122,10 +140,10 @@ class YoloFormatTest(unittest.TestCase):
         labels = LabelCatalog(names=('first', 'second'))
 
         with self.assertRaises(ValueError):
-            decode_pose('1 0.5 0.5 0.5 0.5 0.1 0.1 2 0.2 0.2 1', self.image, labels)
+            decode_pose('1 0.5 0.5 0.5 0.5 0.1 0.1 2', self.image, labels)
 
     def test_decoded_boxes_require_positive_width_and_height(self) -> None:
-        labels = LabelCatalog(names=('point',))
+        labels = LabelCatalog(names=('person', 'point'))
         invalid = (
             lambda: decode_detect('0 0.5 0.5 0 0.5', self.image, labels),
             lambda: decode_detect('0 0.5 0.5 0.5 -0.5', self.image, labels),
@@ -158,7 +176,7 @@ class YoloFormatTest(unittest.TestCase):
         self.assertEqual(line, encode_segment(decoded, self.image, labels))
 
     def test_pose_decoder_rejects_bbox_tokens_outside_unit_range(self) -> None:
-        labels = LabelCatalog(names=('point',))
+        labels = LabelCatalog(names=('person', 'point'))
         invalid = (
             '0 -0.1 0.5 0.2 0.2 0.5 0.5 2',
             '0 0.5 -0.1 0.2 0.2 0.5 0.5 2',
@@ -172,7 +190,7 @@ class YoloFormatTest(unittest.TestCase):
                 decode_pose(line, self.image, labels)
 
     def test_pose_decoder_rejects_keypoint_coordinates_outside_unit_range(self) -> None:
-        labels = LabelCatalog(names=('point',))
+        labels = LabelCatalog(names=('person', 'point'))
         invalid = (
             '0 0.5 0.5 0.2 0.2 -0.1 0.5 2',
             '0 0.5 0.5 0.2 0.2 0.5 -0.1 2',
@@ -184,7 +202,7 @@ class YoloFormatTest(unittest.TestCase):
                 decode_pose(line, self.image, labels)
 
     def test_pose_decoder_rejects_in_range_tokens_whose_bbox_corners_escape_image(self) -> None:
-        labels = LabelCatalog(names=('point',))
+        labels = LabelCatalog(names=('person', 'point'))
         invalid = (
             '0 0 0.5 0.1 0.2 0.5 0.5 2',
             '0 1 0.5 0.1 0.2 0.5 0.5 2',
@@ -196,7 +214,7 @@ class YoloFormatTest(unittest.TestCase):
                 decode_pose(line, self.image, labels)
 
     def test_pose_decoder_accepts_encoder_compatible_boundary_values(self) -> None:
-        labels = LabelCatalog(names=('point',))
+        labels = LabelCatalog(names=('person', 'point'))
         line = '0 0.500000 0.500000 1.000000 1.000000 0.000000 1.000000 2'
 
         decoded = decode_pose(line, self.image, labels)
@@ -210,7 +228,7 @@ class YoloFormatTest(unittest.TestCase):
 
     def test_encodes_pose_in_catalog_order_with_fixed_class_zero(self) -> None:
         pose = Pose(
-            label='start',
+            label='person',
             x1=20,
             y1=10,
             x2=100,
@@ -220,13 +238,13 @@ class YoloFormatTest(unittest.TestCase):
 
         self.assertEqual(
             '0 0.300000 0.300000 0.400000 0.400000 0.100000 0.100000 2 0.500000 0.500000 2',
-            encode_pose(pose, self.image, LabelCatalog(names=('start', 'end'))),
+            encode_pose(pose, self.image, LabelCatalog(names=('person', 'start', 'end'))),
         )
 
     def test_pose_encoder_requires_single_class_and_exact_keypoint_catalog(self) -> None:
-        catalog = LabelCatalog(names=('start', 'end'))
+        catalog = LabelCatalog(names=('person', 'start', 'end'))
         invalid = (
-            Pose(label='start', x1=20, y1=10, x2=100, y2=50, keypoints=(Keypoint(label='start', x=20, y=10),)),
+            Pose(label='person', x1=20, y1=10, x2=100, y2=50, keypoints=(Keypoint(label='start', x=20, y=10),)),
             Pose(
                 label='other',
                 x1=20,
@@ -242,7 +260,7 @@ class YoloFormatTest(unittest.TestCase):
                     encode_pose(pose, self.image, catalog)
 
     def test_pose_encoder_rejects_empty_keypoint_catalog_explicitly(self) -> None:
-        pose = Pose(label='point', x1=20, y1=10, x2=100, y2=50, keypoints=(Keypoint(label='point', x=20, y=10),))
+        pose = Pose(label='person', x1=20, y1=10, x2=100, y2=50, keypoints=(Keypoint(label='point', x=20, y=10),))
         empty_catalog = object.__new__(LabelCatalog)
         object.__setattr__(empty_catalog, 'names', ())
 

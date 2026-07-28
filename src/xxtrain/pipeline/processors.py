@@ -317,25 +317,29 @@ class EncodePose(ItemProcessor[MatchOutput, EncodeOutput]):
 
     def transform(self, item: MatchOutput, context: Context) -> EncodeOutput:
         info = item.sample.image.require_info()
+        pose_label = context.config.labels.names[0]
+        keypoint_labels = context.config.labels.names[1:]
+        if item.matches and any(match.parent.label != pose_label for match in item.matches):
+            raise ValueError('Pose bbox label must match the first catalog label')
         lines = []
         for match in item.matches:
             if not all(isinstance(child, Points) for child in match.children):
                 raise ValueError(f'骨骼标注必须是点类型: {item.sample.image.path}')
             keypoints = {child.label: child for child in match.children}
-            if len(keypoints) != len(match.children) or set(keypoints) != set(context.config.labels.names):
+            if len(keypoints) != len(match.children) or set(keypoints) != set(keypoint_labels):
                 raise ValueError('关键点标签与目录不匹配')
             for annotation in keypoints.values():
                 if len(annotation.points) != 1:
                     raise ValueError(f'骨骼标注必须是单点 Points: {annotation}')
             pose = Pose(
-                label=context.config.labels.names[0],
+                label=pose_label,
                 x1=match.parent.x1,
                 y1=match.parent.y1,
                 x2=match.parent.x2,
                 y2=match.parent.y2,
                 keypoints=tuple(
                     Keypoint(label=label, x=keypoints[label].points[0][0], y=keypoints[label].points[0][1])
-                    for label in context.config.labels
+                    for label in keypoint_labels
                 ),
             )
             lines.append(encode_pose(pose, info, context.config.labels))

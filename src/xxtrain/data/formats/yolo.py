@@ -104,9 +104,16 @@ def encode_segment(annotation: Shape, image_info: ImageInfo, labels: LabelCatalo
     return ' '.join(values)
 
 
-def decode_pose(line: str, image_info: ImageInfo, keypoint_labels: LabelCatalog) -> Pose:
+def _pose_schema(labels: LabelCatalog) -> tuple[str, tuple[str, ...]]:
+    if len(labels) < 2:
+        raise ValueError('YOLO pose requires at least one object label and one keypoint label')
+    return labels.names[0], labels.names[1:]
+
+
+def decode_pose(line: str, image_info: ImageInfo, labels: LabelCatalog) -> Pose:
+    pose_label, keypoint_labels = _pose_schema(labels)
     tokens = _tokens(line, count=5 + 3 * len(keypoint_labels))
-    class_id = _class_id(tokens[0], keypoint_labels)
+    class_id = _class_id(tokens[0], labels)
     if class_id != 0:
         raise ValueError(f'YOLO pose class id must be 0, got {class_id}')
     x_center, y_center, width, height = _finite_values(tokens[1:5])
@@ -119,25 +126,29 @@ def decode_pose(line: str, image_info: ImageInfo, keypoint_labels: LabelCatalog)
     x2, y2 = x_center + width / 2.0, y_center + height / 2.0
     _validate_bbox_inside_image(x1, y1, x2, y2, image_info)
     keypoint_values = _finite_values(tokens[5:])
-    keypoints = []
-    for index, label in enumerate(keypoint_labels):
+    keypoints = tuple(
+        Keypoint(
+            label=label,
+            x=keypoint_values[index * 3] * image_info.width,
+            y=keypoint_values[index * 3 + 1] * image_info.height,
+            visibility=int(keypoint_values[index * 3 + 2]),
+        )
+        for index, label in enumerate(keypoint_labels)
+    )
+    for index in range(len(keypoint_labels)):
         x, y, visibility = keypoint_values[index * 3 : index * 3 + 3]
         _validate_normalized((x, y), 'YOLO pose keypoint coordinates must be between 0 and 1')
         if visibility not in (0, 1, 2):
             raise ValueError(f'YOLO pose visibility must be 0, 1, or 2, got {visibility}')
-        keypoints.append(
-            Keypoint(label=label, x=x * image_info.width, y=y * image_info.height, visibility=int(visibility))
-        )
-    return Pose(label=keypoint_labels.names[0], x1=x1, y1=y1, x2=x2, y2=y2, keypoints=tuple(keypoints))
+    return Pose(label=pose_label, x1=x1, y1=y1, x2=x2, y2=y2, keypoints=keypoints)
 
 
-def encode_pose(pose: Pose, image_info: ImageInfo, keypoint_labels: LabelCatalog) -> str:
-    if not keypoint_labels.names:
-        raise ValueError('关键点目录不能为空')
-    if pose.label != keypoint_labels.names[0]:
-        raise ValueError('YOLO pose label must match the first keypoint label')
+def encode_pose(pose: Pose, image_info: ImageInfo, labels: LabelCatalog) -> str:
+    pose_label, keypoint_labels = _pose_schema(labels)
+    if pose.label != pose_label:
+        raise ValueError('YOLO Pose label must match the first catalog label')
     keypoints = {keypoint.label: keypoint for keypoint in pose.keypoints}
-    if set(keypoints) != set(keypoint_labels.names):
+    if set(keypoints) != set(keypoint_labels):
         raise ValueError('关键点标签与目录不匹配')
     _validate_bbox_inside_image(pose.x1, pose.y1, pose.x2, pose.y2, image_info)
     x_center, y_center, width, height = _bbox_values(pose, image_info)

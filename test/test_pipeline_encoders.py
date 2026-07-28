@@ -85,7 +85,7 @@ class PipelineEncoderTest(unittest.TestCase):
         self.assertEqual(('0 0.000000 0.100000 1.000000 0.100000 0.500000 1.000000',), output.lines)
 
     def test_pose_match_adapter_preserves_legacy_bytes_in_catalog_order(self) -> None:
-        context = self.make_context(('start', 'end'), TaskType.POSE)
+        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
         sample = self.make_sample((), size=(100, 100))
         parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
         children = (Points(label='end', points=((80, 70),)), Points(label='start', points=((20, 30),)))
@@ -96,7 +96,7 @@ class PipelineEncoderTest(unittest.TestCase):
         )
 
     def test_pose_match_adapter_preserves_catalog_mismatch_value_error(self) -> None:
-        context = self.make_context(('start', 'end'), TaskType.POSE)
+        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
         sample = self.make_sample((), size=(100, 100))
         parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
         cases = (
@@ -118,8 +118,18 @@ class PipelineEncoderTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '关键点标签与目录不匹配'):
                     EncodePose().transform(item, context)
 
+    def test_pose_match_adapter_requires_parent_label_to_match_catalog(self) -> None:
+        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
+        sample = self.make_sample((), size=(100, 100))
+        parent = Bbox(label='other', x1=10, y1=10, x2=90, y2=90)
+        children = (Points(label='start', points=((20, 30),)), Points(label='end', points=((80, 70),)))
+        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=children),))
+
+        with self.assertRaisesRegex(ValueError, 'Pose bbox label must match'):
+            EncodePose().transform(item, context)
+
     def test_pose_match_adapter_preserves_single_point_value_error(self) -> None:
-        context = self.make_context(('start', 'end'), TaskType.POSE)
+        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
         sample = self.make_sample((), size=(100, 100))
         parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
         children = (Points(label='start', points=((20, 30), (21, 31))), Points(label='end', points=((80, 70),)))
