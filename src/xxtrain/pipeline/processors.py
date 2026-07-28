@@ -53,7 +53,9 @@ def _prepare_segment_shape(shape: Shape) -> Shape:
             for index in range(count)
         )
         return Polygon(points=points, **common)
-    if isinstance(shape, (Polygon, Polyline)):
+    if isinstance(shape, Polygon):
+        return shape
+    if isinstance(shape, Polyline) and len(shape.points) == 2:
         return shape
     raise Exception(f"[Error] Task segment usually doesn't use {shape.type}")
 

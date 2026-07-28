@@ -132,6 +132,12 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)), output.annotations[0].points)
         self.assertGreaterEqual(len(output.annotations[1].points), 12)
 
+    def test_prepare_segment_rejects_polyline_with_more_than_two_points(self) -> None:
+        annotations = (Polyline(label='known', points=((0, 0), (1, 1), (2, 2))),)
+        sample = self.make_sample(Path('image.jpg'), annotations=annotations)
+        with self.assertRaisesRegex(Exception, "Task segment usually doesn't use"):
+            PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
+
     def test_prepare_match_children_accepts_pose_shapes_without_conversion(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
         children = (
