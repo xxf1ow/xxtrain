@@ -11,6 +11,7 @@ from .annotation import (
     Pose,
     Shape,
 )
+from .formats.coco import CocoDoc, CocoImage
 from .geometry import validate_obb
 from .labels import LabelCatalog
 from .pose import assemble_poses
@@ -20,6 +21,8 @@ __all__ = [
     'AnnotationType',
     'Bbox',
     'Circle',
+    'CocoDoc',
+    'CocoImage',
     'ImageInfo',
     'Keypoint',
     'LabelCatalog',
