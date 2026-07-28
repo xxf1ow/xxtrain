@@ -11,11 +11,12 @@ from .core import (
 )
 from .discovery import CocoSource
 from .recipes import DatasetRecipe, standard_recipe
-from .sinks import LabelImgSink, LabelMeSink
+from .sinks import CocoSink, LabelImgSink, LabelMeSink
 from .workflow import convert_dataset
 
 __all__ = [
     'Context',
+    'CocoSink',
     'CocoSource',
     'ConversionConfig',
     'ConversionReport',

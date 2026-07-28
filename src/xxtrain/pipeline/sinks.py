@@ -9,9 +9,10 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from xxtrain.data import ImageInfo
+from xxtrain.data import CocoDoc, CocoImage, ImageInfo, LabelCatalog
 from xxtrain.data.dataset import split_membership, write_dataset_yaml, write_split_lists
 from xxtrain.data.formats import write_labelimg, write_labelme
+from xxtrain.data.formats.coco import write_coco
 from xxtrain.pipeline.annotation_io import validate_annotations_for_task
 from xxtrain.pipeline.core import ClassifyOutput, Context, EncodeOutput, Sample
 from xxtrain.task import TaskType
@@ -120,6 +121,63 @@ class YoloDatasetSink:
 
     def finalize(self, context: Context) -> None:
         _finalize_dataset(context)
+
+
+class CocoSink:
+    input_type = Sample
+
+    def __init__(self) -> None:
+        self._images: list[CocoImage] = []
+        self._claimed_paths: set[Path] = set()
+
+    def _claim(self, path: Path) -> None:
+        if path in self._claimed_paths or path.exists():
+            raise ValueError('COCO crop output path collision')
+        self._claimed_paths.add(path)
+
+    def write(self, item: Sample, context: Context) -> None:
+        if not isinstance(item, Sample):
+            raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
+
+        output_base = _output_base(item, context)
+        if not item.annotations:
+            context.report.record_missing_annotations(item.source_group)
+            if not context.config.reserve_no_label:
+                return
+
+        annotations = validate_annotations_for_task(
+            item.annotations, context.config.task_type, context.config.labels.names
+        )
+        output_root = context.config.root_path / context.config.task_name
+        if item.image.crop_box is None:
+            image_path = item.image.path
+            image_info = item.image.require_info()
+        else:
+            crop_path = _append_suffix(output_base, '.jpg')
+            self._claim(crop_path)
+            image_path, image_info = _materialize_crop(item, output_base)
+
+        self._images.append(
+            CocoImage(file_name=_image_reference(image_path, output_root), info=image_info, annotations=annotations)
+        )
+        in_train, in_val = split_membership(item.source_index, context.config.split)
+        output_item = str(image_path)
+        context.report.record_output(
+            train_item=output_item if in_train else None,
+            val_item=output_item if in_val else None,
+            annotation_count=len(annotations),
+        )
+
+    def finalize(self, context: Context) -> None:
+        labels = (
+            LabelCatalog((context.config.labels.names[0],))
+            if context.config.task_type is TaskType.POSE
+            else context.config.labels
+        )
+        write_coco(
+            CocoDoc(labels=labels, images=tuple(self._images)),
+            context.config.root_path / context.config.task_name / 'annotations.json',
+        )
 
 
 class _AnnotationSink:
