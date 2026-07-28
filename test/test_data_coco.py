@@ -587,6 +587,58 @@ class CocoWriterTest(unittest.TestCase):
                     write_coco(document, existing)
                 self.assertEqual('keep me', existing.read_text(encoding='utf-8'))
 
+    def test_rejects_finite_bbox_and_pose_that_xywh_cannot_reconstruct_before_io(self) -> None:
+        annotations = (
+            Bbox(label='object', x1=-1e308, y1=0, x2=1e100, y2=1),
+            Pose(label='person', x1=0, y1=-1e308, x2=1, y2=1e100, keypoints=(Keypoint(label='center', x=0, y=0),)),
+        )
+
+        for index, annotation in enumerate(annotations):
+            with self.subTest(annotation=type(annotation).__name__), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                document = CocoDoc(
+                    labels=LabelCatalog(('object', 'person')),
+                    images=(
+                        CocoImage(
+                            file_name='image.jpg', info=ImageInfo(width=20, height=20), annotations=(annotation,)
+                        ),
+                    ),
+                )
+                missing = root / f'missing-{index}' / 'annotations.json'
+                with self.assertRaisesRegex(ValueError, 'reversible'):
+                    write_coco(document, missing)
+                self.assertFalse(missing.parent.exists())
+
+                existing = root / f'existing-{index}.json'
+                existing.write_text('keep me', encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'reversible'):
+                    write_coco(document, existing)
+                self.assertEqual('keep me', existing.read_text(encoding='utf-8'))
+
+    def test_round_trip_accepts_reversible_decimal_and_negative_bboxes(self) -> None:
+        annotations = (
+            Bbox(label='object', x1=-1.25, y1=-2.5, x2=3.5, y2=4.75),
+            Pose(
+                label='person',
+                x1=-4.5,
+                y1=-2.25,
+                x2=3.5,
+                y2=5.75,
+                keypoints=(Keypoint(label='center', x=-0.5, y=1.25),),
+            ),
+        )
+        document = CocoDoc(
+            labels=LabelCatalog(('object', 'person')),
+            images=(CocoImage(file_name='image.jpg', info=ImageInfo(width=20, height=20), annotations=annotations),),
+        )
+
+        loaded, _ = self._round_trip(document)
+
+        self.assertEqual(
+            tuple(annotation.bbox for annotation in annotations),
+            tuple(item.bbox for item in loaded.images[0].annotations),
+        )
+
     def test_type_distinct_equal_group_values_remain_separate(self) -> None:
         document = CocoDoc(
             labels=LabelCatalog(('first', 'second')),

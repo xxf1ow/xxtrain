@@ -255,6 +255,8 @@ def _positive_finite_derived(value: float, name: str) -> float:
 def _xywh(annotation: Bbox | Pose) -> list[float]:
     width = _positive_finite_derived(annotation.x2 - annotation.x1, 'COCO bbox width')
     height = _positive_finite_derived(annotation.y2 - annotation.y1, 'COCO bbox height')
+    if annotation.x1 + width != annotation.x2 or annotation.y1 + height != annotation.y2:
+        raise ValueError('COCO bbox must be exactly reversible from xywh')
     return [annotation.x1, annotation.y1, width, height]
 
 
