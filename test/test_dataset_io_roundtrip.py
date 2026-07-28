@@ -10,7 +10,7 @@ from PIL import Image
 from pycocotools.coco import COCO
 
 from test.support.annotation_projection import project_annotations
-from xxtrain.data import LabelCatalog, Pose
+from xxtrain.data import ImageInfo, Keypoint, LabelCatalog, Pose
 from xxtrain.data.formats import decode_pose, decode_segment, read_labelimg, read_labelme
 from xxtrain.pipeline import CocoSink, CocoSource, LabelImgSink, LabelMeSink, ReadAnnotations
 from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, Pipeline
@@ -32,6 +32,9 @@ def normalized_xml(path: Path) -> str:
 
 
 class DatasetIoRoundTripTest(unittest.TestCase):
+    pose_keypoint_tolerance = 0.5e-6 + 1e-12
+    pose_bbox_corner_tolerance = 0.75e-6 + 1e-12
+
     def copy_fixture(self, fixture_name: str, root: Path) -> Path:
         target = root / fixture_name
         shutil.copytree(FIXTURES_PATH / fixture_name, target)
@@ -66,6 +69,31 @@ class DatasetIoRoundTripTest(unittest.TestCase):
             tuple(project_annotations(sample.annotations, sample.image.require_info()) for sample in expected),
             tuple(project_annotations(sample.annotations, sample.image.require_info()) for sample in actual),
         )
+
+    def assert_pose_yolo_semantics(self, expected, actual, info: ImageInfo) -> None:
+        self.assertEqual(len(expected), len(actual))
+        for source, decoded in zip(expected, actual, strict=True):
+            self.assertIsInstance(source, Pose)
+            self.assertIsInstance(decoded, Pose)
+            self.assertEqual(source.type, decoded.type)
+            self.assertEqual(source.label, decoded.label)
+            for index, (source_value, decoded_value) in enumerate(zip(source.bbox, decoded.bbox, strict=True)):
+                self.assertLessEqual(
+                    abs(source_value - decoded_value) / (info.width if index % 2 == 0 else info.height),
+                    self.pose_bbox_corner_tolerance,
+                )
+            self.assertEqual(
+                tuple(keypoint.label for keypoint in source.keypoints),
+                tuple(keypoint.label for keypoint in decoded.keypoints),
+            )
+            for source_keypoint, decoded_keypoint in zip(source.keypoints, decoded.keypoints, strict=True):
+                self.assertEqual(source_keypoint.visibility, decoded_keypoint.visibility)
+                self.assertLessEqual(
+                    abs(source_keypoint.x - decoded_keypoint.x) / info.width, self.pose_keypoint_tolerance
+                )
+                self.assertLessEqual(
+                    abs(source_keypoint.y - decoded_keypoint.y) / info.height, self.pose_keypoint_tolerance
+                )
 
     def assert_coco(self, path: Path, *, images: int, annotations: int, categories: int, mask: bool = False) -> None:
         coco = COCO(str(path))
@@ -195,16 +223,47 @@ class DatasetIoRoundTripTest(unittest.TestCase):
                 )
                 for sample in samples
             )
-            yolo_expected = tuple(
-                sample.wrap(
-                    annotations=tuple(
-                        decode_pose(line, sample.image.require_info(), yolo_context.config.labels)
-                        for line in item.lines
-                    )
-                )
-                for sample, item in zip(samples, encoded, strict=True)
-            )
-            self.assert_projects_equal(yolo_expected, yolo_reread)
+            for source, decoded in zip(samples, yolo_reread, strict=True):
+                self.assert_pose_yolo_semantics(source.annotations, decoded.annotations, source.image.require_info())
+
+    def test_pose_yolo_semantics_rejects_geometry_beyond_quantization_bounds(self) -> None:
+        info = ImageInfo(width=1000, height=800)
+        source = Pose(
+            label='person',
+            x1=100,
+            y1=200,
+            x2=400,
+            y2=600,
+            keypoints=(Keypoint(label='nose', x=200, y=300, visibility=2),),
+        )
+        shifted_bbox = Pose(
+            label='person',
+            x1=source.x1 + info.width * (self.pose_bbox_corner_tolerance + 1e-9),
+            y1=source.y1,
+            x2=source.x2,
+            y2=source.y2,
+            keypoints=source.keypoints,
+        )
+        shifted_keypoint = Pose(
+            label='person',
+            x1=source.x1,
+            y1=source.y1,
+            x2=source.x2,
+            y2=source.y2,
+            keypoints=(
+                Keypoint(
+                    label='nose',
+                    x=source.keypoints[0].x,
+                    y=source.keypoints[0].y + info.height * (self.pose_keypoint_tolerance + 1e-9),
+                    visibility=2,
+                ),
+            ),
+        )
+
+        with self.subTest(part='bbox'), self.assertRaises(AssertionError):
+            self.assert_pose_yolo_semantics((source,), (shifted_bbox,), info)
+        with self.subTest(part='keypoint'), self.assertRaises(AssertionError):
+            self.assert_pose_yolo_semantics((source,), (shifted_keypoint,), info)
 
     def test_obb_pipeline_round_trips_labelme_yolo_and_coco(self) -> None:
         with tempfile.TemporaryDirectory(prefix='xxtrain-io-obb-') as temp_dir:
