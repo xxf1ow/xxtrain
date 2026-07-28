@@ -239,13 +239,29 @@ def read_coco(json_path: str | Path) -> CocoDoc:
     return CocoDoc(labels=labels, images=coco_images)
 
 
+def _finite_derived(value: float, name: str) -> float:
+    if not math.isfinite(value):
+        raise ValueError(f'{name} must be finite')
+    return value
+
+
+def _positive_finite_derived(value: float, name: str) -> float:
+    result = _finite_derived(value, name)
+    if result <= 0:
+        raise ValueError(f'{name} must be positive')
+    return result
+
+
 def _xywh(annotation: Bbox | Pose) -> list[float]:
-    return [annotation.x1, annotation.y1, annotation.x2 - annotation.x1, annotation.y2 - annotation.y1]
+    width = _positive_finite_derived(annotation.x2 - annotation.x1, 'COCO bbox width')
+    height = _positive_finite_derived(annotation.y2 - annotation.y1, 'COCO bbox height')
+    return [annotation.x1, annotation.y1, width, height]
 
 
 def _polygon_area(polygon: Polygon) -> float:
     points = polygon.points
-    return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=True))) / 2
+    area = abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=True))) / 2
+    return _positive_finite_derived(area, 'COCO polygon area')
 
 
 def _segmentation(polygons: tuple[Polygon, ...]) -> list[list[float]]:
@@ -257,20 +273,24 @@ def _polygon_bbox(polygons: tuple[Polygon, ...]) -> list[float]:
     xs = tuple(point[0] for point in points)
     ys = tuple(point[1] for point in points)
     x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-    return [x1, y1, x2 - x1, y2 - y1]
+    width = _positive_finite_derived(x2 - x1, 'COCO polygon bbox width')
+    height = _positive_finite_derived(y2 - y1, 'COCO polygon bbox height')
+    return [x1, y1, width, height]
 
 
 def _annotation_units(annotations: tuple[Annotation, ...]) -> list[list[Annotation]]:
     units: list[list[Annotation]] = []
-    group_indexes: dict[object, int] = {}
+    group_indexes: dict[tuple[type[object], object], int] = {}
     for annotation in annotations:
         if annotation.group is None:
             units.append([annotation])
-        elif annotation.group in group_indexes:
-            units[group_indexes[annotation.group]].append(annotation)
         else:
-            group_indexes[annotation.group] = len(units)
-            units.append([annotation])
+            group_key = type(annotation.group), annotation.group
+            if group_key in group_indexes:
+                units[group_indexes[group_key]].append(annotation)
+            else:
+                group_indexes[group_key] = len(units)
+                units.append([annotation])
     return units
 
 
@@ -321,10 +341,13 @@ def _encode_unit(
             value for keypoint in pose.keypoints for value in (keypoint.x, keypoint.y, keypoint.visibility)
         ]
         encoded['num_keypoints'] = sum(keypoint.visibility > 0 for keypoint in pose.keypoints)
-        encoded['area'] = (
-            sum(_polygon_area(polygon) for polygon in polygons)
-            if polygons
-            else (pose.x2 - pose.x1) * (pose.y2 - pose.y1)
+        encoded['area'] = _finite_derived(
+            (
+                sum(_polygon_area(polygon) for polygon in polygons)
+                if polygons
+                else (pose.x2 - pose.x1) * (pose.y2 - pose.y1)
+            ),
+            'COCO annotation area',
         )
         if polygons:
             encoded['segmentation'] = _segmentation(polygons)
@@ -333,13 +356,25 @@ def _encode_unit(
     if polygons:
         encoded['bbox'] = _polygon_bbox(polygons)
         encoded['segmentation'] = _segmentation(polygons)
-        encoded['area'] = sum(_polygon_area(polygon) for polygon in polygons)
+        encoded['area'] = _finite_derived(sum(_polygon_area(polygon) for polygon in polygons), 'COCO annotation area')
         return encoded
 
     bbox = bboxes[0]
     encoded['bbox'] = _xywh(bbox)
-    encoded['area'] = (bbox.x2 - bbox.x1) * (bbox.y2 - bbox.y1)
+    encoded['area'] = _finite_derived((bbox.x2 - bbox.x1) * (bbox.y2 - bbox.y1), 'COCO annotation area')
     return encoded
+
+
+def _validate_payload_numbers(value: object) -> None:
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise ValueError('COCO payload numbers must be finite')
+    elif isinstance(value, list):
+        for item in value:
+            _validate_payload_numbers(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _validate_payload_numbers(item)
 
 
 def _encode_coco(doc: CocoDoc) -> dict[str, object]:
@@ -362,12 +397,14 @@ def _encode_coco(doc: CocoDoc) -> dict[str, object]:
         for unit in _annotation_units(image.annotations):
             annotations.append(_encode_unit(unit, annotation_id, image_id, category_ids))
             annotation_id += 1
-    return {'categories': categories, 'images': images, 'annotations': annotations}
+    payload = {'categories': categories, 'images': images, 'annotations': annotations}
+    _validate_payload_numbers(payload)
+    return payload
 
 
 def write_coco(doc: CocoDoc, json_path: str | Path) -> None:
     payload = _encode_coco(doc)
-    content = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
     path = Path(json_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding='utf-8')

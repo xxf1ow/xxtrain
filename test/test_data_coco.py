@@ -481,6 +481,113 @@ class CocoWriterTest(unittest.TestCase):
                     write_coco(document, path)
                 self.assertFalse(path.parent.exists())
 
+    def test_rejects_degenerate_polygons_without_creating_or_overwriting_target(self) -> None:
+        bowtie = Polygon(label='object', points=((0, 0), (2, 2), (0, 2), (2, 0)))
+        vertical = Polygon(label='object', group='shape', points=((1, 0), (1, 1), (1, 2)))
+        documents = (
+            CocoDoc(
+                labels=LabelCatalog(('object',)),
+                images=(CocoImage(file_name='image.jpg', info=ImageInfo(width=20, height=20), annotations=(bowtie,)),),
+            ),
+            CocoDoc(
+                labels=LabelCatalog(('object',)),
+                images=(
+                    CocoImage(
+                        file_name='image.jpg',
+                        info=ImageInfo(width=20, height=20),
+                        annotations=(Polygon(label='object', group='shape', points=((0, 0), (4, 0), (4, 4))), vertical),
+                    ),
+                ),
+            ),
+            CocoDoc(
+                labels=LabelCatalog(('object',)),
+                images=(
+                    CocoImage(
+                        file_name='image.jpg',
+                        info=ImageInfo(width=20, height=20),
+                        annotations=(
+                            Pose(
+                                label='object',
+                                group='pose',
+                                x1=0,
+                                y1=0,
+                                x2=10,
+                                y2=10,
+                                keypoints=(Keypoint(label='center', x=5, y=5),),
+                            ),
+                            bowtie.wrap(group='pose'),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        for index, document in enumerate(documents):
+            with self.subTest(case=index), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                missing = root / f'missing-{index}' / 'annotations.json'
+                with self.assertRaises(ValueError):
+                    write_coco(document, missing)
+                self.assertFalse(missing.parent.exists())
+
+                existing = root / f'existing-{index}.json'
+                existing.write_text('keep me', encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    write_coco(document, existing)
+                self.assertEqual('keep me', existing.read_text(encoding='utf-8'))
+
+    def test_rejects_extreme_finite_geometry_that_overflows_derived_values_before_io(self) -> None:
+        annotations = (
+            Bbox(label='object', x1=-1e308, y1=0, x2=1e308, y2=1),
+            Bbox(label='object', x1=0, y1=0, x2=1e200, y2=1e200),
+            Polygon(label='object', points=((0, 0), (1e200, 0), (0, 1e200))),
+            Polygon(label='object', points=((-1e308, 0), (1e308, 0), (0, 1))),
+        )
+
+        for index, annotation in enumerate(annotations):
+            with self.subTest(case=index), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                document = CocoDoc(
+                    labels=LabelCatalog(('object',)),
+                    images=(
+                        CocoImage(
+                            file_name='image.jpg', info=ImageInfo(width=20, height=20), annotations=(annotation,)
+                        ),
+                    ),
+                )
+                missing = root / f'missing-{index}' / 'annotations.json'
+                with self.assertRaises(ValueError):
+                    write_coco(document, missing)
+                self.assertFalse(missing.parent.exists())
+
+                existing = root / f'existing-{index}.json'
+                existing.write_text('keep me', encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    write_coco(document, existing)
+                self.assertEqual('keep me', existing.read_text(encoding='utf-8'))
+
+    def test_type_distinct_equal_group_values_remain_separate(self) -> None:
+        document = CocoDoc(
+            labels=LabelCatalog(('first', 'second')),
+            images=(
+                CocoImage(
+                    file_name='image.jpg',
+                    info=ImageInfo(width=20, height=20),
+                    annotations=(
+                        Polygon(label='first', group=True, points=((0, 0), (4, 0), (4, 4))),
+                        Polygon(label='second', group=1, points=((10, 10), (14, 10), (14, 14))),
+                    ),
+                ),
+            ),
+        )
+
+        loaded, payload = self._round_trip(document)
+
+        self.assertEqual([1, 2], [annotation['id'] for annotation in payload['annotations']])
+        self.assertEqual([1, 2], [annotation['category_id'] for annotation in payload['annotations']])
+        self.assertEqual(('first', 'second'), tuple(item.label for item in loaded.images[0].annotations))
+        self.assertTrue(all(item.group is None for item in loaded.images[0].annotations))
+
     def test_same_group_value_in_different_images_is_not_merged(self) -> None:
         images = (
             CocoImage(
