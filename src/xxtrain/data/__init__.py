@@ -12,6 +12,7 @@ from .annotation import (
     Shape,
 )
 from .labels import LabelCatalog
+from .pose import assemble_poses
 
 __all__ = [
     'Annotation',
@@ -26,4 +27,5 @@ __all__ = [
     'Polyline',
     'Pose',
     'Shape',
+    'assemble_poses',
 ]

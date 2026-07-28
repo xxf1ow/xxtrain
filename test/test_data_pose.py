@@ -2,10 +2,118 @@ import unittest
 from dataclasses import FrozenInstanceError
 from uuid import uuid4
 
-from xxtrain.data import Annotation, AnnotationType, Keypoint, Pose
+from xxtrain.data import Annotation, AnnotationType, Bbox, Keypoint, Points, Polygon, Pose, assemble_poses
 
 
 class PoseTest(unittest.TestCase):
+    def test_assemble_grouped_pose_replaces_bbox_and_points_atomically(self) -> None:
+        annotations = (
+            Bbox(label='person', group=7, x1=0, y1=0, x2=100, y2=100),
+            Points(label='nose', group=7, points=((10, 20),)),
+            Points(label='wrist', group=7, points=((30, 40),)),
+            Polygon(label='mask', points=((0, 0), (2, 0), (1, 1))),
+        )
+
+        output = assemble_poses(annotations)
+
+        self.assertEqual((Pose, Polygon), tuple(type(item) for item in output))
+        self.assertEqual('person', output[0].label)
+        self.assertEqual(7, output[0].group)
+        self.assertEqual(('nose', 'wrist'), tuple(point.label for point in output[0].keypoints))
+
+    def test_assemble_grouped_pose_does_not_guess_ambiguous_groups(self) -> None:
+        annotations = (
+            Bbox(label='a', group=1, x1=0, y1=0, x2=10, y2=10),
+            Bbox(label='b', group=1, x1=0, y1=0, x2=10, y2=10),
+            Points(label='point', group=1, points=((1, 1),)),
+        )
+
+        self.assertEqual(annotations, assemble_poses(annotations))
+
+    def test_assemble_pose_can_match_ungrouped_fragments_by_unique_containment(self) -> None:
+        annotations = (
+            Bbox(label='person', x1=0, y1=0, x2=100, y2=100),
+            Points(label='wrist', points=((30, 40),)),
+            Points(label='nose', points=((10, 20),)),
+        )
+
+        output = assemble_poses(annotations, keypoint_labels=('nose', 'wrist'), match_ungrouped=True)
+
+        self.assertEqual((Pose,), tuple(type(item) for item in output))
+        self.assertEqual(('nose', 'wrist'), tuple(point.label for point in output[0].keypoints))
+
+    def test_assemble_ungrouped_pose_rejects_zero_or_multiple_containment_matches(self) -> None:
+        orphan = (Bbox(label='person', x1=0, y1=0, x2=10, y2=10), Points(label='nose', points=((20, 20),)))
+        ambiguous = (
+            Bbox(label='a', x1=0, y1=0, x2=10, y2=10),
+            Bbox(label='b', x1=0, y1=0, x2=10, y2=10),
+            Points(label='nose', points=((5, 5),)),
+        )
+
+        for annotations in (orphan, ambiguous):
+            with self.subTest(annotations=annotations), self.assertRaises(ValueError):
+                assemble_poses(annotations, match_ungrouped=True)
+
+    def test_assemble_pose_catalog_orders_and_validates_keypoints(self) -> None:
+        valid = (
+            Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10),
+            Points(label='wrist', group=1, points=((5, 5),)),
+            Points(label='nose', group=1, points=((2, 2),)),
+        )
+        invalid = (
+            (Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10), Points(label='nose', group=1, points=((2, 2),))),
+            (
+                Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10),
+                Points(label='nose', group=1, points=((2, 2),)),
+                Points(label='nose', group=1, points=((3, 3),)),
+            ),
+            (
+                Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10),
+                Points(label='nose', group=1, points=((2, 2),)),
+                Points(label='unknown', group=1, points=((3, 3),)),
+            ),
+        )
+
+        output = assemble_poses(valid, keypoint_labels=('nose', 'wrist'))
+
+        self.assertEqual(('nose', 'wrist'), tuple(point.label for point in output[0].keypoints))
+        for annotations in invalid:
+            with self.subTest(annotations=annotations), self.assertRaises(ValueError):
+                assemble_poses(annotations, keypoint_labels=('nose', 'wrist'))
+
+    def test_assemble_pose_strictly_rejects_malformed_candidate_groups(self) -> None:
+        malformed = (
+            (
+                Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10),
+                Polygon(label='mask', group=1, points=((0, 0), (2, 0), (1, 1))),
+            ),
+            (
+                Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10),
+                Bbox(label='other', group=1, x1=0, y1=0, x2=10, y2=10),
+                Points(label='nose', group=1, points=((1, 1),)),
+            ),
+            (
+                Bbox(label='person', group=1, x1=0, y1=0, x2=10, y2=10),
+                Points(label='nose', group=1, points=((1, 1), (2, 2))),
+            ),
+        )
+
+        for annotations in malformed:
+            with self.subTest(annotations=annotations), self.assertRaises(ValueError):
+                assemble_poses(annotations, keypoint_labels=('nose',))
+
+    def test_assemble_pose_preserves_stable_annotation_order(self) -> None:
+        annotations = (
+            Polygon(label='before', points=((0, 0), (2, 0), (1, 1))),
+            Points(label='nose', group=3, points=((2, 2),)),
+            Bbox(label='person', group=3, x1=0, y1=0, x2=10, y2=10),
+            Polygon(label='after', points=((0, 0), (2, 0), (1, 1))),
+        )
+
+        output = assemble_poses(annotations)
+
+        self.assertEqual((Polygon, Pose, Polygon), tuple(type(item) for item in output))
+
     def test_pose_is_an_immutable_annotation_with_ordered_keypoints(self) -> None:
         pose = Pose(
             label='person',
