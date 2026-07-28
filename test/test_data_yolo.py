@@ -88,19 +88,20 @@ class YoloFormatTest(unittest.TestCase):
                     decode()
 
     def test_decoders_reject_non_integer_and_out_of_range_class_tokens(self) -> None:
-        labels = LabelCatalog(names=('first', 'second'))
+        labels = LabelCatalog(names=('person', 'point'))
         invalid = (
             lambda: decode_detect('x 0.5 0.5 0.5 0.5', self.image, labels),
             lambda: decode_detect('2 0.5 0.5 0.5 0.5', self.image, labels),
             lambda: decode_segment('x 0.1 0.1 0.5 0.1 0.3 0.5', self.image, labels),
             lambda: decode_segment('2 0.1 0.1 0.5 0.1 0.3 0.5', self.image, labels),
-            lambda: decode_pose('x 0.5 0.5 0.5 0.5 0.1 0.1 2 0.2 0.2 1', self.image, labels),
-            lambda: decode_pose('2 0.5 0.5 0.5 0.5 0.1 0.1 2 0.2 0.2 1', self.image, labels),
         )
         for decode in invalid:
             with self.subTest(decode=decode):
                 with self.assertRaises(ValueError):
                     decode()
+        for line in ('x 0.5 0.5 0.5 0.5 0.1 0.1 2', '2 0.5 0.5 0.5 0.5 0.1 0.1 2'):
+            with self.subTest(line=line), self.assertRaisesRegex(ValueError, 'YOLO class id'):
+                decode_pose(line, self.image, labels)
 
     def test_class_tokens_reject_python_integer_conveniences(self) -> None:
         labels = LabelCatalog(names=('person', 'label'))
@@ -110,16 +111,17 @@ class YoloFormatTest(unittest.TestCase):
                     decode_detect(f'{token} 0.5 0.5 0.5 0.5', self.image, labels)
 
     def test_decoders_reject_non_finite_numbers(self) -> None:
-        labels = LabelCatalog(names=('label',))
+        labels = LabelCatalog(names=('person', 'label'))
         invalid = (
             lambda: decode_detect('0 nan 0.5 0.5 0.5', self.image, labels),
             lambda: decode_segment('0 0.1 0.1 inf 0.1 0.3 0.5', self.image, labels),
-            lambda: decode_pose('0 0.5 0.5 0.5 0.5 0.1 -inf 2', self.image, labels),
         )
         for decode in invalid:
             with self.subTest(decode=decode):
                 with self.assertRaises(ValueError):
                     decode()
+        with self.assertRaisesRegex(ValueError, 'YOLO values must be finite'):
+            decode_pose('0 0.5 0.5 0.5 0.5 0.1 -inf 2', self.image, labels)
 
     def test_segment_decoder_requires_three_vertices_and_coordinate_pairs(self) -> None:
         labels = LabelCatalog(names=('mask',))
@@ -294,26 +296,26 @@ class YoloFormatTest(unittest.TestCase):
                 encode_detect(annotation, image_info, labels)
 
     def test_pose_encoder_rejects_bbox_corners_outside_image(self) -> None:
-        keypoint_labels = LabelCatalog(names=('point',))
+        keypoint_labels = LabelCatalog(names=('person', 'point'))
         poses = (
-            Pose(label='point', x1=-10, y1=10, x2=10, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
-            Pose(label='point', x1=10, y1=-10, x2=50, y2=10, keypoints=(Keypoint(label='point', x=100, y=50),)),
-            Pose(label='point', x1=190, y1=10, x2=210, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
-            Pose(label='point', x1=10, y1=90, x2=50, y2=110, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='person', x1=-10, y1=10, x2=10, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='person', x1=10, y1=-10, x2=50, y2=10, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='person', x1=190, y1=10, x2=210, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='person', x1=10, y1=90, x2=50, y2=110, keypoints=(Keypoint(label='point', x=100, y=50),)),
         )
         for pose in poses:
             with self.subTest(pose=pose):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, 'YOLO pose bbox must be inside image bounds'):
                     encode_pose(pose, self.image, keypoint_labels)
 
     def test_pose_rejects_normalized_bbox_values_outside_unit_range(self) -> None:
-        keypoint_labels = LabelCatalog(names=('point',))
+        keypoint_labels = LabelCatalog(names=('person', 'point'))
         for pose in (
-            Pose(label='point', x1=-30, y1=10, x2=-10, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
-            Pose(label='point', x1=210, y1=10, x2=230, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='person', x1=-30, y1=10, x2=-10, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='person', x1=210, y1=10, x2=230, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
         ):
             with self.subTest(pose=pose):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, 'YOLO pose bbox must be inside image bounds'):
                     encode_pose(pose, self.image, keypoint_labels)
 
     def test_segment_rejects_points_outside_image(self) -> None:
