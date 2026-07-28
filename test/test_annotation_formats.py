@@ -78,7 +78,7 @@ class AnnotationFormatsTest(unittest.TestCase):
 
         self.assertEqual(1, len(annotations))
         self.assertIsInstance(annotations[0], Points)
-        self.assertEqual('rw400', annotations[0].label)
+        self.assertEqual('target', annotations[0].label)
         self.assertEqual(((1868.181818181818, 1406.8181818181818),), annotations[0].points)
 
     def test_parses_labelme_line_without_task_transform(self) -> None:

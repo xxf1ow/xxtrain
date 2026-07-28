@@ -190,6 +190,40 @@ class PipelineRecipeTest(unittest.TestCase):
             self.assertIsNotNone(sink.context)
             self.assertEqual(('dial',), sink.context.config.labels.names)
 
+    def test_convert_dataset_preserves_explicit_classification_labels_for_group_sources(self) -> None:
+        class RecordingSampleSink:
+            input_type = Sample
+
+            def __init__(self) -> None:
+                self.context: Context | None = None
+
+            def write(self, item: Sample, context: Context) -> None:
+                self.context = context
+
+            def finalize(self, context: Context) -> None:
+                self.context = context
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            images = root / 'src' / '20260620' / 'imgs'
+            images.mkdir(parents=True)
+            (images / 'sample.jpg').write_bytes(b'image')
+            labels = LabelCatalog(('cc', 'cl', 'tc', 'tl'))
+            sink = RecordingSampleSink()
+            recipe = DatasetRecipe(
+                name='point-classify',
+                task_type=TaskType.CLASSIFY,
+                labels=labels,
+                source=DirectorySource(),
+                pipeline=Pipeline(()),
+                sink=sink,
+            )
+
+            convert_dataset(recipe, root)
+
+            self.assertIsNotNone(sink.context)
+            self.assertIs(labels, sink.context.config.labels)
+
 
 if __name__ == '__main__':
     unittest.main()

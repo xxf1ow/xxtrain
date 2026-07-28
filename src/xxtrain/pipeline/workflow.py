@@ -21,7 +21,7 @@ def convert_dataset(
         labels = source_catalog
     else:
         labels = _read_labels(root, strict=recipe.task_type is TaskType.CLASSIFY)
-    if recipe.task_type is TaskType.CLASSIFY and isinstance(recipe.source, DirectorySource):
+    if recipe.labels is None and recipe.task_type is TaskType.CLASSIFY and isinstance(recipe.source, DirectorySource):
         labels = validate_classification_source(root, labels, split)
     context = Context(
         config=ConversionConfig(
