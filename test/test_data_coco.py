@@ -158,6 +158,15 @@ class CocoReaderTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self._read(payload)
 
+    def test_rejects_duplicate_annotation_ids_across_images(self) -> None:
+        payload = _document(
+            images=[_image(31), _image(32, file_name='other.jpg')],
+            annotations=[_annotation(id=55, image_id=31), _annotation(id=55, image_id=32)],
+        )
+
+        with self.assertRaisesRegex(ValueError, 'Duplicate COCO annotation id: 55'):
+            self._read(payload)
+
     def test_rejects_invalid_bbox_values_and_geometry(self) -> None:
         invalid_bboxes = (
             [1, 2, 3],

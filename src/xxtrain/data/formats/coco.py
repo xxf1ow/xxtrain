@@ -144,8 +144,9 @@ def _contours(value: object) -> tuple[tuple[tuple[float, float], ...], ...]:
     return tuple(contours)
 
 
-def _decode_annotation(value: dict[str, object], category: tuple[str, tuple[str, ...]]) -> tuple[Annotation, ...]:
-    annotation_id = _id(_required(value, 'id'), 'annotation id')
+def _decode_annotation(
+    value: dict[str, object], annotation_id: int, category: tuple[str, tuple[str, ...]]
+) -> tuple[Annotation, ...]:
     label, keypoint_names = category
     bbox = _bbox(value['bbox']) if 'bbox' in value else None
 
@@ -208,14 +209,23 @@ def read_coco(json_path: str | Path) -> CocoDoc:
         image_annotations[image_id] = []
         image_order.append(image_id)
 
+    annotations_with_id = []
+    annotation_ids = set()
     for annotation in annotations:
+        annotation_id = _id(_required(annotation, 'id'), 'annotation id')
+        if annotation_id in annotation_ids:
+            raise ValueError(f'Duplicate COCO annotation id: {annotation_id}')
+        annotation_ids.add(annotation_id)
+        annotations_with_id.append((annotation, annotation_id))
+
+    for annotation, annotation_id in annotations_with_id:
         image_id = _id(_required(annotation, 'image_id'), 'annotation image_id')
         category_id = _id(_required(annotation, 'category_id'), 'annotation category_id')
         if image_id not in image_by_id:
             raise ValueError(f'Unknown COCO annotation image id: {image_id}')
         if category_id not in category_by_id:
             raise ValueError(f'Unknown COCO annotation category id: {category_id}')
-        image_annotations[image_id].extend(_decode_annotation(annotation, category_by_id[category_id]))
+        image_annotations[image_id].extend(_decode_annotation(annotation, annotation_id, category_by_id[category_id]))
 
     labels = LabelCatalog(tuple(category_names))
     coco_images = tuple(
