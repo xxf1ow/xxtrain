@@ -49,7 +49,7 @@ def _append_suffix(path: Path, suffix: str) -> Path:
 
 def _output_base(sample: Sample, context: Context) -> Path:
     logical = Path(sample.id)
-    if not logical.parts or logical.is_absolute() or logical.drive or '..' in logical.parts:
+    if not logical.parts or logical.is_absolute() or logical.drive or logical.root or '..' in logical.parts:
         raise ValueError(f'Unsafe sample id: {sample.id}')
     return context.config.root_path / context.config.task_name / logical
 
@@ -137,13 +137,13 @@ class _AnnotationSink:
     def _prepare(self, item: Sample, context: Context) -> tuple[Path, Path | None, ImageInfo] | None:
         if not isinstance(item, Sample):
             raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
+        output_base = _output_base(item, context)
         if not item.annotations:
             context.report.record_missing_annotations(item.source_group)
             if not context.config.reserve_no_label:
                 return None
 
         validate_annotations_for_task(item.annotations, context.config.task_type, context.config.labels.names)
-        output_base = _output_base(item, context)
         annotation_path = _append_suffix(output_base, self.suffix)
         crop_path = _append_suffix(output_base, '.jpg') if item.image.crop_box is not None else None
         self._claim(annotation_path, *((crop_path,) if crop_path is not None else ()))

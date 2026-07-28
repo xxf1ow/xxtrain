@@ -234,6 +234,32 @@ class PipelineSinkTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'collision'):
                         sink.write(valid, self.make_context(root))
 
+    def test_annotation_sinks_reject_root_relative_sample_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, sample_id=r'\escape', info=ImageInfo(width=10, height=10)).wrap(
+                annotations=(Bbox(label='label', x1=1, y1=1, x2=5, y2=5),)
+            )
+
+            for sink, writer in ((LabelImgSink(), 'write_labelimg'), (LabelMeSink(), 'write_labelme')):
+                with self.subTest(sink=type(sink).__name__), patch(f'xxtrain.pipeline.sinks.{writer}'):
+                    with self.assertRaisesRegex(ValueError, 'Unsafe sample id'):
+                        sink.write(sample, self.make_context(root))
+
+    def test_annotation_sinks_reject_unsafe_empty_samples_when_not_reserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            unsafe_ids = ('', '.', r'..\escape', r'\escape', str(root / 'escape'))
+
+            for sink in (LabelImgSink(), LabelMeSink()):
+                for sample_id in unsafe_ids:
+                    with self.subTest(sink=type(sink).__name__, sample_id=sample_id):
+                        sample = self.make_sample(source, sample_id=sample_id, info=ImageInfo(width=10, height=10))
+                        with self.assertRaisesRegex(ValueError, 'Unsafe sample id'):
+                            sink.write(sample, self.make_context(root, reserve_no_label=False))
+
     def test_labelme_sink_rejects_polyline_and_labelimg_rejects_non_detect_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
