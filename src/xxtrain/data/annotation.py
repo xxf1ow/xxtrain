@@ -19,6 +19,7 @@ class AnnotationType(Enum):
     POLYLINE = 'polyline'
     POINTS = 'points'
     CIRCLE = 'circle'
+    POSE = 'pose'
 
 
 def _finite_float(value: object) -> float:
@@ -192,6 +193,70 @@ class Circle(Shape):
         dx, dy = _finite_float(dx), _finite_float(dy)
         return replace(
             self, center=(self.center[0] + dx, self.center[1] + dy), edge=(self.edge[0] + dx, self.edge[1] + dy)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Keypoint:
+    label: str
+    x: float
+    y: float
+    visibility: int = 2
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.label, str) or not self.label:
+            raise ValueError('Keypoint label must be a non-empty string')
+        object.__setattr__(self, 'x', _finite_float(self.x))
+        object.__setattr__(self, 'y', _finite_float(self.y))
+        if (
+            isinstance(self.visibility, bool)
+            or not isinstance(self.visibility, int)
+            or self.visibility not in (0, 1, 2)
+        ):
+            raise ValueError('Keypoint visibility must be 0, 1, or 2')
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Pose(Annotation):
+    type: ClassVar[AnnotationType] = AnnotationType.POSE
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    keypoints: Sequence[Keypoint]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'x1', _finite_float(self.x1))
+        object.__setattr__(self, 'y1', _finite_float(self.y1))
+        object.__setattr__(self, 'x2', _finite_float(self.x2))
+        object.__setattr__(self, 'y2', _finite_float(self.y2))
+        object.__setattr__(self, 'keypoints', tuple(self.keypoints))
+        Annotation.__post_init__(self)
+
+    def _validate_geometry(self) -> None:
+        if self.x2 <= self.x1 or self.y2 <= self.y1:
+            raise ValueError('Pose requires x2 > x1 and y2 > y1')
+        if not self.keypoints or not all(isinstance(keypoint, Keypoint) for keypoint in self.keypoints):
+            raise ValueError('Pose requires at least one Keypoint')
+        if len({keypoint.label for keypoint in self.keypoints}) != len(self.keypoints):
+            raise ValueError('Pose keypoint labels must be unique')
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        return self.x1, self.y1, self.x2, self.y2
+
+    def translate(self, dx: float, dy: float) -> Self:
+        dx, dy = _finite_float(dx), _finite_float(dy)
+        return replace(
+            self,
+            x1=self.x1 + dx,
+            y1=self.y1 + dy,
+            x2=self.x2 + dx,
+            y2=self.y2 + dy,
+            keypoints=tuple(
+                Keypoint(label=keypoint.label, x=keypoint.x + dx, y=keypoint.y + dy, visibility=keypoint.visibility)
+                for keypoint in self.keypoints
+            ),
         )
 
 

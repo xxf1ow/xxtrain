@@ -1,4 +1,16 @@
-from .annotation import Annotation, AnnotationType, Bbox, Circle, ImageInfo, Points, Polygon, Polyline, Shape
+from .annotation import (
+    Annotation,
+    AnnotationType,
+    Bbox,
+    Circle,
+    ImageInfo,
+    Keypoint,
+    Points,
+    Polygon,
+    Polyline,
+    Pose,
+    Shape,
+)
 from .labels import LabelCatalog
 
 __all__ = [
@@ -7,9 +19,11 @@ __all__ = [
     'Bbox',
     'Circle',
     'ImageInfo',
+    'Keypoint',
     'LabelCatalog',
     'Points',
     'Polygon',
     'Polyline',
+    'Pose',
     'Shape',
 ]
