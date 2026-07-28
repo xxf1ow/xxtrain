@@ -1,17 +1,8 @@
 import unittest
 from pathlib import Path
 
-from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Points, Polygon, Polyline
-from xxtrain.pipeline.core import (
-    AnnotationMatch,
-    Context,
-    ConversionConfig,
-    ConversionReport,
-    CropOutput,
-    ImageRef,
-    MatchOutput,
-    Sample,
-)
+from xxtrain.data import Bbox, ImageInfo, Keypoint, LabelCatalog, Polygon, Polyline, Pose
+from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, CropOutput, ImageRef, Sample
 from xxtrain.pipeline.processors import (
     EncodeCropDetection,
     EncodeDetection,
@@ -84,59 +75,32 @@ class PipelineEncoderTest(unittest.TestCase):
         output = EncodeKnobSegment().transform(CropOutput(sample=sample, parent=parent), context)
         self.assertEqual(('0 0.000000 0.100000 1.000000 0.100000 0.500000 1.000000',), output.lines)
 
-    def test_pose_match_adapter_preserves_legacy_bytes_in_catalog_order(self) -> None:
+    def test_pose_encoder_preserves_legacy_bytes_in_catalog_order(self) -> None:
         context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
-        sample = self.make_sample((), size=(100, 100))
-        parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
-        children = (Points(label='end', points=((80, 70),)), Points(label='start', points=((20, 30),)))
-        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=children),))
-        output = EncodePose().transform(item, context)
+        sample = self.make_sample(
+            (
+                Pose(
+                    label='object',
+                    x1=10,
+                    y1=10,
+                    x2=90,
+                    y2=90,
+                    keypoints=(Keypoint(label='start', x=20, y=30), Keypoint(label='end', x=80, y=70)),
+                ),
+            ),
+            size=(100, 100),
+        )
+        output = EncodePose().transform(sample, context)
         self.assertEqual(
             ('0 0.500000 0.500000 0.800000 0.800000 0.200000 0.300000 2 0.800000 0.700000 2',), output.lines
         )
 
-    def test_pose_match_adapter_preserves_catalog_mismatch_value_error(self) -> None:
+    def test_pose_encoder_rejects_non_pose_annotations(self) -> None:
         context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
-        sample = self.make_sample((), size=(100, 100))
-        parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
-        cases = (
-            (Points(label='start', points=((20, 30),)),),
-            (
-                Points(label='start', points=((20, 30),)),
-                Points(label='end', points=((80, 70),)),
-                Points(label='extra', points=((50, 50),)),
-            ),
-            (
-                Points(label='start', points=((20, 30),)),
-                Points(label='start', points=((21, 31),)),
-                Points(label='end', points=((80, 70),)),
-            ),
-        )
-        for children in cases:
-            with self.subTest(children=children):
-                item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=children),))
-                with self.assertRaisesRegex(ValueError, '关键点标签与目录不匹配'):
-                    EncodePose().transform(item, context)
+        sample = self.make_sample((Bbox(label='object', x1=10, y1=10, x2=90, y2=90),), size=(100, 100))
 
-    def test_pose_match_adapter_requires_parent_label_to_match_catalog(self) -> None:
-        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
-        sample = self.make_sample((), size=(100, 100))
-        parent = Bbox(label='other', x1=10, y1=10, x2=90, y2=90)
-        children = (Points(label='start', points=((20, 30),)), Points(label='end', points=((80, 70),)))
-        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=children),))
-
-        with self.assertRaisesRegex(ValueError, 'Pose bbox label must match'):
-            EncodePose().transform(item, context)
-
-    def test_pose_match_adapter_preserves_single_point_value_error(self) -> None:
-        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
-        sample = self.make_sample((), size=(100, 100))
-        parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
-        children = (Points(label='start', points=((20, 30), (21, 31))), Points(label='end', points=((80, 70),)))
-        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=children),))
-
-        with self.assertRaisesRegex(ValueError, '单点'):
-            EncodePose().transform(item, context)
+        with self.assertRaisesRegex(TypeError, 'EncodePose requires only Pose annotations'):
+            EncodePose().transform(sample, context)
 
 
 if __name__ == '__main__':

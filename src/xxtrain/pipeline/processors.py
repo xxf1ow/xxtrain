@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import PIL.Image
 
-from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Keypoint, Points, Polygon, Polyline, Pose, Shape
+from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Points, Polygon, Polyline, Pose, Shape
 from xxtrain.data.formats import encode_detect, encode_pose, encode_segment, read_labelimg, read_labelme
 from xxtrain.data.geometry import match_parent_children
 from xxtrain.pipeline.core import (
@@ -311,39 +311,18 @@ class EncodeSegment(ItemProcessor[Sample, EncodeOutput]):
         )
 
 
-class EncodePose(ItemProcessor[MatchOutput, EncodeOutput]):
-    input_type = MatchOutput
+class EncodePose(ItemProcessor[Sample, EncodeOutput]):
+    input_type = Sample
     output_type = EncodeOutput
 
-    def transform(self, item: MatchOutput, context: Context) -> EncodeOutput:
-        info = item.sample.image.require_info()
-        pose_label = context.config.labels.names[0]
-        keypoint_labels = context.config.labels.names[1:]
-        if item.matches and any(match.parent.label != pose_label for match in item.matches):
-            raise ValueError('Pose bbox label must match the first catalog label')
-        lines = []
-        for match in item.matches:
-            if not all(isinstance(child, Points) for child in match.children):
-                raise ValueError(f'骨骼标注必须是点类型: {item.sample.image.path}')
-            keypoints = {child.label: child for child in match.children}
-            if len(keypoints) != len(match.children) or set(keypoints) != set(keypoint_labels):
-                raise ValueError('关键点标签与目录不匹配')
-            for annotation in keypoints.values():
-                if len(annotation.points) != 1:
-                    raise ValueError(f'骨骼标注必须是单点 Points: {annotation}')
-            pose = Pose(
-                label=pose_label,
-                x1=match.parent.x1,
-                y1=match.parent.y1,
-                x2=match.parent.x2,
-                y2=match.parent.y2,
-                keypoints=tuple(
-                    Keypoint(label=label, x=keypoints[label].points[0][0], y=keypoints[label].points[0][1])
-                    for label in keypoint_labels
-                ),
-            )
-            lines.append(encode_pose(pose, info, context.config.labels))
-        return EncodeOutput(sample=item.sample, lines=tuple(lines))
+    def transform(self, item: Sample, context: Context) -> EncodeOutput:
+        info = item.image.require_info()
+        if not all(isinstance(annotation, Pose) for annotation in item.annotations):
+            raise TypeError('EncodePose requires only Pose annotations')
+        return EncodeOutput(
+            sample=item,
+            lines=tuple(encode_pose(annotation, info, context.config.labels) for annotation in item.annotations),
+        )
 
 
 class EncodePointSegment(ItemProcessor[CropOutput, EncodeOutput]):

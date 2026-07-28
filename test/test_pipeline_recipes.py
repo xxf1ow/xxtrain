@@ -7,6 +7,7 @@ from unittest.mock import patch
 from test.test_conversion_baseline import FIXTURES_PATH, PROJECT_ROOT
 from xxtrain.data import LabelCatalog
 from xxtrain.pipeline import DatasetRecipe, convert_dataset, standard_recipe
+from xxtrain.pipeline.annotation_io import ReadAnnotations, ValidateObb
 from xxtrain.pipeline.core import Pipeline
 from xxtrain.pipeline.discovery import DirectorySource
 from xxtrain.pipeline.processors import (
@@ -14,15 +15,9 @@ from xxtrain.pipeline.processors import (
     EncodePose,
     EncodeSegment,
     FilterLabels,
-    FilterMatchingAnnotations,
-    MatchAnnotations,
     PrepareClassification,
-    PrepareMatchChildren,
     PrepareSegmentShapes,
     ReadImageInfo,
-    ReadLabelImg,
-    ReadLabelMe,
-    ReadMatchingAnnotations,
 )
 from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
@@ -81,16 +76,10 @@ class PipelineRecipeTest(unittest.TestCase):
 
     def test_standard_recipe_processor_sequences(self) -> None:
         expected = {
-            TaskType.DETECT: (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
-            TaskType.SEGMENT: (ReadImageInfo, ReadLabelMe, FilterLabels, PrepareSegmentShapes, EncodeSegment),
-            TaskType.POSE: (
-                ReadImageInfo,
-                ReadMatchingAnnotations,
-                FilterMatchingAnnotations,
-                PrepareMatchChildren,
-                MatchAnnotations,
-                EncodePose,
-            ),
+            TaskType.DETECT: (ReadImageInfo, ReadAnnotations, FilterLabels, EncodeDetection),
+            TaskType.SEGMENT: (ReadImageInfo, ReadAnnotations, FilterLabels, PrepareSegmentShapes, EncodeSegment),
+            TaskType.POSE: (ReadImageInfo, ReadAnnotations, FilterLabels, EncodePose),
+            TaskType.OBB: (ReadImageInfo, ReadAnnotations, FilterLabels, ValidateObb, EncodeSegment),
             TaskType.CLASSIFY: (PrepareClassification,),
         }
         for task_type, processor_types in expected.items():
@@ -166,11 +155,6 @@ class PipelineRecipeTest(unittest.TestCase):
                 pipeline=Pipeline((PrepareClassification(),)),
                 sink=YoloDatasetSink(),
             )
-
-    def test_standard_recipe_rejects_unsupported_basic_task(self) -> None:
-        with self.assertRaisesRegex(ValueError, 'Unsupported standard task type: obb'):
-            standard_recipe(TaskType.OBB)
-
 
 if __name__ == '__main__':
     unittest.main()

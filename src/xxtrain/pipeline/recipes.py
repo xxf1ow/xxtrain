@@ -4,6 +4,7 @@ from pathlib import Path
 from xxtrain.data import LabelCatalog
 from xxtrain.task import TaskType
 
+from .annotation_io import ReadAnnotations, ValidateObb
 from .core import Pipeline
 from .discovery import DirectorySource
 from .processors import (
@@ -11,15 +12,9 @@ from .processors import (
     EncodePose,
     EncodeSegment,
     FilterLabels,
-    FilterMatchingAnnotations,
-    MatchAnnotations,
     PrepareClassification,
-    PrepareMatchChildren,
     PrepareSegmentShapes,
     ReadImageInfo,
-    ReadLabelImg,
-    ReadLabelMe,
-    ReadMatchingAnnotations,
 )
 from .sinks import ClassificationDatasetSink, DatasetSink, YoloDatasetSink
 
@@ -56,7 +51,7 @@ def standard_recipe(task_type: TaskType) -> DatasetRecipe:
             name='detect',
             task_type=task_type,
             labels=None,
-            pipeline=Pipeline((ReadImageInfo(), ReadLabelImg(), FilterLabels(), EncodeDetection())),
+            pipeline=Pipeline((ReadImageInfo(), ReadAnnotations(), FilterLabels(), EncodeDetection())),
             sink=YoloDatasetSink(),
         )
     if task_type is TaskType.SEGMENT:
@@ -65,7 +60,7 @@ def standard_recipe(task_type: TaskType) -> DatasetRecipe:
             task_type=task_type,
             labels=None,
             pipeline=Pipeline(
-                (ReadImageInfo(), ReadLabelMe(), FilterLabels(), PrepareSegmentShapes(), EncodeSegment())
+                (ReadImageInfo(), ReadAnnotations(), FilterLabels(), PrepareSegmentShapes(), EncodeSegment())
             ),
             sink=YoloDatasetSink(),
         )
@@ -74,16 +69,15 @@ def standard_recipe(task_type: TaskType) -> DatasetRecipe:
             name='pose',
             task_type=task_type,
             labels=None,
-            pipeline=Pipeline(
-                (
-                    ReadImageInfo(),
-                    ReadMatchingAnnotations(),
-                    FilterMatchingAnnotations(),
-                    PrepareMatchChildren(TaskType.POSE),
-                    MatchAnnotations(),
-                    EncodePose(),
-                )
-            ),
+            pipeline=Pipeline((ReadImageInfo(), ReadAnnotations(), FilterLabels(), EncodePose())),
+            sink=YoloDatasetSink(),
+        )
+    if task_type is TaskType.OBB:
+        return DatasetRecipe(
+            name='obb',
+            task_type=task_type,
+            labels=None,
+            pipeline=Pipeline((ReadImageInfo(), ReadAnnotations(), FilterLabels(), ValidateObb(), EncodeSegment())),
             sink=YoloDatasetSink(),
         )
     if task_type is TaskType.CLASSIFY:

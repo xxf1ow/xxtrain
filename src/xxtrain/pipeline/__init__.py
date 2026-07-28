@@ -1,3 +1,4 @@
+from .annotation_io import ExtractSample, ReadAnnotations, ValidateObb, validate_annotations_for_task
 from .core import (
     Context,
     ConversionConfig,
@@ -16,11 +17,15 @@ __all__ = [
     'ConversionConfig',
     'ConversionReport',
     'DatasetRecipe',
+    'ExtractSample',
     'ExpandProcessor',
     'ImageRef',
     'ItemProcessor',
     'Pipeline',
+    'ReadAnnotations',
     'Sample',
+    'ValidateObb',
     'convert_dataset',
     'standard_recipe',
+    'validate_annotations_for_task',
 ]
