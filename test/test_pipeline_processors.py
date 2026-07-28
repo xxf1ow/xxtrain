@@ -138,6 +138,14 @@ class PipelineProcessorTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "Task segment usually doesn't use"):
             PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
 
+    def test_prepare_segment_passes_two_point_polyline_unchanged(self) -> None:
+        polyline = Polyline(label='known', points=((0, 0), (1, 1)))
+        sample = self.make_sample(Path('image.jpg'), annotations=(polyline,))
+        output = PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
+        self.assertEqual((Polyline,), tuple(type(value) for value in output.annotations))
+        self.assertEqual(((0.0, 0.0), (1.0, 1.0)), output.annotations[0].points)
+        self.assertIs(polyline, output.annotations[0])
+
     def test_prepare_match_children_accepts_pose_shapes_without_conversion(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
         children = (
