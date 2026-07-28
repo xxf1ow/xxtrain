@@ -4,18 +4,7 @@ from uuid import UUID, uuid4
 
 import numpy as np
 
-from xxtrain.data import (
-    Annotation,
-    AnnotationType,
-    Bbox,
-    Circle,
-    ImageInfo,
-    Line,
-    Points,
-    Polygon,
-    Polyline,
-    RotatedBbox,
-)
+from xxtrain.data import Annotation, AnnotationType, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline
 
 
 class AnnotationTest(unittest.TestCase):
@@ -67,11 +56,6 @@ class AnnotationTest(unittest.TestCase):
             (Line(label='l', points=[[0, 1], [2, 3]]), AnnotationType.LINE, (0, 1, 2, 3)),
             (Polyline(label='ls', points=[[0, 1], [2, 3]]), AnnotationType.POLYLINE, (0, 1, 2, 3)),
             (Points(label='pt', points=[[4, 5]]), AnnotationType.POINTS, (4, 5, 4, 5)),
-            (
-                RotatedBbox(label='r', points=[[1, 0], [3, 1], [2, 3], [0, 2]]),
-                AnnotationType.ROTATED_BBOX,
-                (0, 0, 3, 3),
-            ),
         ]
         for annotation, expected_type, expected_bbox in cases:
             with self.subTest(annotation=annotation):
@@ -93,7 +77,6 @@ class AnnotationTest(unittest.TestCase):
             lambda: Polyline(label='x', points=[[0, 0]]),
             lambda: Points(label='x', points=[]),
             lambda: Circle(label='x', center=[1, 1], edge=[1, 1]),
-            lambda: RotatedBbox(label='x', points=[[0, 0], [1, 0], [1, 1]]),
             lambda: Points(label='x', points=[[float('nan'), 0]]),
         ]
         for factory in invalid_factories:

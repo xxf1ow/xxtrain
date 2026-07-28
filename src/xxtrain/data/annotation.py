@@ -20,7 +20,6 @@ class AnnotationType(Enum):
     POLYLINE = 'polyline'
     POINTS = 'points'
     CIRCLE = 'circle'
-    ROTATED_BBOX = 'rotated_bbox'
 
 
 def _finite_float(value: object) -> float:
@@ -168,15 +167,6 @@ class Points(_PointShape):
     def _validate_geometry(self) -> None:
         if not self.points:
             raise ValueError('Points requires at least one point')
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class RotatedBbox(_PointShape):
-    type: ClassVar[AnnotationType] = AnnotationType.ROTATED_BBOX
-
-    def _validate_geometry(self) -> None:
-        if len(self.points) != 4:
-            raise ValueError('RotatedBbox requires exactly four points')
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

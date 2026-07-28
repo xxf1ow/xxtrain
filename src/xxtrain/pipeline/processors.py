@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import PIL.Image
 
-from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline, RotatedBbox, Shape
+from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline, Shape
 from xxtrain.data.formats import encode_detect, encode_pose, encode_segment, read_labelimg, read_labelme
 from xxtrain.data.geometry import match_parent_children
 from xxtrain.pipeline.core import (
@@ -53,7 +53,7 @@ def _prepare_segment_shape(shape: Shape) -> Shape:
             for index in range(count)
         )
         return Polygon(points=points, **common)
-    if isinstance(shape, (Polygon, RotatedBbox, Line)):
+    if isinstance(shape, (Polygon, Line)):
         return shape
     raise Exception(f"[Error] Task segment usually doesn't use {shape.type}")
 
@@ -167,7 +167,7 @@ class PrepareMatchChildren(ItemProcessor[MatchInput, MatchInput]):
             children = tuple(_prepare_segment_shape(child) for child in item.children)
             return MatchInput(sample=item.sample, parents=item.parents, children=children)
         if self.task_type is TaskType.POSE:
-            accepted = (Polygon, RotatedBbox, Line, Polyline, Points)
+            accepted = (Polygon, Line, Polyline, Points)
             for child in item.children:
                 if not isinstance(child, accepted):
                     raise Exception(f"[Error] Task pose usually doesn't use {child.type}")

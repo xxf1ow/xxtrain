@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from xxtrain.data import Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline, RotatedBbox
+from xxtrain.data import Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline
 from xxtrain.data.formats import read_labelimg, read_labelme
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
@@ -49,7 +49,7 @@ class AnnotationFormatsTest(unittest.TestCase):
         self.assertEqual(4, len(annotations))
         for annotation in annotations:
             with self.subTest(annotation=annotation):
-                self.assertIsInstance(annotation, RotatedBbox)
+                self.assertIsInstance(annotation, Polygon)
                 self.assertEqual('switch', annotation.label)
                 self.assertEqual(4, len(annotation.points))
 

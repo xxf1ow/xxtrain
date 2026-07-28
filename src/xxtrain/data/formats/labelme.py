@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from ..annotation import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline, RotatedBbox
+from ..annotation import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline
 
 
 def _shape(label: str, shape_type: str, points: object, group: object) -> Annotation:
@@ -13,7 +13,7 @@ def _shape(label: str, shape_type: str, points: object, group: object) -> Annota
         xs = [float(point[0]) for point in points]
         ys = [float(point[1]) for point in points]
         return Bbox(x1=min(xs), y1=min(ys), x2=max(xs), y2=max(ys), **common)
-    if shape_type == 'polygon':
+    if shape_type in ('polygon', 'rotation'):
         return Polygon(points=points, **common)
     if shape_type == 'line':
         return Line(points=points, **common)
@@ -25,8 +25,6 @@ def _shape(label: str, shape_type: str, points: object, group: object) -> Annota
         if not isinstance(points, list) or len(points) != 2:
             raise ValueError('Circle must have a center and edge point')
         return Circle(center=points[0], edge=points[1], **common)
-    if shape_type == 'rotation':
-        return RotatedBbox(points=points, **common)
     raise ValueError(f'Unsupported LabelMe shape type: {shape_type}')
 
 
