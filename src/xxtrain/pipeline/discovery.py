@@ -79,6 +79,8 @@ class CocoSource:
             if not poses:
                 if self.explicit_catalog is None:
                     raise ValueError('Pose catalog cannot be derived without Pose annotations')
+                if len(self.explicit_catalog) < 2:
+                    raise ValueError('Pose catalog requires at least one keypoint label')
                 return self.explicit_catalog
             pose_labels = {pose.label for pose in poses}
             if len(pose_labels) != 1:

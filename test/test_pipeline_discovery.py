@@ -151,6 +151,43 @@ class PipelineDiscoveryTest(unittest.TestCase):
                 CocoSource(json_path, catalog=LabelCatalog(('person', 'nose'))).catalog_for(TaskType.POSE),
             )
 
+    def test_coco_pose_without_annotations_rejects_catalog_without_keypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            json_path = self.write_coco(
+                root,
+                {
+                    'categories': [{'id': 1, 'name': 'person', 'keypoints': ['nose']}],
+                    'images': [{'id': 1, 'file_name': 'a.jpg', 'width': 16, 'height': 8}],
+                    'annotations': [],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, 'keypoint'):
+                CocoSource(json_path, catalog=LabelCatalog(('person',))).catalog_for(TaskType.POSE)
+
+    def test_coco_source_resolves_relative_image_root_to_absolute_image_path(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
+            root = Path(temp_dir)
+            image_root = root / 'dataset'
+            json_path = self.write_coco(
+                root,
+                {
+                    'categories': [{'id': 1, 'name': 'dial'}],
+                    'images': [{'id': 1, 'file_name': 'images/a.jpg', 'width': 16, 'height': 8}],
+                    'annotations': [],
+                },
+            )
+            relative_image_root = image_root.relative_to(Path.cwd())
+
+            sample = next(
+                CocoSource(json_path, image_root=relative_image_root).read(
+                    self.make_context(root, LabelCatalog(('dial',)))
+                )
+            )
+
+            self.assertEqual((image_root / 'images' / 'a.jpg').absolute(), sample.image.path)
+
     def test_coco_source_rejects_inconsistent_explicit_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
