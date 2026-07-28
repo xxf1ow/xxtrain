@@ -143,6 +143,14 @@ class ReadAnnotationsTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, 'Polyline'):
             ReadAnnotations().transform(self.sample, self.context(TaskType.SEGMENT, ('object',)))
 
+    def test_segment_and_obb_reject_nonempty_labelimg_xml(self) -> None:
+        self.write_xml(label='object')
+
+        for task_type in (TaskType.SEGMENT, TaskType.OBB):
+            with self.subTest(task_type=task_type):
+                with self.assertRaisesRegex(ValueError, 'LabelImg.*only supports detect and pose'):
+                    ReadAnnotations().transform(self.sample, self.context(task_type, ('object',)))
+
     def test_obb_validates_input_polygon(self) -> None:
         self.write_json([self.shape('object', 'polygon', [[10, 10], [90, 10], [50, 90]])])
 

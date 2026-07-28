@@ -78,6 +78,8 @@ class ReadAnnotations(ItemProcessor[Sample, Sample]):
         yolo = _read_yolo(_annotation_path(item, 'labels', '.txt'), item, context)
         xml_path = _annotation_path(item, 'anns', '.xml')
         xml = tuple(read_labelimg(xml_path, info)) if xml_path.is_file() else ()
+        if xml and context.config.task_type not in (TaskType.DETECT, TaskType.POSE):
+            raise ValueError('LabelImg XML only supports detect and pose tasks')
         json_path = _annotation_path(item, 'anns_seg', '.json')
         labelme = tuple(read_labelme(json_path, info)) if json_path.is_file() else ()
         source_values = (yolo, xml, labelme)

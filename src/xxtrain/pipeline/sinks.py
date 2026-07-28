@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -217,9 +218,11 @@ class _AnnotationSink:
     def __init__(self) -> None:
         self._claimed_paths: set[Path] = set()
 
-    def _claim(self, *paths: Path) -> None:
+    def _ensure_available(self, *paths: Path) -> None:
         if any(path in self._claimed_paths or path.exists() for path in paths):
             raise ValueError('Annotation output path collision')
+
+    def _commit_claim(self, *paths: Path) -> None:
         self._claimed_paths.update(paths)
 
     def _prepare(self, item: Sample, context: Context) -> tuple[Path, Path | None, ImageInfo] | None:
@@ -227,19 +230,52 @@ class _AnnotationSink:
             raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
         output_base = _output_base(item, context)
         if not item.annotations:
-            context.report.record_missing_annotations(item.source_group)
             if not context.config.reserve_no_label:
+                context.report.record_missing_annotations(item.source_group)
                 return None
 
         validate_annotations_for_task(item.annotations, context.config.task_type, context.config.labels.names)
         annotation_path = _append_suffix(output_base, self.suffix)
         crop_path = _append_suffix(output_base, '.jpg') if item.image.crop_box is not None else None
-        self._claim(annotation_path, *((crop_path,) if crop_path is not None else ()))
-        materialized = _materialize_crop(item, output_base)
+        paths = (annotation_path, *((crop_path,) if crop_path is not None else ()))
+        self._ensure_available(*paths)
+        try:
+            materialized = _materialize_crop(item, output_base)
+        except Exception:
+            if crop_path is not None:
+                crop_path.unlink(missing_ok=True)
+            raise
         if materialized is None:
             return annotation_path, None, item.image.require_info()
         image_path, image_info = materialized
         return annotation_path, image_path, image_info
+
+    def _write_annotation(
+        self, item: Sample, context: Context, prepared: tuple[Path, Path | None, ImageInfo], write: callable
+    ) -> None:
+        annotation_path, image_path, _ = prepared
+        crop_path = _append_suffix(_output_base(item, context), '.jpg') if item.image.crop_box is not None else None
+        annotation_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=f'.{annotation_path.name}.', suffix='.tmp', dir=annotation_path.parent
+        )
+        os.close(descriptor)
+        temporary_path = Path(temp_name)
+        try:
+            write(temporary_path)
+            if annotation_path.exists():
+                raise ValueError('Annotation output path collision')
+            os.replace(temporary_path, annotation_path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            if crop_path is not None:
+                crop_path.unlink(missing_ok=True)
+            raise
+
+        self._commit_claim(annotation_path, *((crop_path,) if crop_path is not None else ()))
+        if not item.annotations:
+            context.report.record_missing_annotations(item.source_group)
+        self._record_output(item, context, image_path)
 
     def _record_output(self, item: Sample, context: Context, image_path: Path | None) -> None:
         in_train, in_val = split_membership(item.source_index, context.config.split)
@@ -265,9 +301,9 @@ class LabelImgSink(_AnnotationSink):
         prepared = self._prepare(item, context)
         if prepared is None:
             return
-        annotation_path, image_path, image_info = prepared
-        write_labelimg(item.annotations, annotation_path, image_info)
-        self._record_output(item, context, image_path)
+        self._write_annotation(
+            item, context, prepared, lambda path: write_labelimg(item.annotations, path, prepared[2])
+        )
 
 
 class LabelMeSink(_AnnotationSink):
@@ -283,14 +319,18 @@ class LabelMeSink(_AnnotationSink):
             if image_path is None
             else _image_reference(image_path, annotation_path.parent)
         )
-        write_labelme(
-            item.annotations,
-            annotation_path,
-            image_info,
-            image_path=image_reference,
-            obb=context.config.task_type is TaskType.OBB,
+        self._write_annotation(
+            item,
+            context,
+            prepared,
+            lambda path: write_labelme(
+                item.annotations,
+                path,
+                image_info,
+                image_path=image_reference,
+                obb=context.config.task_type is TaskType.OBB,
+            ),
         )
-        self._record_output(item, context, image_path)
 
 
 class ClassificationDatasetSink:

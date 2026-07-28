@@ -166,6 +166,38 @@ class PipelineDiscoveryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'keypoint'):
                 CocoSource(json_path, catalog=LabelCatalog(('person',))).catalog_for(TaskType.POSE)
 
+    def test_coco_pose_requires_exactly_one_category_even_when_extra_is_unused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            json_path = self.write_coco(
+                root,
+                {
+                    'categories': [{'id': 1, 'name': 'person', 'keypoints': ['nose']}, {'id': 2, 'name': 'unused'}],
+                    'images': [{'id': 1, 'file_name': 'a.jpg', 'width': 16, 'height': 8}],
+                    'annotations': [
+                        {'id': 1, 'image_id': 1, 'category_id': 1, 'bbox': [1, 2, 3, 4], 'keypoints': [2, 3, 2]}
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, 'exactly one COCO category'):
+                CocoSource(json_path).catalog_for(TaskType.POSE)
+
+    def test_empty_coco_pose_catalog_must_name_the_single_category(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            json_path = self.write_coco(
+                root,
+                {
+                    'categories': [{'id': 1, 'name': 'person', 'keypoints': ['nose']}],
+                    'images': [{'id': 1, 'file_name': 'a.jpg', 'width': 16, 'height': 8}],
+                    'annotations': [],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, 'does not match the COCO category'):
+                CocoSource(json_path, catalog=LabelCatalog(('animal', 'nose'))).catalog_for(TaskType.POSE)
+
     def test_coco_source_resolves_relative_image_root_to_absolute_image_path(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
             root = Path(temp_dir)

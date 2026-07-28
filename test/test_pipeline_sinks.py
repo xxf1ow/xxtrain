@@ -201,6 +201,130 @@ class PipelineSinkTest(unittest.TestCase):
             payload = json.loads((root / 'detect' / 'group' / 'image.json').read_text(encoding='utf-8'))
             self.assertEqual([], payload['shapes'])
 
+    def test_annotation_sinks_retry_after_writer_failure_without_committing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(
+                source, sample_id='group/crop', crop_box=(1, 1, 6, 6), info=ImageInfo(width=5, height=5)
+            ).wrap(annotations=(Bbox(label='label', x1=1, y1=1, x2=4, y2=4),))
+
+            for sink, suffix, writer in (
+                (LabelImgSink(), '.xml', 'write_labelimg'),
+                (LabelMeSink(), '.json', 'write_labelme'),
+            ):
+                with self.subTest(sink=type(sink).__name__):
+                    output_root = root / type(sink).__name__
+                    context = self.make_context(output_root)
+                    annotation = output_root / 'detect' / 'group' / f'crop{suffix}'
+                    crop = output_root / 'detect' / 'group' / 'crop.jpg'
+                    with patch(f'xxtrain.pipeline.sinks.{writer}', side_effect=OSError('write failed')):
+                        with self.assertRaisesRegex(OSError, 'write failed'):
+                            sink.write(sample, context)
+                    self.assertEqual(set(), sink._claimed_paths)
+                    self.assertEqual({}, context.report.missing_annotation_counts)
+                    self.assertFalse(annotation.exists())
+                    self.assertFalse(crop.exists())
+
+                    sink.write(sample, context)
+                    self.assertTrue(annotation.exists())
+                    self.assertTrue(crop.exists())
+
+    def test_annotation_sinks_retry_after_crop_failure_without_committing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(
+                source, sample_id='group/crop', crop_box=(1, 1, 6, 6), info=ImageInfo(width=5, height=5)
+            ).wrap(annotations=(Bbox(label='label', x1=1, y1=1, x2=4, y2=4),))
+
+            for sink, suffix in ((LabelImgSink(), '.xml'), (LabelMeSink(), '.json')):
+                with self.subTest(sink=type(sink).__name__):
+                    output_root = root / type(sink).__name__
+                    context = self.make_context(output_root)
+                    annotation = output_root / 'detect' / 'group' / f'crop{suffix}'
+                    crop = output_root / 'detect' / 'group' / 'crop.jpg'
+                    with patch('xxtrain.pipeline.sinks._materialize_crop', side_effect=OSError('crop failed')):
+                        with self.assertRaisesRegex(OSError, 'crop failed'):
+                            sink.write(sample, context)
+                    self.assertEqual(set(), sink._claimed_paths)
+                    self.assertEqual({}, context.report.missing_annotation_counts)
+                    self.assertFalse(annotation.exists())
+                    self.assertFalse(crop.exists())
+
+                    sink.write(sample, context)
+                    self.assertTrue(annotation.exists())
+                    self.assertTrue(crop.exists())
+
+    def test_annotation_sinks_clean_temporary_annotation_files_after_writer_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(
+                source, sample_id='group/crop', crop_box=(1, 1, 6, 6), info=ImageInfo(width=5, height=5)
+            ).wrap(annotations=(Bbox(label='label', x1=1, y1=1, x2=4, y2=4),))
+
+            def write_then_fail(*args, **kwargs) -> None:
+                Path(args[1]).write_text('partial', encoding='utf-8')
+                raise OSError('write failed')
+
+            for sink, suffix, writer in (
+                (LabelImgSink(), '.xml', 'write_labelimg'),
+                (LabelMeSink(), '.json', 'write_labelme'),
+            ):
+                with self.subTest(sink=type(sink).__name__):
+                    output_root = root / type(sink).__name__
+                    context = self.make_context(output_root)
+                    annotation = output_root / 'detect' / 'group' / f'crop{suffix}'
+                    crop = output_root / 'detect' / 'group' / 'crop.jpg'
+                    with patch(f'xxtrain.pipeline.sinks.{writer}', side_effect=write_then_fail):
+                        with self.assertRaisesRegex(OSError, 'write failed'):
+                            sink.write(sample, context)
+                    self.assertFalse(annotation.exists())
+                    self.assertFalse(crop.exists())
+                    self.assertEqual([], list(annotation.parent.glob('*.tmp')))
+
+    def test_reserved_empty_annotation_retries_without_recording_missing_until_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, info=ImageInfo(width=10, height=10))
+
+            for sink, suffix, writer in (
+                (LabelImgSink(), '.xml', 'write_labelimg'),
+                (LabelMeSink(), '.json', 'write_labelme'),
+            ):
+                with self.subTest(sink=type(sink).__name__):
+                    output_root = root / type(sink).__name__
+                    context = self.make_context(output_root, reserve_no_label=True)
+                    annotation = output_root / 'detect' / 'group' / f'image{suffix}'
+                    with patch(f'xxtrain.pipeline.sinks.{writer}', side_effect=OSError('write failed')):
+                        with self.assertRaisesRegex(OSError, 'write failed'):
+                            sink.write(sample, context)
+                    self.assertEqual({}, context.report.missing_annotation_counts)
+                    self.assertEqual(set(), sink._claimed_paths)
+                    self.assertFalse(annotation.exists())
+
+                    sink.write(sample, context)
+                    self.assertEqual({'group': 1}, context.report.missing_annotation_counts)
+
+    def test_annotation_sinks_preserve_preexisting_annotation_on_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, info=ImageInfo(width=10, height=10)).wrap(
+                annotations=(Bbox(label='label', x1=1, y1=1, x2=4, y2=4),)
+            )
+
+            for sink, suffix in ((LabelImgSink(), '.xml'), (LabelMeSink(), '.json')):
+                with self.subTest(sink=type(sink).__name__):
+                    annotation = root / 'detect' / 'group' / f'image{suffix}'
+                    annotation.parent.mkdir(parents=True, exist_ok=True)
+                    annotation.write_text('existing', encoding='utf-8')
+                    with self.assertRaisesRegex(ValueError, 'collision'):
+                        sink.write(sample, self.make_context(root))
+                    self.assertEqual('existing', annotation.read_text(encoding='utf-8'))
+
     def test_annotation_sinks_preserve_dotted_sample_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -70,6 +70,9 @@ class CocoSource:
         if task_type is not TaskType.POSE:
             derived = self.doc.labels
         else:
+            if len(self.doc.labels) != 1:
+                raise ValueError('Pose COCO source requires exactly one COCO category')
+            category = self.doc.labels.names[0]
             poses = tuple(
                 annotation
                 for image in self.doc.images
@@ -81,10 +84,12 @@ class CocoSource:
                     raise ValueError('Pose catalog cannot be derived without Pose annotations')
                 if len(self.explicit_catalog) < 2:
                     raise ValueError('Pose catalog requires at least one keypoint label')
+                if self.explicit_catalog.names[0] != category:
+                    raise ValueError('Explicit Pose catalog does not match the COCO category')
                 return self.explicit_catalog
             pose_labels = {pose.label for pose in poses}
-            if len(pose_labels) != 1:
-                raise ValueError('Pose catalog requires exactly one object category')
+            if pose_labels != {category}:
+                raise ValueError('Pose annotations do not match the COCO category')
             schemas = {tuple(keypoint.label for keypoint in pose.keypoints) for pose in poses}
             if len(schemas) != 1:
                 raise ValueError('Pose annotations do not share one keypoint schema')
