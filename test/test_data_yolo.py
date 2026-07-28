@@ -137,6 +137,73 @@ class YoloFormatTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     decode()
 
+    def test_segment_decoder_rejects_normalized_coordinates_outside_unit_range(self) -> None:
+        labels = LabelCatalog(names=('mask',))
+        invalid = (
+            '0 -0.1 0.1 0.5 0.1 0.3 0.5',
+            '0 0.1 -0.1 0.5 0.1 0.3 0.5',
+            '0 0.1 0.1 1.1 0.1 0.3 0.5',
+            '0 0.1 0.1 0.5 0.1 0.3 1.1',
+        )
+        for line in invalid:
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                decode_segment(line, self.image, labels)
+
+    def test_segment_decoder_accepts_encoder_compatible_boundary_coordinates(self) -> None:
+        labels = LabelCatalog(names=('mask',))
+        line = '0 0.000000 0.000000 1.000000 0.000000 0.000000 1.000000'
+
+        decoded = decode_segment(line, self.image, labels)
+
+        self.assertEqual(line, encode_segment(decoded, self.image, labels))
+
+    def test_pose_decoder_rejects_bbox_tokens_outside_unit_range(self) -> None:
+        labels = LabelCatalog(names=('point',))
+        invalid = (
+            '0 -0.1 0.5 0.2 0.2 0.5 0.5 2',
+            '0 0.5 -0.1 0.2 0.2 0.5 0.5 2',
+            '0 1.1 0.5 0.2 0.2 0.5 0.5 2',
+            '0 0.5 1.1 0.2 0.2 0.5 0.5 2',
+            '0 0.5 0.5 1.1 0.2 0.5 0.5 2',
+            '0 0.5 0.5 0.2 1.1 0.5 0.5 2',
+        )
+        for line in invalid:
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                decode_pose(line, self.image, labels)
+
+    def test_pose_decoder_rejects_keypoint_coordinates_outside_unit_range(self) -> None:
+        labels = LabelCatalog(names=('point',))
+        invalid = (
+            '0 0.5 0.5 0.2 0.2 -0.1 0.5 2',
+            '0 0.5 0.5 0.2 0.2 0.5 -0.1 2',
+            '0 0.5 0.5 0.2 0.2 1.1 0.5 2',
+            '0 0.5 0.5 0.2 0.2 0.5 1.1 2',
+        )
+        for line in invalid:
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                decode_pose(line, self.image, labels)
+
+    def test_pose_decoder_rejects_in_range_tokens_whose_bbox_corners_escape_image(self) -> None:
+        labels = LabelCatalog(names=('point',))
+        invalid = (
+            '0 0 0.5 0.1 0.2 0.5 0.5 2',
+            '0 1 0.5 0.1 0.2 0.5 0.5 2',
+            '0 0.5 0 0.2 0.1 0.5 0.5 2',
+            '0 0.5 1 0.2 0.1 0.5 0.5 2',
+        )
+        for line in invalid:
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                decode_pose(line, self.image, labels)
+
+    def test_pose_decoder_accepts_encoder_compatible_boundary_values(self) -> None:
+        labels = LabelCatalog(names=('point',))
+        line = '0 0.500000 0.500000 1.000000 1.000000 0.000000 1.000000 2'
+
+        decoded = decode_pose(line, self.image, labels)
+
+        self.assertEqual((0.0, 0.0, 200.0, 100.0), decoded.bbox)
+        self.assertEqual(line, encode_pose(decoded, self.image, labels))
+
     def test_segment_rejects_shapes_with_fewer_than_three_points(self) -> None:
         with self.assertRaisesRegex(ValueError, '至少三点'):
             encode_segment(Polyline(label='line', points=[[0, 0], [1, 1]]), self.image, LabelCatalog(names=('line',)))
@@ -191,6 +258,22 @@ class YoloFormatTest(unittest.TestCase):
         for annotation, expected in cases:
             with self.subTest(annotation=annotation):
                 self.assertEqual(expected, encode_detect(annotation, self.image, labels))
+
+    def test_detect_decoder_preserves_legacy_out_of_image_bbox_behavior(self) -> None:
+        decoded = decode_detect('0 0.000000 0.500000 0.100000 0.400000', self.image, LabelCatalog(names=('x',)))
+
+        self.assertEqual((-10.0, 30.0, 10.0, 70.0), decoded.bbox)
+
+    def test_detect_encoder_rejects_non_finite_derived_values(self) -> None:
+        labels = LabelCatalog(names=('x',))
+        cases = (
+            (Bbox(label='x', x1=1e308, y1=0, x2=1.7e308, y2=1), ImageInfo(width=200, height=100)),
+            (Bbox(label='x', x1=-1e308, y1=0, x2=1e308, y2=1), ImageInfo(width=200, height=100)),
+            (Bbox(label='x', x1=0, y1=0, x2=1, y2=1), ImageInfo(width=5e-324, height=100)),
+        )
+        for annotation, image_info in cases:
+            with self.subTest(annotation=annotation, image_info=image_info), self.assertRaises(ValueError):
+                encode_detect(annotation, image_info, labels)
 
     def test_pose_allows_outside_corners_when_normalized_bbox_values_are_valid(self) -> None:
         keypoint_labels = LabelCatalog(names=('point',))

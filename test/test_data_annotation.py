@@ -81,6 +81,11 @@ class AnnotationTest(unittest.TestCase):
             with self.subTest(factory=factory), self.assertRaises(ValueError):
                 factory()
 
+    def test_rejects_boolean_groups(self) -> None:
+        for group in (False, True):
+            with self.subTest(group=group), self.assertRaises(ValueError):
+                Bbox(label='x', group=group, x1=0, y1=0, x2=1, y2=1)
+
     def test_image_info_accepts_positive_finite_coordinate_extents(self) -> None:
         integer_info = ImageInfo(width=1920, height=1080)
         fractional_info = ImageInfo(width=20.6, height=10.5)

@@ -644,7 +644,54 @@ class CocoWriterTest(unittest.TestCase):
             tuple(item.bbox for item in loaded.images[0].annotations),
         )
 
-    def test_type_distinct_equal_group_values_remain_separate(self) -> None:
+    def test_writer_encodes_before_io_and_preserves_valid_unicode(self) -> None:
+        invalid_label = 'bad\ud800'
+        invalid_document = CocoDoc(
+            labels=LabelCatalog((invalid_label,)),
+            images=(
+                CocoImage(
+                    file_name='image.jpg',
+                    info=ImageInfo(width=20, height=20),
+                    annotations=(Bbox(label=invalid_label, x1=1, y1=1, x2=2, y2=2),),
+                ),
+            ),
+        )
+        valid_label = '仪表😀'
+        valid_document = CocoDoc(
+            labels=LabelCatalog((valid_label,)),
+            images=(
+                CocoImage(
+                    file_name='image.jpg',
+                    info=ImageInfo(width=20, height=20),
+                    annotations=(Bbox(label=valid_label, x1=1, y1=1, x2=2, y2=2),),
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            missing = root / 'missing' / 'annotations.json'
+            with self.assertRaises(UnicodeError):
+                write_coco(invalid_document, missing)
+            self.assertFalse(missing.parent.exists())
+
+            existing = root / 'existing.json'
+            existing.write_bytes(b'sentinel')
+            with self.assertRaises(UnicodeError):
+                write_coco(invalid_document, existing)
+            self.assertEqual(b'sentinel', existing.read_bytes())
+
+            valid_path = root / 'valid.json'
+            write_coco(valid_document, valid_path)
+            restored = read_coco(valid_path)
+
+        self.assertEqual((valid_label,), restored.labels.names)
+        self.assertEqual(valid_label, restored.images[0].annotations[0].label)
+
+    def test_annotation_groups_reject_bool_before_coco_grouping(self) -> None:
+        with self.assertRaises(ValueError):
+            Polygon(label='first', group=True, points=((0, 0), (4, 0), (4, 4)))
+
+    def test_type_distinct_non_boolean_group_values_remain_separate(self) -> None:
         document = CocoDoc(
             labels=LabelCatalog(('first', 'second')),
             images=(
@@ -652,7 +699,7 @@ class CocoWriterTest(unittest.TestCase):
                     file_name='image.jpg',
                     info=ImageInfo(width=20, height=20),
                     annotations=(
-                        Polygon(label='first', group=True, points=((0, 0), (4, 0), (4, 4))),
+                        Polygon(label='first', group='1', points=((0, 0), (4, 0), (4, 4))),
                         Polygon(label='second', group=1, points=((10, 10), (14, 10), (14, 14))),
                     ),
                 ),

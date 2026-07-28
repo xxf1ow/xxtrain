@@ -24,6 +24,24 @@ def _number(parent: ET.Element, tag: str) -> float:
     return float(_text(parent, tag))
 
 
+def _bbox_in_image(annotation: Bbox, image_info: ImageInfo) -> bool:
+    return (
+        0 <= annotation.x1 < annotation.x2 <= image_info.width
+        and 0 <= annotation.y1 < annotation.y2 <= image_info.height
+    )
+
+
+def _validate_xml_text(value: str) -> None:
+    if any(
+        codepoint not in (0x9, 0xA, 0xD)
+        and not 0x20 <= codepoint <= 0xD7FF
+        and not 0xE000 <= codepoint <= 0xFFFD
+        and not 0x10000 <= codepoint <= 0x10FFFF
+        for codepoint in map(ord, value)
+    ):
+        raise ValueError('LabelImg text must contain only XML 1.0 characters')
+
+
 def read_labelimg(path: str | Path, image_info: ImageInfo) -> list[Annotation]:
     annotation_path = os.fspath(path)
     try:
@@ -43,7 +61,8 @@ def read_labelimg(path: str | Path, image_info: ImageInfo) -> list[Annotation]:
                 x2=_number(box, 'xmax'),
                 y2=_number(box, 'ymax'),
             )
-            assert annotation.x2 <= image_info.width and annotation.y2 <= image_info.height, annotation_path
+            if not _bbox_in_image(annotation, image_info):
+                raise ValueError(f'Bbox must be inside image bounds: {annotation_path}')
             annotations.append(annotation)
         return annotations
     except Exception as error:
@@ -58,6 +77,10 @@ def write_labelimg(annotations: Sequence[Annotation], path: str | Path, image_in
         boxes.append(annotation)
     if not image_info.width.is_integer() or not image_info.height.is_integer():
         raise ValueError('LabelImg image dimensions must be integral pixels')
+    for box in boxes:
+        if not _bbox_in_image(box, image_info):
+            raise ValueError('LabelImg Bbox must be inside image bounds')
+        _validate_xml_text(box.label)
 
     root = ET.Element('annotation')
     size = ET.SubElement(root, 'size')
@@ -72,6 +95,7 @@ def write_labelimg(annotations: Sequence[Annotation], path: str | Path, image_in
         ET.SubElement(bndbox, 'xmax').text = str(box.x2)
         ET.SubElement(bndbox, 'ymax').text = str(box.y2)
 
+    content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
     annotation_path = Path(path)
     annotation_path.parent.mkdir(parents=True, exist_ok=True)
-    ET.ElementTree(root).write(annotation_path, encoding='utf-8', xml_declaration=True)
+    annotation_path.write_bytes(content)

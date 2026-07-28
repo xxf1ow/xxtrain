@@ -41,6 +41,24 @@ class LabelImgReaderTest(unittest.TestCase):
             with self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
                 read_labelimg(path, ImageInfo(width=10, height=10))
 
+    def test_negative_bbox_coordinates_are_reported_as_parse_failures(self) -> None:
+        boxes = (
+            '<xmin>-1</xmin><ymin>1</ymin><xmax>5</xmax><ymax>5</ymax>',
+            '<xmin>1</xmin><ymin>-1</ymin><xmax>5</xmax><ymax>5</ymax>',
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, box in enumerate(boxes):
+                with self.subTest(box=box):
+                    path = root / f'invalid-{index}.xml'
+                    path.write_text(
+                        '<annotation><size><width>10</width><height>10</height></size>'
+                        f'<object><name>x</name><bndbox>{box}</bndbox></object></annotation>',
+                        encoding='utf-8',
+                    )
+                    with self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
+                        read_labelimg(path, ImageInfo(width=10, height=10))
+
 
 class LabelImgWriterTest(unittest.TestCase):
     def test_round_trips_two_bboxes_with_decimal_coordinates(self) -> None:
@@ -113,6 +131,64 @@ class LabelImgWriterTest(unittest.TestCase):
 
             self.assertFalse(path.exists())
             self.assertFalse(path.parent.exists())
+
+    def test_rejects_out_of_image_bboxes_without_creating_or_overwriting_target(self) -> None:
+        image_info = ImageInfo(width=10, height=10)
+        invalid = (
+            Bbox(label='negative-x', x1=-1, y1=1, x2=5, y2=5),
+            Bbox(label='negative-y', x1=1, y1=-1, x2=5, y2=5),
+            Bbox(label='upper-x', x1=1, y1=1, x2=11, y2=5),
+            Bbox(label='upper-y', x1=1, y1=1, x2=5, y2=11),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, annotation in enumerate(invalid):
+                with self.subTest(annotation=annotation, path='missing'):
+                    path = root / f'missing-{index}' / 'annotations.xml'
+                    with self.assertRaises(ValueError):
+                        write_labelimg((annotation,), path, image_info)
+                    self.assertFalse(path.parent.exists())
+
+                with self.subTest(annotation=annotation, path='existing'):
+                    path = root / f'existing-{index}.xml'
+                    path.write_bytes(b'sentinel')
+                    with self.assertRaises(ValueError):
+                        write_labelimg((annotation,), path, image_info)
+                    self.assertEqual(b'sentinel', path.read_bytes())
+
+    def test_rejects_xml_invalid_labels_without_creating_or_overwriting_target(self) -> None:
+        labels = ('bad\ud800', 'bad\x01', 'bad\ufffe')
+        image_info = ImageInfo(width=10, height=10)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, label in enumerate(labels):
+                annotation = Bbox(label=label, x1=1, y1=1, x2=5, y2=5)
+                with self.subTest(label=ascii(label), path='missing'):
+                    path = root / f'missing-{index}' / 'annotations.xml'
+                    with self.assertRaises(ValueError):
+                        write_labelimg((annotation,), path, image_info)
+                    self.assertFalse(path.parent.exists())
+
+                with self.subTest(label=ascii(label), path='existing'):
+                    path = root / f'existing-{index}.xml'
+                    path.write_bytes(b'sentinel')
+                    with self.assertRaises(ValueError):
+                        write_labelimg((annotation,), path, image_info)
+                    self.assertEqual(b'sentinel', path.read_bytes())
+
+    def test_valid_unicode_label_and_boundary_bbox_round_trip(self) -> None:
+        annotation = Bbox(label='仪表😀', x1=0, y1=0, x2=10, y2=10)
+        image_info = ImageInfo(width=10, height=10)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'annotations.xml'
+            write_labelimg((annotation,), path, image_info)
+
+            self.assertIn('仪表😀'.encode(), path.read_bytes())
+            restored = read_labelimg(path, image_info)
+
+        self.assertEqual('仪表😀', restored[0].label)
+        self.assertEqual((0.0, 0.0, 10.0, 10.0), restored[0].bbox)
 
 
 if __name__ == '__main__':

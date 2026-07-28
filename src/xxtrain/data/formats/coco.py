@@ -423,7 +423,7 @@ def _encode_coco(doc: CocoDoc) -> dict[str, object]:
 
 def write_coco(doc: CocoDoc, json_path: str | Path) -> None:
     payload = _encode_coco(doc)
-    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    content = (json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
     path = Path(json_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding='utf-8')
+    path.write_bytes(content)

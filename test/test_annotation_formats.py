@@ -150,6 +150,22 @@ class AnnotationFormatsTest(unittest.TestCase):
                     path = self._write_labelme(root, [shape])
                     read_labelme(path, ImageInfo(width=100, height=80))
 
+    def test_labelme_rejects_boolean_group_ids(self) -> None:
+        shape = {'label': 'box', 'points': [[1, 1], [2, 2]], 'group_id': True, 'shape_type': 'rectangle', 'flags': {}}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._write_labelme(Path(temp_dir), [shape])
+
+            with self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
+                read_labelme(path, ImageInfo(width=100, height=80))
+
+    def test_labelme_rejects_point_shapes_with_multiple_points(self) -> None:
+        shape = {'label': 'marker', 'points': [[1, 1], [2, 2]], 'group_id': None, 'shape_type': 'point', 'flags': {}}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._write_labelme(Path(temp_dir), [shape])
+
+            with self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
+                read_labelme(path, ImageInfo(width=100, height=80))
+
     def test_labelme_round_trips_supported_non_pose_shapes(self) -> None:
         annotations = (
             Bbox(label='box', group=0, x1=1, y1=2, x2=11, y2=12),
@@ -325,6 +341,51 @@ class AnnotationFormatsTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         write_labelme(annotations, path, ImageInfo(width=100, height=80))
                     self.assertFalse(path.parent.exists())
+
+    def test_labelme_writer_rejects_non_integral_dimensions_before_io(self) -> None:
+        annotation = Bbox(label='box', x1=1, y1=1, x2=2, y2=2)
+        dimensions = (ImageInfo(width=100.5, height=80), ImageInfo(width=100, height=80.5))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, image_info in enumerate(dimensions):
+                with self.subTest(image_info=image_info, path='missing'):
+                    path = root / f'missing-{index}' / 'annotations.json'
+                    with self.assertRaises(ValueError):
+                        write_labelme((annotation,), path, image_info)
+                    self.assertFalse(path.parent.exists())
+
+                with self.subTest(image_info=image_info, path='existing'):
+                    path = root / f'existing-{index}.json'
+                    path.write_bytes(b'sentinel')
+                    with self.assertRaises(ValueError):
+                        write_labelme((annotation,), path, image_info)
+                    self.assertEqual(b'sentinel', path.read_bytes())
+
+    def test_labelme_writer_encodes_before_io_and_preserves_valid_unicode(self) -> None:
+        image_info = ImageInfo(width=100, height=80)
+        invalid = Bbox(label='bad\ud800', x1=1, y1=1, x2=2, y2=2)
+        valid = Bbox(label='仪表😀', x1=1, y1=1, x2=2, y2=2)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            missing = root / 'missing' / 'annotations.json'
+            with self.assertRaises(UnicodeError):
+                write_labelme((invalid,), missing, image_info)
+            self.assertFalse(missing.parent.exists())
+
+            existing = root / 'existing.json'
+            existing.write_bytes(b'sentinel')
+            with self.assertRaises(UnicodeError):
+                write_labelme((invalid,), existing, image_info)
+            self.assertEqual(b'sentinel', existing.read_bytes())
+
+            valid_path = root / 'valid.json'
+            write_labelme((valid,), valid_path, image_info)
+            payload = json.loads(valid_path.read_text(encoding='utf-8'))
+            restored = read_labelme(valid_path, image_info)
+
+        self.assertEqual('仪表😀', restored[0].label)
+        self.assertIs(type(payload['imageWidth']), int)
+        self.assertIs(type(payload['imageHeight']), int)
 
 
 if __name__ == '__main__':

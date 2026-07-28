@@ -55,7 +55,7 @@ class Annotation(ABC):
             raise ValueError('Annotation label must be a non-empty string')
         if not isinstance(self.id, UUID):
             raise ValueError('Annotation id must be a UUID')
-        if self.group is not None and not isinstance(self.group, (int, str, UUID)):
+        if isinstance(self.group, bool) or (self.group is not None and not isinstance(self.group, (int, str, UUID))):
             raise ValueError('Annotation group must be int, str, UUID, or None')
         self._validate_geometry()
 

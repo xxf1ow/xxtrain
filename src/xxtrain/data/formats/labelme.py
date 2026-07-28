@@ -31,6 +31,8 @@ def _shape(label: str, shape_type: str, points: object, group: object) -> Annota
     if shape_type == 'linestrip':
         return Polyline(points=points, **common)
     if shape_type == 'point':
+        if not isinstance(points, list) or len(points) != 1:
+            raise ValueError('Point must contain exactly one point')
         return Points(points=points, **common)
     if shape_type == 'circle':
         if not isinstance(points, list) or len(points) != 2:
@@ -137,6 +139,8 @@ def _validate_groups(annotations: Sequence[Annotation]) -> None:
 
 
 def write_labelme(annotations: Sequence[Annotation], path: str | Path, image_info: ImageInfo) -> None:
+    if not image_info.width.is_integer() or not image_info.height.is_integer():
+        raise ValueError('LabelMe image dimensions must be integral pixels')
     mapped = tuple((annotation, _shapes(annotation)) for annotation in annotations)
     _validate_groups(tuple(annotation for annotation, _ in mapped))
     shapes = [shape for _, annotation_shapes in mapped for shape in annotation_shapes]
@@ -147,10 +151,10 @@ def write_labelme(annotations: Sequence[Annotation], path: str | Path, image_inf
         'shapes': shapes,
         'imagePath': annotation_path.with_suffix('.jpg').name,
         'imageData': None,
-        'imageHeight': image_info.height,
-        'imageWidth': image_info.width,
+        'imageHeight': int(image_info.height),
+        'imageWidth': int(image_info.width),
     }
-    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
 
     annotation_path.parent.mkdir(parents=True, exist_ok=True)
-    annotation_path.write_text(content, encoding='utf-8')
+    annotation_path.write_bytes(content)
