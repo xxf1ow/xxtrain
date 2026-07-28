@@ -77,7 +77,7 @@ class PipelineProcessorTest(unittest.TestCase):
         sized = ReadImageInfo().transform(sample, context)
         output = ReadMatchingAnnotations().transform(sized, context)
         self.assertEqual(('rw400',), tuple(parent.label for parent in output.parents))
-        self.assertEqual(('rw400',), tuple(child.label for child in output.children))
+        self.assertEqual(('target',), tuple(child.label for child in output.children))
 
     def test_read_labelme_uses_sibling_anns_seg_path(self) -> None:
         image_path = FIXTURES / 'standard-segment' / 'src' / '251010' / 'imgs' / '0000.jpg'

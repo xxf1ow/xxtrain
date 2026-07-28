@@ -96,12 +96,7 @@ class ReadAnnotationsTest(unittest.TestCase):
 
     def test_pose_assembles_labelimg_box_and_labelme_points(self) -> None:
         self.write_xml(label='person')
-        self.write_json(
-            [
-                self.shape('wrist', 'point', [[80, 70]]),
-                self.shape('nose', 'point', [[20, 30]]),
-            ]
-        )
+        self.write_json([self.shape('wrist', 'point', [[80, 70]]), self.shape('nose', 'point', [[20, 30]])])
 
         output = ReadAnnotations().transform(self.sample, self.context(TaskType.POSE, ('person', 'nose', 'wrist')))
 
@@ -168,9 +163,7 @@ class ReadAnnotationsTest(unittest.TestCase):
         self.assertEqual(('nose', 'wrist'), tuple(point.label for point in output.annotations[0].keypoints))
 
     def test_validate_obb_and_extract_sample_interfaces(self) -> None:
-        invalid = self.sample.wrap(
-            annotations=(Polygon(label='object', points=((10, 10), (90, 10), (50, 90))),)
-        )
+        invalid = self.sample.wrap(annotations=(Polygon(label='object', points=((10, 10), (90, 10), (50, 90))),))
         context = self.context(TaskType.OBB, ('object',))
         with self.assertRaisesRegex(ValueError, 'OBB'):
             ValidateObb().transform(invalid, context)

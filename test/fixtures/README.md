@@ -7,6 +7,7 @@
 | `standard-detect/` | 标准目标检测 | 图片、LabelImg XML 和类别表 |
 | `standard-segment/` | 标准实例分割 | 图片、LabelMe JSON 和类别表 |
 | `standard-pose/` | 标准姿态估计 | 图片、检测框 XML、关键点 JSON 和类别表 |
+| `standard-obb/` | 标准旋转框检测 | 复用 `standard-segment` 的真实图片、LabelMe rotation JSON 和类别表 |
 | `standard-classify/` | 标准图像分类 | 按类别分目录的图片和类别表 |
 | `point/` | 点位检测、分类、分割 | 同一批图片及其 XML、JSON 标注 |
 | `knob/` | 旋钮检测、分割 | 同一批图片及其 XML、JSON 标注 |
