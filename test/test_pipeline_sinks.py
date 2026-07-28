@@ -1,4 +1,5 @@
 import io
+import json
 import shutil
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from xxtrain.data import ImageInfo, LabelCatalog
+from xxtrain.data import Bbox, ImageInfo, Keypoint, LabelCatalog, Polygon, Polyline, Pose
 from xxtrain.pipeline.core import (
     ClassifyOutput,
     Context,
@@ -18,13 +19,20 @@ from xxtrain.pipeline.core import (
     ImageRef,
     Sample,
 )
-from xxtrain.pipeline.sinks import ClassificationDatasetSink, YoloDatasetSink, _symlink_or_copy, print_conversion_report
+from xxtrain.pipeline.sinks import (
+    ClassificationDatasetSink,
+    LabelImgSink,
+    LabelMeSink,
+    YoloDatasetSink,
+    _symlink_or_copy,
+    print_conversion_report,
+)
 from xxtrain.task import TaskType
 
 
 class PipelineSinkTest(unittest.TestCase):
     def make_context(
-        self, root: Path, *, task_name='detect', task_type=TaskType.DETECT, reserve_no_label=True
+        self, root: Path, *, task_name='detect', task_type=TaskType.DETECT, reserve_no_label=True, labels=('label',)
     ) -> Context:
         return Context(
             config=ConversionConfig(
@@ -32,7 +40,7 @@ class PipelineSinkTest(unittest.TestCase):
                 task_type=task_type,
                 root_path=root,
                 split=10,
-                labels=LabelCatalog(('label',)),
+                labels=LabelCatalog(labels),
                 reserve_no_label=reserve_no_label,
             ),
             report=ConversionReport(),
@@ -115,6 +123,188 @@ class PipelineSinkTest(unittest.TestCase):
 
             self.assertTrue((root / 'detect' / 'group' / 'image.v1.png').is_file())
             self.assertEqual('0 0.5 0.5 1 1', (root / 'detect' / 'group' / 'image.v1.txt').read_text(encoding='utf-8'))
+
+    def test_labelimg_sink_writes_xml_without_copying_whole_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, info=ImageInfo(width=10, height=10)).wrap(
+                annotations=(Bbox(label='label', x1=1, y1=2, x2=7, y2=8),)
+            )
+
+            LabelImgSink().write(sample, self.make_context(root))
+
+            annotation = root / 'detect' / 'group' / 'image.xml'
+            self.assertTrue(annotation.is_file())
+            self.assertFalse((root / 'detect' / 'group' / 'image.png').exists())
+            self.assertIn(b'<name>label</name>', annotation.read_bytes())
+
+    def test_labelme_sink_writes_json_referencing_whole_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, info=ImageInfo(width=10, height=10)).wrap(
+                annotations=(Bbox(label='label', x1=1, y1=2, x2=7, y2=8),)
+            )
+
+            LabelMeSink().write(sample, self.make_context(root))
+
+            annotation = root / 'detect' / 'group' / 'image.json'
+            self.assertTrue(annotation.is_file())
+            self.assertFalse((root / 'detect' / 'group' / 'image.png').exists())
+            payload = json.loads(annotation.read_text(encoding='utf-8'))
+            self.assertEqual('../../src/group/imgs/image.png', payload['imagePath'])
+
+    def test_labelme_sink_materializes_crop_and_uses_its_actual_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(
+                source, sample_id='group/image_0', crop_box=(1, 2, 7, 8), info=ImageInfo(width=99, height=99)
+            ).wrap(annotations=(Bbox(label='label', x1=1, y1=1, x2=5, y2=5),))
+
+            LabelMeSink().write(sample, self.make_context(root))
+
+            image_path = root / 'detect' / 'group' / 'image_0.jpg'
+            annotation = root / 'detect' / 'group' / 'image_0.json'
+            with Image.open(image_path) as image:
+                self.assertEqual(('RGB', (6, 6)), (image.mode, image.size))
+            payload = json.loads(annotation.read_text(encoding='utf-8'))
+            self.assertEqual('image_0.jpg', payload['imagePath'])
+            self.assertEqual((6, 6), (payload['imageWidth'], payload['imageHeight']))
+
+    def test_annotation_sinks_skip_unlabelled_samples_when_not_reserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, info=ImageInfo(width=10, height=10))
+            context = self.make_context(root, reserve_no_label=False)
+
+            for sink, suffix in ((LabelImgSink(), '.xml'), (LabelMeSink(), '.json')):
+                with self.subTest(sink=type(sink).__name__):
+                    sink.write(sample, context)
+                    self.assertFalse((root / 'detect' / 'group' / f'image{suffix}').exists())
+
+            self.assertEqual({'group': 2}, context.report.missing_annotation_counts)
+
+    def test_annotation_sinks_write_empty_annotations_when_reserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            sample = self.make_sample(source, info=ImageInfo(width=10, height=10))
+            context = self.make_context(root)
+
+            LabelImgSink().write(sample, context)
+            LabelMeSink().write(sample, context)
+
+            self.assertIn(b'<annotation', (root / 'detect' / 'group' / 'image.xml').read_bytes())
+            payload = json.loads((root / 'detect' / 'group' / 'image.json').read_text(encoding='utf-8'))
+            self.assertEqual([], payload['shapes'])
+
+    def test_annotation_sinks_preserve_dotted_sample_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root, name='image.v1.png')
+            sample = self.make_sample(source, sample_id='group/image.v1', info=ImageInfo(width=10, height=10))
+
+            LabelImgSink().write(sample, self.make_context(root))
+            LabelMeSink().write(sample, self.make_context(root))
+
+            self.assertTrue((root / 'detect' / 'group' / 'image.v1.xml').is_file())
+            self.assertTrue((root / 'detect' / 'group' / 'image.v1.json').is_file())
+
+    def test_annotation_sinks_reject_unsafe_or_colliding_output_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            valid = self.make_sample(source, info=ImageInfo(width=10, height=10))
+            unsafe = (
+                self.make_sample(source, sample_id='../escape', info=ImageInfo(width=10, height=10)),
+                self.make_sample(source, sample_id=str(root / 'escape'), info=ImageInfo(width=10, height=10)),
+                self.make_sample(source, sample_id='.', info=ImageInfo(width=10, height=10)),
+            )
+
+            for sink in (LabelImgSink(), LabelMeSink()):
+                with self.subTest(sink=type(sink).__name__, case='unsafe'):
+                    for sample in unsafe:
+                        with self.assertRaisesRegex(ValueError, 'Unsafe sample id'):
+                            sink.write(sample, self.make_context(root))
+                with self.subTest(sink=type(sink).__name__, case='collision'):
+                    sink.write(valid, self.make_context(root))
+                    with self.assertRaisesRegex(ValueError, 'collision'):
+                        sink.write(valid, self.make_context(root))
+
+    def test_labelme_sink_rejects_polyline_and_labelimg_rejects_non_detect_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            segment_context = self.make_context(root, task_name='segment', task_type=TaskType.SEGMENT)
+            polyline = self.make_sample(source, info=ImageInfo(width=10, height=10)).wrap(
+                annotations=(Polyline(label='label', points=((1, 1), (5, 5))),)
+            )
+
+            with self.assertRaisesRegex(TypeError, 'segment does not support Polyline'):
+                LabelMeSink().write(polyline, segment_context)
+            with self.assertRaisesRegex(ValueError, 'detect'):
+                LabelImgSink().write(self.make_sample(source, info=ImageInfo(width=10, height=10)), segment_context)
+
+    def test_labelme_sink_supports_segment_pose_and_obb(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            samples = (
+                (
+                    self.make_sample(source, sample_id='group/segment', info=ImageInfo(width=10, height=10)).wrap(
+                        annotations=(Polygon(label='label', points=((1, 1), (5, 1), (3, 5))),)
+                    ),
+                    self.make_context(root, task_name='segment', task_type=TaskType.SEGMENT),
+                    'polygon',
+                ),
+                (
+                    self.make_sample(source, sample_id='group/pose', info=ImageInfo(width=10, height=10)).wrap(
+                        annotations=(
+                            Pose(label='person', x1=1, y1=1, x2=5, y2=5, keypoints=(Keypoint(label='nose', x=3, y=2),)),
+                        )
+                    ),
+                    self.make_context(root, task_name='pose', task_type=TaskType.POSE, labels=('person', 'nose')),
+                    'rectangle',
+                ),
+                (
+                    self.make_sample(source, sample_id='group/obb', info=ImageInfo(width=10, height=10)).wrap(
+                        annotations=(Polygon(label='label', points=((1, 1), (5, 1), (5, 4), (1, 4))),)
+                    ),
+                    self.make_context(root, task_name='obb', task_type=TaskType.OBB),
+                    'rotation',
+                ),
+            )
+
+            for sample, context, shape_type in samples:
+                with self.subTest(task_type=context.config.task_type):
+                    LabelMeSink().write(sample, context)
+                    annotation_path = root / context.config.task_name / 'group' / f'{Path(sample.id).name}.json'
+                    payload = json.loads(annotation_path.read_text(encoding='utf-8'))
+                    self.assertEqual(shape_type, payload['shapes'][0]['shape_type'])
+
+    def test_annotation_sink_finalize_creates_only_the_task_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = self.make_context(root)
+
+            LabelImgSink().finalize(context)
+            LabelMeSink().finalize(context)
+
+            task_root = root / 'detect'
+            self.assertTrue(task_root.is_dir())
+            self.assertFalse((task_root / 'dataset.yaml').exists())
+            self.assertFalse((task_root / 'train.txt').exists())
+
+    def test_annotation_sinks_reject_wrong_runtime_input_type(self) -> None:
+        context = self.make_context(Path('.'))
+        output = EncodeOutput(sample=self.make_sample(Path('image.png')), lines=())
+        for sink in (LabelImgSink(), LabelMeSink()):
+            with self.subTest(sink=type(sink).__name__):
+                with self.assertRaisesRegex(TypeError, f'{type(sink).__name__} expected Sample, got EncodeOutput'):
+                    sink.write(output, context)
 
     def test_zero_annotation_files_are_written_but_not_listed_when_not_reserved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -11,6 +11,7 @@ from .core import (
 )
 from .discovery import CocoSource
 from .recipes import DatasetRecipe, standard_recipe
+from .sinks import LabelImgSink, LabelMeSink
 from .workflow import convert_dataset
 
 __all__ = [
@@ -23,6 +24,8 @@ __all__ = [
     'ExpandProcessor',
     'ImageRef',
     'ItemProcessor',
+    'LabelImgSink',
+    'LabelMeSink',
     'Pipeline',
     'ReadAnnotations',
     'Sample',

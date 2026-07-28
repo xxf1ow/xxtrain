@@ -79,7 +79,7 @@ def _labelme_shape(*, label: str, points: object, group: int | str | UUID | None
     return {'label': label, 'points': points, 'group_id': _group_id(group), 'shape_type': shape_type, 'flags': {}}
 
 
-def _shapes(annotation: Annotation) -> tuple[dict[str, object], ...]:
+def _shapes(annotation: Annotation, *, obb: bool = False) -> tuple[dict[str, object], ...]:
     common = {'label': annotation.label, 'group': annotation.group}
     if isinstance(annotation, Bbox):
         return (
@@ -92,7 +92,9 @@ def _shapes(annotation: Annotation) -> tuple[dict[str, object], ...]:
     if isinstance(annotation, Circle):
         return (_labelme_shape(points=annotation.points, shape_type='circle', **common),)
     if isinstance(annotation, Polygon):
-        return (_labelme_shape(points=annotation.points, shape_type='polygon', **common),)
+        if obb:
+            validate_obb(annotation)
+        return (_labelme_shape(points=annotation.points, shape_type='rotation' if obb else 'polygon', **common),)
     if isinstance(annotation, Polyline):
         shape_type = 'line' if len(annotation.points) == 2 else 'linestrip'
         return (_labelme_shape(points=annotation.points, shape_type=shape_type, **common),)
@@ -138,18 +140,30 @@ def _validate_groups(annotations: Sequence[Annotation]) -> None:
             raise ValueError('LabelMe group would be read back as a Pose')
 
 
-def write_labelme(annotations: Sequence[Annotation], path: str | Path, image_info: ImageInfo) -> None:
+def write_labelme(
+    annotations: Sequence[Annotation],
+    path: str | Path,
+    image_info: ImageInfo,
+    *,
+    image_path: str | Path | None = None,
+    obb: bool = False,
+) -> None:
     if not image_info.width.is_integer() or not image_info.height.is_integer():
         raise ValueError('LabelMe image dimensions must be integral pixels')
-    mapped = tuple((annotation, _shapes(annotation)) for annotation in annotations)
+    if obb and any(not isinstance(annotation, Polygon) for annotation in annotations):
+        raise ValueError('LabelMe OBB writer only supports Polygon annotations')
+    mapped = tuple((annotation, _shapes(annotation, obb=obb)) for annotation in annotations)
     _validate_groups(tuple(annotation for annotation, _ in mapped))
     shapes = [shape for _, annotation_shapes in mapped for shape in annotation_shapes]
     annotation_path = Path(path)
+    emitted_image_path = (
+        str(image_path).replace('\\', '/') if image_path is not None else annotation_path.with_suffix('.jpg').name
+    )
     payload = {
         'version': '5.0.0',
         'flags': {},
         'shapes': shapes,
-        'imagePath': annotation_path.with_suffix('.jpg').name,
+        'imagePath': emitted_image_path,
         'imageData': None,
         'imageHeight': int(image_info.height),
         'imageWidth': int(image_info.width),

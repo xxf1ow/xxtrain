@@ -201,6 +201,24 @@ class AnnotationFormatsTest(unittest.TestCase):
                 self.assertEqual(expected.group, actual.group)
                 self.assertEqual(expected.points, actual.points)
 
+    def test_labelme_writer_uses_requested_image_path_and_rotation_shapes_for_obb(self) -> None:
+        valid_obb = Polygon(label='box', points=((10, 10), (30, 10), (30, 20), (10, 20)))
+        triangle = Polygon(label='triangle', points=((10, 10), (30, 10), (20, 20)))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'annotations.json'
+
+            write_labelme((valid_obb,), path, ImageInfo(width=100, height=80), image_path='../images/a.jpg', obb=True)
+
+            payload = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual('../images/a.jpg', payload['imagePath'])
+            self.assertEqual('rotation', payload['shapes'][0]['shape_type'])
+            with self.assertRaisesRegex(ValueError, 'OBB'):
+                write_labelme((triangle,), path, ImageInfo(width=100, height=80), obb=True)
+            with self.assertRaisesRegex(ValueError, 'OBB'):
+                write_labelme(
+                    (Bbox(label='box', x1=10, y1=10, x2=30, y2=20),), path, ImageInfo(width=100, height=80), obb=True
+                )
+
     def test_labelme_round_trips_pose_expansion_and_keypoint_order(self) -> None:
         annotations = (
             Pose(
