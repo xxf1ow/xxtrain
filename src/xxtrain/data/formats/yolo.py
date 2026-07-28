@@ -15,10 +15,9 @@ def _tokens(line: str, *, count: int | None = None) -> tuple[str, ...]:
 
 
 def _class_id(token: str, labels: LabelCatalog) -> int:
-    try:
-        value = int(token)
-    except (TypeError, ValueError):
+    if not token.isascii() or not token.isdecimal():
         raise ValueError(f'Invalid YOLO class id: {token}') from None
+    value = int(token)
     if not 0 <= value < len(labels):
         raise ValueError(f'YOLO class id out of range: {value}')
     return value
@@ -122,6 +121,8 @@ def decode_pose(line: str, image_info: ImageInfo, keypoint_labels: LabelCatalog)
 
 
 def encode_pose(pose: Pose, image_info: ImageInfo, keypoint_labels: LabelCatalog) -> str:
+    if not keypoint_labels.names:
+        raise ValueError('关键点目录不能为空')
     if pose.label != keypoint_labels.names[0]:
         raise ValueError('YOLO pose label must match the first keypoint label')
     keypoints = {keypoint.label: keypoint for keypoint in pose.keypoints}

@@ -84,6 +84,13 @@ class YoloFormatTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     decode()
 
+    def test_class_tokens_reject_python_integer_conveniences(self) -> None:
+        labels = LabelCatalog(names=('label',))
+        for token in ('0_0', '+0', '-0', '0.0', '0e0', '+', ''):
+            with self.subTest(token=token):
+                with self.assertRaises(ValueError):
+                    decode_detect(f'{token} 0.5 0.5 0.5 0.5', self.image, labels)
+
     def test_decoders_reject_non_finite_numbers(self) -> None:
         labels = LabelCatalog(names=('label',))
         invalid = (
@@ -116,6 +123,19 @@ class YoloFormatTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             decode_pose('1 0.5 0.5 0.5 0.5 0.1 0.1 2 0.2 0.2 1', self.image, labels)
+
+    def test_decoded_boxes_require_positive_width_and_height(self) -> None:
+        labels = LabelCatalog(names=('point',))
+        invalid = (
+            lambda: decode_detect('0 0.5 0.5 0 0.5', self.image, labels),
+            lambda: decode_detect('0 0.5 0.5 0.5 -0.5', self.image, labels),
+            lambda: decode_pose('0 0.5 0.5 0 0.5 0.1 0.1 2', self.image, labels),
+            lambda: decode_pose('0 0.5 0.5 0.5 -0.5 0.1 0.1 2', self.image, labels),
+        )
+        for decode in invalid:
+            with self.subTest(decode=decode):
+                with self.assertRaises(ValueError):
+                    decode()
 
     def test_segment_rejects_shapes_with_fewer_than_three_points(self) -> None:
         with self.assertRaisesRegex(ValueError, '至少三点'):
@@ -153,6 +173,14 @@ class YoloFormatTest(unittest.TestCase):
             with self.subTest(pose=pose):
                 with self.assertRaises(ValueError):
                     encode_pose(pose, self.image, catalog)
+
+    def test_pose_encoder_rejects_empty_keypoint_catalog_explicitly(self) -> None:
+        pose = Pose(label='point', x1=20, y1=10, x2=100, y2=50, keypoints=(Keypoint(label='point', x=20, y=10),))
+        empty_catalog = object.__new__(LabelCatalog)
+        object.__setattr__(empty_catalog, 'names', ())
+
+        with self.assertRaises(ValueError):
+            encode_pose(pose, self.image, empty_catalog)
 
     def test_detect_preserves_legacy_out_of_image_bbox_encoding(self) -> None:
         labels = LabelCatalog(names=('x',))

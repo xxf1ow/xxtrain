@@ -319,9 +319,14 @@ class EncodePose(ItemProcessor[MatchOutput, EncodeOutput]):
         info = item.sample.image.require_info()
         lines = []
         for match in item.matches:
-            keypoints = {child.label: child for child in match.children if isinstance(child, Points)}
-            if len(keypoints) != len(match.children):
+            if not all(isinstance(child, Points) for child in match.children):
                 raise ValueError(f'骨骼标注必须是点类型: {item.sample.image.path}')
+            keypoints = {child.label: child for child in match.children}
+            if len(keypoints) != len(match.children) or set(keypoints) != set(context.config.labels.names):
+                raise ValueError('关键点标签与目录不匹配')
+            for annotation in keypoints.values():
+                if len(annotation.points) != 1:
+                    raise ValueError(f'骨骼标注必须是单点 Points: {annotation}')
             pose = Pose(
                 label=context.config.labels.names[0],
                 x1=match.parent.x1,
