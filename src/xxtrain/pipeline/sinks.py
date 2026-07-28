@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -225,6 +226,15 @@ class _AnnotationSink:
     def _commit_claim(self, *paths: Path) -> None:
         self._claimed_paths.update(paths)
 
+    @staticmethod
+    def _remove_new_file(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _prepare(self, item: Sample, context: Context) -> tuple[Path, Path | None, ImageInfo] | None:
         if not isinstance(item, Sample):
             raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
@@ -242,8 +252,7 @@ class _AnnotationSink:
         try:
             materialized = _materialize_crop(item, output_base)
         except Exception:
-            if crop_path is not None:
-                crop_path.unlink(missing_ok=True)
+            self._remove_new_file(crop_path)
             raise
         if materialized is None:
             return annotation_path, None, item.image.require_info()
@@ -251,25 +260,29 @@ class _AnnotationSink:
         return annotation_path, image_path, image_info
 
     def _write_annotation(
-        self, item: Sample, context: Context, prepared: tuple[Path, Path | None, ImageInfo], write: callable
+        self,
+        item: Sample,
+        context: Context,
+        prepared: tuple[Path, Path | None, ImageInfo],
+        write: Callable[[Path], None],
     ) -> None:
         annotation_path, image_path, _ = prepared
         crop_path = _append_suffix(_output_base(item, context), '.jpg') if item.image.crop_box is not None else None
-        annotation_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=f'.{annotation_path.name}.', suffix='.tmp', dir=annotation_path.parent
-        )
-        os.close(descriptor)
-        temporary_path = Path(temp_name)
+        temporary_path: Path | None = None
         try:
+            annotation_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temp_name = tempfile.mkstemp(
+                prefix=f'.{annotation_path.name}.', suffix='.tmp', dir=annotation_path.parent
+            )
+            temporary_path = Path(temp_name)
+            os.close(descriptor)
             write(temporary_path)
             if annotation_path.exists():
                 raise ValueError('Annotation output path collision')
             os.replace(temporary_path, annotation_path)
         except Exception:
-            temporary_path.unlink(missing_ok=True)
-            if crop_path is not None:
-                crop_path.unlink(missing_ok=True)
+            self._remove_new_file(temporary_path)
+            self._remove_new_file(crop_path)
             raise
 
         self._commit_claim(annotation_path, *((crop_path,) if crop_path is not None else ()))
