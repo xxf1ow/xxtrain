@@ -275,21 +275,18 @@ class YoloFormatTest(unittest.TestCase):
             with self.subTest(annotation=annotation, image_info=image_info), self.assertRaises(ValueError):
                 encode_detect(annotation, image_info, labels)
 
-    def test_pose_allows_outside_corners_when_normalized_bbox_values_are_valid(self) -> None:
+    def test_pose_encoder_rejects_bbox_corners_outside_image(self) -> None:
         keypoint_labels = LabelCatalog(names=('point',))
-        cases = (
-            (
-                Pose(label='point', x1=-10, y1=10, x2=10, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
-                '0 0.000000 0.300000 0.100000 0.400000 0.500000 0.500000 2',
-            ),
-            (
-                Pose(label='point', x1=190, y1=10, x2=210, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
-                '0 1.000000 0.300000 0.100000 0.400000 0.500000 0.500000 2',
-            ),
+        poses = (
+            Pose(label='point', x1=-10, y1=10, x2=10, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='point', x1=10, y1=-10, x2=50, y2=10, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='point', x1=190, y1=10, x2=210, y2=50, keypoints=(Keypoint(label='point', x=100, y=50),)),
+            Pose(label='point', x1=10, y1=90, x2=50, y2=110, keypoints=(Keypoint(label='point', x=100, y=50),)),
         )
-        for pose, expected in cases:
+        for pose in poses:
             with self.subTest(pose=pose):
-                self.assertEqual(expected, encode_pose(pose, self.image, keypoint_labels))
+                with self.assertRaises(ValueError):
+                    encode_pose(pose, self.image, keypoint_labels)
 
     def test_pose_rejects_normalized_bbox_values_outside_unit_range(self) -> None:
         keypoint_labels = LabelCatalog(names=('point',))

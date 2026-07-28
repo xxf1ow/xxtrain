@@ -38,6 +38,11 @@ def _validate_normalized(values: Sequence[float], message: str) -> None:
         raise ValueError(message)
 
 
+def _validate_bbox_inside_image(x1: float, y1: float, x2: float, y2: float, image_info: ImageInfo) -> None:
+    if not 0 <= x1 < x2 <= image_info.width or not 0 <= y1 < y2 <= image_info.height:
+        raise ValueError('YOLO pose bbox must be inside image bounds')
+
+
 def _bbox_values(annotation: Bbox | Pose, image_info: ImageInfo) -> tuple[float, float, float, float]:
     x_center = (annotation.x1 + annotation.x2) / 2.0 / image_info.width
     y_center = (annotation.y1 + annotation.y2) / 2.0 / image_info.height
@@ -112,8 +117,7 @@ def decode_pose(line: str, image_info: ImageInfo, keypoint_labels: LabelCatalog)
     height *= image_info.height
     x1, y1 = x_center - width / 2.0, y_center - height / 2.0
     x2, y2 = x_center + width / 2.0, y_center + height / 2.0
-    if not 0 <= x1 < x2 <= image_info.width or not 0 <= y1 < y2 <= image_info.height:
-        raise ValueError('YOLO pose bbox must be inside image bounds')
+    _validate_bbox_inside_image(x1, y1, x2, y2, image_info)
     keypoint_values = _finite_values(tokens[5:])
     keypoints = []
     for index, label in enumerate(keypoint_labels):
@@ -135,6 +139,7 @@ def encode_pose(pose: Pose, image_info: ImageInfo, keypoint_labels: LabelCatalog
     keypoints = {keypoint.label: keypoint for keypoint in pose.keypoints}
     if set(keypoints) != set(keypoint_labels.names):
         raise ValueError('关键点标签与目录不匹配')
+    _validate_bbox_inside_image(pose.x1, pose.y1, pose.x2, pose.y2, image_info)
     x_center, y_center, width, height = _bbox_values(pose, image_info)
     _validate_normalized((x_center, y_center, width, height), '骨骼标注边界框必须位于 YOLO 归一化范围内')
     values = ['0', f'{x_center:.6f}', f'{y_center:.6f}', f'{width:.6f}', f'{height:.6f}']
