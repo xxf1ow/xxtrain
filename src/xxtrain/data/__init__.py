@@ -11,6 +11,7 @@ from .annotation import (
     Pose,
     Shape,
 )
+from .geometry import validate_obb
 from .labels import LabelCatalog
 from .pose import assemble_poses
 
@@ -28,4 +29,5 @@ __all__ = [
     'Pose',
     'Shape',
     'assemble_poses',
+    'validate_obb',
 ]
