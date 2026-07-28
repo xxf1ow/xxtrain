@@ -191,6 +191,86 @@ class CocoSinkTest(unittest.TestCase):
             self.assertEqual({'group': 1}, reserved_context.report.missing_annotation_counts)
             self.assertEqual(1, len(read_coco(root / 'reserved' / 'annotations.json').images))
 
+    def test_failed_empty_crop_write_leaves_state_and_report_clean_for_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            context = self.make_context(root, reserve_no_label=True)
+            sample = self.make_sample(
+                source, sample_id='group/crop', crop_box=(1, 1, 5, 5), info=ImageInfo(width=4, height=4)
+            )
+            sink = self.make_sink()()
+
+            with patch('xxtrain.pipeline.sinks._materialize_crop', side_effect=OSError('crop failed')):
+                with self.assertRaisesRegex(OSError, 'crop failed'):
+                    sink.write(sample, context)
+
+            self.assertEqual([], sink._images)
+            self.assertEqual(set(), sink._claimed_paths)
+            self.assertEqual({}, context.report.missing_annotation_counts)
+            self.assertEqual((0, 0), (context.report.train_image_count, context.report.val_image_count))
+
+            sink.write(sample, context)
+
+            self.assertEqual(1, len(sink._images))
+            self.assertEqual({'group': 1}, context.report.missing_annotation_counts)
+
+    def test_duplicate_whole_image_reference_is_rejected_without_polluting_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.make_image(root)
+            context = self.make_context(root)
+            sample = self.make_sample(
+                source, info=ImageInfo(width=10, height=8), annotations=(Bbox(label='label', x1=1, y1=1, x2=4, y2=4),)
+            )
+            sink = self.make_sink()()
+
+            sink.write(sample, context)
+            with self.assertRaisesRegex(ValueError, 'COCO image file_name collision'):
+                sink.write(sample, context)
+
+            self.assertEqual(1, len(sink._images))
+            self.assertEqual(set(), sink._claimed_paths)
+            self.assertEqual(
+                (1, 0, 1, 0),
+                (
+                    context.report.train_image_count,
+                    context.report.val_image_count,
+                    context.report.train_annotation_count,
+                    context.report.val_annotation_count,
+                ),
+            )
+
+    def test_successful_finalize_resets_state_for_the_next_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_root = root / 'first'
+            second_root = root / 'second'
+            first_context = self.make_context(first_root)
+            second_context = self.make_context(second_root)
+            first_source = self.make_image(first_root)
+            second_source = self.make_image(second_root)
+            first = self.make_sample(
+                first_source,
+                info=ImageInfo(width=10, height=8),
+                annotations=(Bbox(label='label', x1=1, y1=1, x2=4, y2=4),),
+            )
+            second = self.make_sample(
+                second_source,
+                info=ImageInfo(width=10, height=8),
+                annotations=(Bbox(label='label', x1=2, y1=2, x2=6, y2=5),),
+            )
+            sink = self.make_sink()()
+
+            sink.write(first, first_context)
+            sink.finalize(first_context)
+            sink.write(second, second_context)
+            sink.finalize(second_context)
+
+            document = read_coco(second_root / 'coco' / 'annotations.json')
+            self.assertEqual(1, len(document.images))
+            self.assertEqual((2.0, 2.0, 6.0, 5.0), document.images[0].annotations[0].bbox)
+
     def test_safe_ids_preserve_dots_and_reject_unsafe_paths_and_crop_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

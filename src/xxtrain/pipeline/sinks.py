@@ -129,11 +129,24 @@ class CocoSink:
     def __init__(self) -> None:
         self._images: list[CocoImage] = []
         self._claimed_paths: set[Path] = set()
+        self._file_names: set[str] = set()
 
     def _claim(self, path: Path) -> None:
-        if path in self._claimed_paths or path.exists():
+        if path in self._claimed_paths:
             raise ValueError('COCO crop output path collision')
         self._claimed_paths.add(path)
+
+    def _claim_file_name(self, file_name: str) -> None:
+        if file_name in self._file_names:
+            raise ValueError('COCO image file_name collision')
+        self._file_names.add(file_name)
+
+    @staticmethod
+    def _remove_crop(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def write(self, item: Sample, context: Context) -> None:
         if not isinstance(item, Sample):
@@ -141,8 +154,8 @@ class CocoSink:
 
         output_base = _output_base(item, context)
         if not item.annotations:
-            context.report.record_missing_annotations(item.source_group)
             if not context.config.reserve_no_label:
+                context.report.record_missing_annotations(item.source_group)
                 return
 
         annotations = validate_annotations_for_task(
@@ -152,14 +165,28 @@ class CocoSink:
         if item.image.crop_box is None:
             image_path = item.image.path
             image_info = item.image.require_info()
+            file_name = _image_reference(image_path, output_root)
+            image = CocoImage(file_name=file_name, info=image_info, annotations=annotations)
         else:
             crop_path = _append_suffix(output_base, '.jpg')
-            self._claim(crop_path)
-            image_path, image_info = _materialize_crop(item, output_base)
+            if crop_path in self._claimed_paths or crop_path.exists():
+                raise ValueError('COCO crop output path collision')
+            file_name = _image_reference(crop_path, output_root)
+            if file_name in self._file_names:
+                raise ValueError('COCO image file_name collision')
+            try:
+                image_path, image_info = _materialize_crop(item, output_base)
+                image = CocoImage(file_name=file_name, info=image_info, annotations=annotations)
+            except Exception:
+                self._remove_crop(crop_path)
+                raise
 
-        self._images.append(
-            CocoImage(file_name=_image_reference(image_path, output_root), info=image_info, annotations=annotations)
-        )
+        self._claim_file_name(file_name)
+        if item.image.crop_box is not None:
+            self._claim(image_path)
+        self._images.append(image)
+        if not item.annotations:
+            context.report.record_missing_annotations(item.source_group)
         in_train, in_val = split_membership(item.source_index, context.config.split)
         output_item = str(image_path)
         context.report.record_output(
@@ -178,6 +205,9 @@ class CocoSink:
             CocoDoc(labels=labels, images=tuple(self._images)),
             context.config.root_path / context.config.task_name / 'annotations.json',
         )
+        self._images.clear()
+        self._claimed_paths.clear()
+        self._file_names.clear()
 
 
 class _AnnotationSink:
