@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Keypoint, Points, Polygon, Polyline, Pose
 from xxtrain.data.formats import read_labelimg, read_labelme, write_labelme
@@ -235,6 +236,68 @@ class AnnotationFormatsTest(unittest.TestCase):
                             path,
                             ImageInfo(width=100, height=80),
                         )
+                    self.assertFalse(path.parent.exists())
+
+    def test_labelme_writer_rejects_generic_groups_that_read_as_pose_before_io(self) -> None:
+        annotations = (
+            Bbox(label='box', group=0, x1=0, y1=0, x2=10, y2=10),
+            Points(label='nose', group=0, points=((1, 1),)),
+            Points(label='wrist', group=0, points=((2, 2),)),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'missing' / 'annotations.json'
+
+            with self.assertRaises(ValueError):
+                write_labelme(annotations, path, ImageInfo(width=100, height=80))
+
+            self.assertFalse(path.parent.exists())
+
+    def test_labelme_writer_allows_generic_groups_that_remain_generic(self) -> None:
+        annotations = (
+            Bbox(label='box', group=0, x1=0, y1=0, x2=10, y2=10),
+            Points(label='nose', group=0, points=((1, 1),)),
+            Polygon(label='mask', group=0, points=((0, 0), (2, 0), (1, 2))),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'annotations.json'
+
+            write_labelme(annotations, path, ImageInfo(width=100, height=80))
+
+            output = read_labelme(path, ImageInfo(width=100, height=80))
+
+        self.assertEqual([Bbox, Points, Polygon], [type(annotation) for annotation in output])
+
+    def test_labelme_writer_rejects_nonexclusive_pose_groups_before_io(self) -> None:
+        shared_uuid = uuid4()
+        first_pose = Pose(
+            label='first', group=shared_uuid, x1=0, y1=0, x2=10, y2=10, keypoints=(Keypoint(label='nose', x=1, y=1),)
+        )
+        second_pose = Pose(
+            label='second',
+            group=str(shared_uuid),
+            x1=20,
+            y1=20,
+            x2=30,
+            y2=30,
+            keypoints=(Keypoint(label='nose', x=21, y=21),),
+        )
+        ungrouped_pose = Pose(
+            label='generated', x1=40, y1=40, x2=50, y2=50, keypoints=(Keypoint(label='nose', x=41, y=41),)
+        )
+        invalid_sequences = (
+            (first_pose, second_pose),
+            (
+                ungrouped_pose,
+                Polygon(label='alias', group=str(ungrouped_pose.id), points=((60, 60), (70, 60), (65, 70))),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, annotations in enumerate(invalid_sequences):
+                with self.subTest(annotations=annotations):
+                    path = root / str(index) / 'annotations.json'
+                    with self.assertRaises(ValueError):
+                        write_labelme(annotations, path, ImageInfo(width=100, height=80))
                     self.assertFalse(path.parent.exists())
 
 

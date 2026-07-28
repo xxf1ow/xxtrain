@@ -66,6 +66,13 @@ def _group_id(group: int | str | UUID | None) -> int | str | None:
     return str(group) if isinstance(group, UUID) else group
 
 
+def _emitted_group(annotation: Annotation) -> int | str | None:
+    group = annotation.group
+    if isinstance(annotation, Pose) and group is None:
+        group = str(annotation.id)
+    return _group_id(group)
+
+
 def _labelme_shape(*, label: str, points: object, group: int | str | UUID | None, shape_type: str) -> dict[str, object]:
     return {'label': label, 'points': points, 'group_id': _group_id(group), 'shape_type': shape_type, 'flags': {}}
 
@@ -94,7 +101,7 @@ def _shapes(annotation: Annotation) -> tuple[dict[str, object], ...]:
     if isinstance(annotation, Pose):
         if any(keypoint.visibility != 2 for keypoint in annotation.keypoints):
             raise ValueError('LabelMe cannot preserve Pose keypoint visibility other than 2')
-        group = annotation.group if annotation.group is not None else str(annotation.id)
+        group = _emitted_group(annotation)
         shapes = [
             _labelme_shape(
                 label=annotation.label,
@@ -111,8 +118,28 @@ def _shapes(annotation: Annotation) -> tuple[dict[str, object], ...]:
     raise TypeError(f'Unsupported LabelMe annotation type: {type(annotation).__name__}')
 
 
+def _validate_groups(annotations: Sequence[Annotation]) -> None:
+    groups: dict[int | str, list[Annotation]] = {}
+    for annotation in annotations:
+        group = _emitted_group(annotation)
+        if group is not None:
+            groups.setdefault(group, []).append(annotation)
+
+    for members in groups.values():
+        if any(isinstance(annotation, Pose) for annotation in members):
+            if len(members) != 1 or not isinstance(members[0], Pose):
+                raise ValueError('LabelMe Pose group must be exclusive to one Pose annotation')
+            continue
+        boxes = sum(isinstance(annotation, Bbox) for annotation in members)
+        points = sum(isinstance(annotation, Points) for annotation in members)
+        if boxes == 1 and points > 0 and boxes + points == len(members):
+            raise ValueError('LabelMe group would be read back as a Pose')
+
+
 def write_labelme(annotations: Sequence[Annotation], path: str | Path, image_info: ImageInfo) -> None:
-    shapes = [shape for annotation in annotations for shape in _shapes(annotation)]
+    mapped = tuple((annotation, _shapes(annotation)) for annotation in annotations)
+    _validate_groups(tuple(annotation for annotation, _ in mapped))
+    shapes = [shape for _, annotation_shapes in mapped for shape in annotation_shapes]
     annotation_path = Path(path)
     payload = {
         'version': '5.0.0',
