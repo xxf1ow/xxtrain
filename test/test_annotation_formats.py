@@ -4,8 +4,19 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+import xxtrain.data.formats as formats
 from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Keypoint, Points, Polygon, Polyline, Pose
-from xxtrain.data.formats import read_labelimg, read_labelme, write_labelme
+from xxtrain.data.formats import (
+    decode_detect,
+    decode_pose,
+    decode_segment,
+    read_coco,
+    read_labelimg,
+    read_labelme,
+    write_coco,
+    write_labelimg,
+    write_labelme,
+)
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 
@@ -16,6 +27,21 @@ class UnsupportedAnnotation(Annotation):
 
 
 class AnnotationFormatsTest(unittest.TestCase):
+    def test_formats_package_exports_dataset_io_functions(self) -> None:
+        exports = {
+            'decode_detect': decode_detect,
+            'decode_segment': decode_segment,
+            'decode_pose': decode_pose,
+            'write_labelimg': write_labelimg,
+            'write_labelme': write_labelme,
+            'read_coco': read_coco,
+            'write_coco': write_coco,
+        }
+
+        for name, function in exports.items():
+            with self.subTest(name=name):
+                self.assertIs(function, getattr(formats, name))
+
     def _write_labelme(self, root: Path, shapes: list[dict[str, object]]) -> Path:
         path = root / 'annotations.json'
         path.write_text(

@@ -4,6 +4,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
+import xxtrain.data as data
 from xxtrain.data import (
     Annotation,
     Bbox,
@@ -48,6 +49,10 @@ def _document(*, categories: object = None, images: object = None, annotations: 
 
 
 class CocoStructuresTest(unittest.TestCase):
+    def test_data_package_exports_coco_structures(self) -> None:
+        self.assertIs(CocoImage, data.CocoImage)
+        self.assertIs(CocoDoc, data.CocoDoc)
+
     def test_structures_are_immutable_and_keep_exact_tuples(self) -> None:
         annotation = Bbox(label='object', x1=1, y1=2, x2=4, y2=6)
         image = CocoImage(file_name='nested/image.jpg', info=ImageInfo(width=100, height=80), annotations=(annotation,))

@@ -1,11 +1,30 @@
 import unittest
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from uuid import uuid4
 
-from xxtrain.data import Annotation, AnnotationType, Bbox, Keypoint, Points, Polygon, Pose, assemble_poses
+import xxtrain.data as data
+from xxtrain.data import Annotation, AnnotationType, Bbox, Keypoint, Points, Polygon, Pose, assemble_poses, validate_obb
 
 
 class PoseTest(unittest.TestCase):
+    def test_data_package_exports_pose_primitives(self) -> None:
+        exports = {'Keypoint': Keypoint, 'Pose': Pose, 'assemble_poses': assemble_poses, 'validate_obb': validate_obb}
+
+        for name, value in exports.items():
+            with self.subTest(name=name):
+                self.assertIs(value, getattr(data, name))
+
+    def test_data_package_does_not_reexport_removed_annotations(self) -> None:
+        self.assertFalse(hasattr(data, 'Line'))
+        self.assertFalse(hasattr(data, 'RotatedBbox'))
+
+    def test_source_contains_no_pose_record(self) -> None:
+        source_root = Path(__file__).resolve().parents[1] / 'src'
+        source = '\n'.join(path.read_text(encoding='utf-8') for path in source_root.rglob('*.py'))
+
+        self.assertNotIn('PoseRecord', source)
+
     def test_assemble_grouped_pose_replaces_bbox_and_points_atomically(self) -> None:
         annotations = (
             Bbox(label='person', group=7, x1=0, y1=0, x2=100, y2=100),
