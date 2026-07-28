@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import PIL.Image
 
-from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Points, Polygon, Polyline, Shape
+from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Keypoint, Points, Polygon, Polyline, Pose, Shape
 from xxtrain.data.formats import encode_detect, encode_pose, encode_segment, read_labelimg, read_labelme
 from xxtrain.data.geometry import match_parent_children
 from xxtrain.pipeline.core import (
@@ -322,7 +322,18 @@ class EncodePose(ItemProcessor[MatchOutput, EncodeOutput]):
             keypoints = {child.label: child for child in match.children if isinstance(child, Points)}
             if len(keypoints) != len(match.children):
                 raise ValueError(f'骨骼标注必须是点类型: {item.sample.image.path}')
-            lines.append(encode_pose(match.parent, keypoints, info, context.config.labels))
+            pose = Pose(
+                label=context.config.labels.names[0],
+                x1=match.parent.x1,
+                y1=match.parent.y1,
+                x2=match.parent.x2,
+                y2=match.parent.y2,
+                keypoints=tuple(
+                    Keypoint(label=label, x=keypoints[label].points[0][0], y=keypoints[label].points[0][1])
+                    for label in context.config.labels
+                ),
+            )
+            lines.append(encode_pose(pose, info, context.config.labels))
         return EncodeOutput(sample=item.sample, lines=tuple(lines))
 
 

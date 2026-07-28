@@ -84,14 +84,16 @@ class PipelineEncoderTest(unittest.TestCase):
         output = EncodeKnobSegment().transform(CropOutput(sample=sample, parent=parent), context)
         self.assertEqual(('0 0.000000 0.100000 1.000000 0.100000 0.500000 1.000000',), output.lines)
 
-    def test_pose_encoder_uses_catalog_order(self) -> None:
-        context = self.make_context(('kp',), TaskType.POSE)
+    def test_pose_match_adapter_preserves_legacy_bytes_in_catalog_order(self) -> None:
+        context = self.make_context(('start', 'end'), TaskType.POSE)
         sample = self.make_sample((), size=(100, 100))
         parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
-        point = Points(label='kp', points=((20, 30),))
-        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=(point,)),))
+        children = (Points(label='end', points=((80, 70),)), Points(label='start', points=((20, 30),)))
+        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=children),))
         output = EncodePose().transform(item, context)
-        self.assertEqual(('0 0.500000 0.500000 0.800000 0.800000 0.200000 0.300000 2',), output.lines)
+        self.assertEqual(
+            ('0 0.500000 0.500000 0.800000 0.800000 0.200000 0.300000 2 0.800000 0.700000 2',), output.lines
+        )
 
 
 if __name__ == '__main__':
