@@ -1,5 +1,6 @@
 import os
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..annotation import Annotation, Bbox, ImageInfo
@@ -47,3 +48,30 @@ def read_labelimg(path: str | Path, image_info: ImageInfo) -> list[Annotation]:
         return annotations
     except Exception as error:
         raise Exception(f'Failed to parse annotation: {annotation_path}, {error}') from error
+
+
+def write_labelimg(annotations: Sequence[Annotation], path: str | Path, image_info: ImageInfo) -> None:
+    boxes: list[Bbox] = []
+    for annotation in annotations:
+        if not isinstance(annotation, Bbox):
+            raise TypeError('LabelImg only supports Bbox annotations')
+        boxes.append(annotation)
+    if not image_info.width.is_integer() or not image_info.height.is_integer():
+        raise ValueError('LabelImg image dimensions must be integral pixels')
+
+    root = ET.Element('annotation')
+    size = ET.SubElement(root, 'size')
+    ET.SubElement(size, 'width').text = str(int(image_info.width))
+    ET.SubElement(size, 'height').text = str(int(image_info.height))
+    for box in boxes:
+        obj = ET.SubElement(root, 'object')
+        ET.SubElement(obj, 'name').text = box.label
+        bndbox = ET.SubElement(obj, 'bndbox')
+        ET.SubElement(bndbox, 'xmin').text = str(box.x1)
+        ET.SubElement(bndbox, 'ymin').text = str(box.y1)
+        ET.SubElement(bndbox, 'xmax').text = str(box.x2)
+        ET.SubElement(bndbox, 'ymax').text = str(box.y2)
+
+    annotation_path = Path(path)
+    annotation_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(annotation_path, encoding='utf-8', xml_declaration=True)

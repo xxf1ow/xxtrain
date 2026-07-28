@@ -1,9 +1,10 @@
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from xxtrain.data import AnnotationType, Bbox, ImageInfo
-from xxtrain.data.formats import read_labelimg
+from xxtrain.data import AnnotationType, Bbox, ImageInfo, Keypoint, Polygon, Polyline, Pose
+from xxtrain.data.formats import read_labelimg, write_labelimg
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 
@@ -39,6 +40,79 @@ class LabelImgReaderTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
                 read_labelimg(path, ImageInfo(width=10, height=10))
+
+
+class LabelImgWriterTest(unittest.TestCase):
+    def test_round_trips_two_bboxes_with_decimal_coordinates(self) -> None:
+        annotations = [
+            Bbox(label='first', group='ignored', x1=1.25, y1=2.5, x2=30.75, y2=40.125),
+            Bbox(label='second', group=7, x1=50.5, y1=60.25, x2=70.75, y2=80.5),
+        ]
+        image_info = ImageInfo(width=1920.0, height=1080.0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'nested' / 'annotations.xml'
+            write_labelimg(annotations, path, image_info)
+
+            root = ET.parse(path).getroot()
+            self.assertEqual('1920', root.findtext('size/width'))
+            self.assertEqual('1080', root.findtext('size/height'))
+            self.assertEqual('1.25', root.findtext('object/bndbox/xmin'))
+            self.assertEqual('40.125', root.findtext('object/bndbox/ymax'))
+            restored = read_labelimg(path, image_info)
+
+        self.assertEqual(
+            [(annotation.label, annotation.bbox) for annotation in annotations],
+            [(annotation.label, annotation.bbox) for annotation in restored],
+        )
+
+    def test_writes_empty_annotations(self) -> None:
+        image_info = ImageInfo(width=10, height=20)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'empty.xml'
+            write_labelimg([], path, image_info)
+
+            self.assertEqual([], read_labelimg(path, image_info))
+
+    def test_rejects_unsupported_annotations_without_path_side_effects(self) -> None:
+        unsupported = [
+            ('polygon', Polygon(label='shape', points=((1, 1), (2, 1), (1, 2)))),
+            ('polyline', Polyline(label='line', points=((1, 1), (2, 2)))),
+            ('pose', Pose(label='person', x1=1, y1=1, x2=2, y2=2, keypoints=(Keypoint(label='head', x=1.5, y=1.5),))),
+        ]
+        image_info = ImageInfo(width=10, height=10)
+        bbox = Bbox(label='valid', x1=1, y1=1, x2=2, y2=2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name, annotation in unsupported:
+                with self.subTest(name=name, path='existing'):
+                    path = root / f'{name}-existing.xml'
+                    path.write_text('sentinel', encoding='utf-8')
+
+                    with self.assertRaises(TypeError):
+                        write_labelimg([bbox, annotation], path, image_info)
+
+                    self.assertEqual('sentinel', path.read_text(encoding='utf-8'))
+                with self.subTest(name=name, path='missing'):
+                    path = root / name / 'missing.xml'
+
+                    with self.assertRaises(TypeError):
+                        write_labelimg([annotation], path, image_info)
+
+                    self.assertFalse(path.exists())
+                    self.assertFalse(path.parent.exists())
+
+    def test_rejects_non_integral_image_dimensions_without_creating_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'missing' / 'annotations.xml'
+
+            with self.assertRaises(ValueError):
+                write_labelimg([], path, ImageInfo(width=10.5, height=20))
+
+            self.assertFalse(path.exists())
+            self.assertFalse(path.parent.exists())
 
 
 if __name__ == '__main__':
