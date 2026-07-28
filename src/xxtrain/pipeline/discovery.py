@@ -2,8 +2,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
-from xxtrain.data import LabelCatalog
+from xxtrain.data import LabelCatalog, Pose
+from xxtrain.data.formats.coco import read_coco
+from xxtrain.task import TaskType
 
+from .annotation_io import validate_annotations_for_task
 from .core import Context, ImageRef, Sample
 
 IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
@@ -23,12 +26,18 @@ def _images(path: Path) -> list[Path]:
 class SampleSource(Protocol):
     output_type: type[Sample]
 
+    def catalog_for(self, task_type: TaskType) -> LabelCatalog | None:
+        raise NotImplementedError
+
     def read(self, context: Context) -> Iterable[Sample]:
         raise NotImplementedError
 
 
 class DirectorySource:
     output_type = Sample
+
+    def catalog_for(self, task_type: TaskType) -> LabelCatalog | None:
+        return None
 
     def read(self, context: Context) -> Iterable[Sample]:
         source_root = context.config.root_path / 'src'
@@ -44,6 +53,65 @@ class DirectorySource:
                     source_index=index,
                     image=ImageRef(path=image_path.absolute()),
                 )
+
+
+class CocoSource:
+    output_type = Sample
+
+    def __init__(
+        self, json_path: str | Path, *, image_root: str | Path | None = None, catalog: LabelCatalog | None = None
+    ):
+        self.json_path = Path(json_path)
+        self.image_root = Path(image_root) if image_root is not None else self.json_path.parent
+        self.doc = read_coco(self.json_path)
+        self.explicit_catalog = catalog
+
+    def catalog_for(self, task_type: TaskType) -> LabelCatalog | None:
+        if task_type is not TaskType.POSE:
+            derived = self.doc.labels
+        else:
+            poses = tuple(
+                annotation
+                for image in self.doc.images
+                for annotation in image.annotations
+                if isinstance(annotation, Pose)
+            )
+            if not poses:
+                if self.explicit_catalog is None:
+                    raise ValueError('Pose catalog cannot be derived without Pose annotations')
+                return self.explicit_catalog
+            pose_labels = {pose.label for pose in poses}
+            if len(pose_labels) != 1:
+                raise ValueError('Pose catalog requires exactly one object category')
+            schemas = {tuple(keypoint.label for keypoint in pose.keypoints) for pose in poses}
+            if len(schemas) != 1:
+                raise ValueError('Pose annotations do not share one keypoint schema')
+            derived = LabelCatalog((poses[0].label, *schemas.pop()))
+
+        if self.explicit_catalog is not None and self.explicit_catalog != derived:
+            raise ValueError('Explicit COCO catalog does not match the derived catalog')
+        return self.explicit_catalog or derived
+
+    def read(self, context: Context) -> Iterable[Sample]:
+        expected = self.catalog_for(context.config.task_type)
+        if expected is not None and expected != context.config.labels:
+            raise ValueError('COCO source catalog does not match conversion labels')
+
+        for index, image in enumerate(self.doc.images):
+            file_path = Path(image.file_name)
+            if not file_path.is_absolute():
+                file_path = self.image_root / file_path
+            file_path = file_path.absolute()
+            annotations = validate_annotations_for_task(
+                image.annotations, context.config.task_type, context.config.labels.names
+            )
+            yield Sample(
+                id=f'coco/{index:06d}',
+                source_group='coco',
+                source_index=index,
+                image=ImageRef(path=file_path, info=image.info),
+                annotations=annotations,
+            )
 
 
 def validate_classification_source(root_path: Path, labels: LabelCatalog, split: int) -> LabelCatalog:

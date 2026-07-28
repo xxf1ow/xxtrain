@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from xxtrain.data import LabelCatalog
@@ -6,7 +6,7 @@ from xxtrain.task import TaskType
 
 from .annotation_io import ReadAnnotations, ValidateObb
 from .core import Pipeline
-from .discovery import DirectorySource
+from .discovery import DirectorySource, SampleSource
 from .processors import (
     EncodeDetection,
     EncodePose,
@@ -26,9 +26,10 @@ class DatasetRecipe:
     labels: LabelCatalog | None
     pipeline: Pipeline
     sink: DatasetSink
+    source: SampleSource = field(default_factory=DirectorySource)
 
     def __post_init__(self) -> None:
-        self.pipeline.validate_boundaries(DirectorySource.output_type, self.sink.input_type)
+        self.pipeline.validate_boundaries(self.source.output_type, self.sink.input_type)
 
 
 class _LegacyLabelCatalog(LabelCatalog):

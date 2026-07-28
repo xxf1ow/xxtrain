@@ -9,11 +9,13 @@ from .core import (
     Pipeline,
     Sample,
 )
+from .discovery import CocoSource
 from .recipes import DatasetRecipe, standard_recipe
 from .workflow import convert_dataset
 
 __all__ = [
     'Context',
+    'CocoSource',
     'ConversionConfig',
     'ConversionReport',
     'DatasetRecipe',
