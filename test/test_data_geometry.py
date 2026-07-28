@@ -69,6 +69,27 @@ class GeometryTest(unittest.TestCase):
         self.assertIsNone(validate_obb(unit_scale))
         self.assertIsNone(validate_obb(large_scale))
 
+    def test_validate_obb_rejects_anisotropic_non_right_parallelogram(self) -> None:
+        parallelogram = Polygon(label='anisotropic', points=[[0, 0], [1e6, 0], [1e6 + 0.5, 2], [0.5, 2]])
+
+        with self.assertRaisesRegex(ValueError, r'OBB.*non-perpendicular'):
+            validate_obb(parallelogram)
+
+    def test_validate_obb_accepts_exact_high_aspect_ratio_rectangle(self) -> None:
+        rectangle = Polygon(label='high-aspect', points=[[0, 0], [1e200, 0], [1e200, 1e-200], [0, 1e-200]])
+
+        self.assertIsNone(validate_obb(rectangle))
+
+    def test_validate_obb_accepts_tiny_scale_rectangle(self) -> None:
+        rectangle = Polygon(label='tiny', points=[[0, 0], [2e-200, 0], [2e-200, 1e-200], [0, 1e-200]])
+
+        self.assertIsNone(validate_obb(rectangle))
+
+    def test_validate_obb_accepts_large_scale_rectangle(self) -> None:
+        rectangle = Polygon(label='large', points=[[0, 0], [1e200, 0], [1e200, 1e200], [0, 1e200]])
+
+        self.assertIsNone(validate_obb(rectangle))
+
     def test_point_and_shape_containment_preserve_inclusive_edges(self) -> None:
         parent = Bbox(label='parent', x1=0, y1=0, x2=10, y2=10)
 

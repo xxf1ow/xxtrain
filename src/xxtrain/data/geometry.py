@@ -26,10 +26,11 @@ def validate_obb(polygon: Polygon, *, tolerance: float = 1e-6) -> None:
         for point, next_point in zip(points, points[1:] + points[:1])
     )
     lengths = tuple(math.hypot(*edge) for edge in edges)
+    if any(not math.isfinite(length) for length in lengths):
+        raise ValueError('OBB has a non-finite edge')
     if any(length == 0 for length in lengths):
         raise ValueError('OBB has a zero-length edge')
-    scale = max(lengths)
-    area_tolerance = tolerance * scale * scale
+    directions = tuple((edge[0] / length, edge[1] / length) for edge, length in zip(edges, lengths))
 
     def cross(first: PointTuple, second: PointTuple) -> float:
         return first[0] * second[1] - first[1] * second[0]
@@ -37,48 +38,64 @@ def validate_obb(polygon: Polygon, *, tolerance: float = 1e-6) -> None:
     def subtract(first: PointTuple, second: PointTuple) -> PointTuple:
         return first[0] - second[0], first[1] - second[1]
 
+    def orientation(start: PointTuple, end: PointTuple, point: PointTuple) -> float:
+        edge = subtract(end, start)
+        point_offset = subtract(point, start)
+        point_length = math.hypot(*point_offset)
+        if point_length == 0:
+            return 0
+        edge_length = math.hypot(*edge)
+        return cross(
+            (edge[0] / edge_length, edge[1] / edge_length),
+            (point_offset[0] / point_length, point_offset[1] / point_length),
+        )
+
     def segments_intersect(
         first_start: PointTuple, first_end: PointTuple, second_start: PointTuple, second_end: PointTuple
     ) -> bool:
-        first_edge = subtract(first_end, first_start)
-        second_edge = subtract(second_end, second_start)
-        first_start_turn = cross(first_edge, subtract(second_start, first_start))
-        first_end_turn = cross(first_edge, subtract(second_end, first_start))
-        second_start_turn = cross(second_edge, subtract(first_start, second_start))
-        second_end_turn = cross(second_edge, subtract(first_end, second_start))
+        first_start_turn = orientation(first_start, first_end, second_start)
+        first_end_turn = orientation(first_start, first_end, second_end)
+        second_start_turn = orientation(second_start, second_end, first_start)
+        second_end_turn = orientation(second_start, second_end, first_end)
 
         def on_segment(point: PointTuple, start: PointTuple, end: PointTuple) -> bool:
             return min(start[0], end[0]) <= point[0] <= max(start[0], end[0]) and min(start[1], end[1]) <= point[
                 1
             ] <= max(start[1], end[1])
 
-        if abs(first_start_turn) <= area_tolerance and on_segment(second_start, first_start, first_end):
+        if abs(first_start_turn) <= tolerance and on_segment(second_start, first_start, first_end):
             return True
-        if abs(first_end_turn) <= area_tolerance and on_segment(second_end, first_start, first_end):
+        if abs(first_end_turn) <= tolerance and on_segment(second_end, first_start, first_end):
             return True
-        if abs(second_start_turn) <= area_tolerance and on_segment(first_start, second_start, second_end):
+        if abs(second_start_turn) <= tolerance and on_segment(first_start, second_start, second_end):
             return True
-        if abs(second_end_turn) <= area_tolerance and on_segment(first_end, second_start, second_end):
+        if abs(second_end_turn) <= tolerance and on_segment(first_end, second_start, second_end):
             return True
-        return (first_start_turn > 0) != (first_end_turn > 0) and (second_start_turn > 0) != (second_end_turn > 0)
+        return (
+            (first_start_turn > tolerance and first_end_turn < -tolerance)
+            or (first_start_turn < -tolerance and first_end_turn > tolerance)
+        ) and (
+            (second_start_turn > tolerance and second_end_turn < -tolerance)
+            or (second_start_turn < -tolerance and second_end_turn > tolerance)
+        )
 
     if segments_intersect(points[0], points[1], points[2], points[3]) or segments_intersect(
         points[1], points[2], points[3], points[0]
     ):
         raise ValueError('OBB has a self-intersection')
 
-    turns = tuple(cross(edge, edges[(index + 1) % 4]) for index, edge in enumerate(edges))
-    if any(abs(turn) <= area_tolerance for turn in turns) or not (
+    turns = tuple(cross(direction, directions[(index + 1) % 4]) for index, direction in enumerate(directions))
+    if any(abs(turn) <= tolerance for turn in turns) or not (
         all(turn > 0 for turn in turns) or all(turn < 0 for turn in turns)
     ):
         raise ValueError('OBB must be convex')
 
     if any(
-        abs(edge[0] * edges[(index + 1) % 4][0] + edge[1] * edges[(index + 1) % 4][1]) > area_tolerance
-        for index, edge in enumerate(edges)
+        abs(direction[0] * directions[(index + 1) % 4][0] + direction[1] * directions[(index + 1) % 4][1]) > tolerance
+        for index, direction in enumerate(directions)
     ):
         raise ValueError('OBB has non-perpendicular adjacent edges')
-    if abs(cross(edges[0], edges[2])) > area_tolerance or abs(cross(edges[1], edges[3])) > area_tolerance:
+    if abs(cross(directions[0], directions[2])) > tolerance or abs(cross(directions[1], directions[3])) > tolerance:
         raise ValueError('OBB has non-parallel opposite edges')
 
 
