@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 import numpy as np
 
-from xxtrain.data import Annotation, AnnotationType, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline
+from xxtrain.data import Annotation, AnnotationType, Bbox, Circle, ImageInfo, Points, Polygon, Polyline
 
 
 class AnnotationTest(unittest.TestCase):
@@ -25,7 +25,7 @@ class AnnotationTest(unittest.TestCase):
             annotation.label = 'other'
 
     def test_wrap_and_translate_return_new_values_and_preserve_identity(self) -> None:
-        annotation = Line(label='needle', points=[[1, 2], [3, 4]], group=7)
+        annotation = Polyline(label='needle', points=[[1, 2], [3, 4]], group=7)
 
         relabeled = annotation.wrap(label='pointer')
         translated = annotation.translate(10, -1)
@@ -53,7 +53,6 @@ class AnnotationTest(unittest.TestCase):
     def test_concrete_shape_types_and_bounds(self) -> None:
         cases = [
             (Polygon(label='p', points=[[0, 0], [2, 0], [1, 2]]), AnnotationType.POLYGON, (0, 0, 2, 2)),
-            (Line(label='l', points=[[0, 1], [2, 3]]), AnnotationType.LINE, (0, 1, 2, 3)),
             (Polyline(label='ls', points=[[0, 1], [2, 3]]), AnnotationType.POLYLINE, (0, 1, 2, 3)),
             (Points(label='pt', points=[[4, 5]]), AnnotationType.POINTS, (4, 5, 4, 5)),
         ]
@@ -73,7 +72,6 @@ class AnnotationTest(unittest.TestCase):
             lambda: Bbox(label='', x1=0, y1=0, x2=1, y2=1),
             lambda: Bbox(label='x', x1=1, y1=0, x2=1, y2=2),
             lambda: Polygon(label='x', points=[[0, 0], [1, 1]]),
-            lambda: Line(label='x', points=[[0, 0]]),
             lambda: Polyline(label='x', points=[[0, 0]]),
             lambda: Points(label='x', points=[]),
             lambda: Circle(label='x', center=[1, 1], edge=[1, 1]),

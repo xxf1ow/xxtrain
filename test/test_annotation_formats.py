@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from xxtrain.data import Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline
+from xxtrain.data import Bbox, Circle, ImageInfo, Points, Polygon, Polyline
 from xxtrain.data.formats import read_labelimg, read_labelme
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
@@ -35,7 +35,7 @@ class AnnotationFormatsTest(unittest.TestCase):
         annotations = read_labelme(path, ImageInfo(width=1920, height=1080))
 
         self.assertEqual(1, len(annotations))
-        self.assertIsInstance(annotations[0], Line)
+        self.assertIsInstance(annotations[0], Polyline)
         self.assertEqual('1', annotations[0].label)
         self.assertEqual(
             ((1133.3333333333335, 516.0683760683761), (1047.008547008547, 334.87179487179486)), annotations[0].points
@@ -58,7 +58,7 @@ class AnnotationFormatsTest(unittest.TestCase):
 
         annotations = read_labelme(path, ImageInfo(width=100, height=80))
 
-        self.assertEqual([Bbox, Circle, Polygon, Line, Polyline], [type(annotation) for annotation in annotations])
+        self.assertEqual([Bbox, Circle, Polygon, Polyline, Polyline], [type(annotation) for annotation in annotations])
         self.assertEqual((2.0, 4.0, 20.0, 18.0), annotations[0].bbox)
         self.assertEqual((25.0, 25.0, 35.0, 35.0), annotations[1].bbox)
         self.assertIsNone(annotations[0].group)

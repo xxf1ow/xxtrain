@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from ..annotation import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline
+from ..annotation import Annotation, Bbox, Circle, ImageInfo, Points, Polygon, Polyline
 
 
 def _shape(label: str, shape_type: str, points: object, group: object) -> Annotation:
@@ -15,9 +15,7 @@ def _shape(label: str, shape_type: str, points: object, group: object) -> Annota
         return Bbox(x1=min(xs), y1=min(ys), x2=max(xs), y2=max(ys), **common)
     if shape_type in ('polygon', 'rotation'):
         return Polygon(points=points, **common)
-    if shape_type == 'line':
-        return Line(points=points, **common)
-    if shape_type == 'linestrip':
+    if shape_type in ('line', 'linestrip'):
         return Polyline(points=points, **common)
     if shape_type == 'point':
         return Points(points=points, **common)

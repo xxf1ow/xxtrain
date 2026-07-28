@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from xxtrain.data import Bbox, Circle, ImageInfo, LabelCatalog, Line, Points, Polygon, Polyline
+from xxtrain.data import Bbox, Circle, ImageInfo, LabelCatalog, Points, Polygon, Polyline
 from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, CropOutput, ImageRef, MatchInput, Sample
 from xxtrain.pipeline.processors import (
     CropDetectionBoxes,
@@ -136,7 +136,6 @@ class PipelineProcessorTest(unittest.TestCase):
         sample = self.make_sample(Path('image.jpg'))
         children = (
             Polygon(label='known', points=((0, 0), (2, 0), (1, 1))),
-            Line(label='known', points=((0, 0), (1, 1))),
             Polyline(label='known', points=((0, 0), (1, 1))),
             Points(label='known', points=((0, 0),)),
         )

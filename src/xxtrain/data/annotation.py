@@ -16,7 +16,6 @@ PointSetInput: TypeAlias = Sequence[PointLike] | np.ndarray
 class AnnotationType(Enum):
     BBOX = 'bbox'
     POLYGON = 'polygon'
-    LINE = 'line'
     POLYLINE = 'polyline'
     POINTS = 'points'
     CIRCLE = 'circle'
@@ -140,15 +139,6 @@ class Polygon(_PointShape):
     def _validate_geometry(self) -> None:
         if len(self.points) < 3:
             raise ValueError('Polygon requires at least three points')
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Line(_PointShape):
-    type: ClassVar[AnnotationType] = AnnotationType.LINE
-
-    def _validate_geometry(self) -> None:
-        if len(self.points) != 2:
-            raise ValueError('Line requires exactly two points')
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

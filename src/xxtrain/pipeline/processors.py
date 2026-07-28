@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import PIL.Image
 
-from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Line, Points, Polygon, Polyline, Shape
+from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Points, Polygon, Polyline, Shape
 from xxtrain.data.formats import encode_detect, encode_pose, encode_segment, read_labelimg, read_labelme
 from xxtrain.data.geometry import match_parent_children
 from xxtrain.pipeline.core import (
@@ -53,7 +53,7 @@ def _prepare_segment_shape(shape: Shape) -> Shape:
             for index in range(count)
         )
         return Polygon(points=points, **common)
-    if isinstance(shape, (Polygon, Line)):
+    if isinstance(shape, (Polygon, Polyline)):
         return shape
     raise Exception(f"[Error] Task segment usually doesn't use {shape.type}")
 
@@ -167,7 +167,7 @@ class PrepareMatchChildren(ItemProcessor[MatchInput, MatchInput]):
             children = tuple(_prepare_segment_shape(child) for child in item.children)
             return MatchInput(sample=item.sample, parents=item.parents, children=children)
         if self.task_type is TaskType.POSE:
-            accepted = (Polygon, Line, Polyline, Points)
+            accepted = (Polygon, Polyline, Points)
             for child in item.children:
                 if not isinstance(child, accepted):
                     raise Exception(f"[Error] Task pose usually doesn't use {child.type}")
@@ -333,8 +333,8 @@ class EncodePointSegment(ItemProcessor[CropOutput, EncodeOutput]):
         line_thickness = 6.0
         lines = []
         for annotation in item.sample.annotations:
-            if not isinstance(annotation, Line):
-                raise ValueError(f'标注类型错误: {item.sample.image.path} 中的 {annotation} 不是 line 类型')
+            if not (isinstance(annotation, Polyline) and len(annotation.points) == 2):
+                raise ValueError(f'标注类型错误: {item.sample.image.path} 中的 {annotation} 不是两点 Polyline 类型')
             p1 = np.asarray(annotation.points[0])
             p2 = np.asarray(annotation.points[1])
             vector = p2 - p1

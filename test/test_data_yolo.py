@@ -1,6 +1,6 @@
 import unittest
 
-from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Line, Points, Polygon
+from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Points, Polygon, Polyline
 from xxtrain.data.formats import encode_detect, encode_pose, encode_segment
 
 
@@ -24,7 +24,7 @@ class YoloEncoderTest(unittest.TestCase):
 
     def test_segment_rejects_shapes_with_fewer_than_three_points(self) -> None:
         with self.assertRaisesRegex(ValueError, '至少三点'):
-            encode_segment(Line(label='line', points=[[0, 0], [1, 1]]), self.image, LabelCatalog(names=('line',)))
+            encode_segment(Polyline(label='line', points=[[0, 0], [1, 1]]), self.image, LabelCatalog(names=('line',)))
 
     def test_encodes_pose_in_catalog_order_with_fixed_class_zero(self) -> None:
         bbox = Bbox(label='object', x1=20, y1=10, x2=100, y2=50)

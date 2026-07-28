@@ -1,6 +1,6 @@
 import unittest
 
-from xxtrain.data import Bbox, Circle, Line, Points
+from xxtrain.data import Bbox, Circle, Points, Polyline
 from xxtrain.data.geometry import (
     calculate_iou,
     calculate_wide,
@@ -15,7 +15,7 @@ class GeometryTest(unittest.TestCase):
         parent = Bbox(label='parent', x1=0, y1=0, x2=10, y2=10)
 
         self.assertTrue(rectangle_contains_point(parent.bbox, (10, 10)))
-        self.assertTrue(rectangle_contains_shape(parent.bbox, Line(label='line', points=[[1, 1], [9, 9]])))
+        self.assertTrue(rectangle_contains_shape(parent.bbox, Polyline(label='line', points=[[1, 1], [9, 9]])))
         self.assertFalse(rectangle_contains_shape(parent.bbox, Points(label='point', points=[[11, 5]])))
 
     def test_circle_containment_uses_radius_and_wide_formula(self) -> None:

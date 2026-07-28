@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Line, Points, Polygon
+from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Points, Polygon, Polyline
 from xxtrain.pipeline.core import (
     AnnotationMatch,
     Context,
@@ -69,7 +69,7 @@ class PipelineEncoderTest(unittest.TestCase):
 
     def test_point_segment_reproduces_legacy_triangle(self) -> None:
         context = self.make_context(('Point',), TaskType.SEGMENT)
-        line = Line(label='1', points=((10, 10), (20, 30)))
+        line = Polyline(label='1', points=((10, 10), (20, 30)))
         sample = self.make_sample((line,), size=(40, 40))
         crop = CropOutput(sample=sample, parent=Bbox(label='cc', x1=0, y1=0, x2=40, y2=40))
         output = EncodePointSegment().transform(crop, context)
