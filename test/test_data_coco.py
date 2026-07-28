@@ -354,6 +354,27 @@ class CocoWriterTest(unittest.TestCase):
         self.assertEqual((Polygon, Polygon), tuple(type(item) for item in loaded.images[0].annotations))
         self.assertEqual((1, 1), tuple(item.group for item in loaded.images[0].annotations))
 
+    def test_large_translated_polygon_keeps_local_area_and_round_trip_geometry(self) -> None:
+        points = ((-1e16, 1e16), (-1e16 + 1024, 1e16), (-1e16 + 1024, 1e16 + 4), (-1e16, 1e16 + 4))
+        document = CocoDoc(
+            labels=LabelCatalog(('object',)),
+            images=(
+                CocoImage(
+                    file_name='image.jpg',
+                    info=ImageInfo(width=100, height=80),
+                    annotations=(Polygon(label='object', points=points),),
+                ),
+            ),
+        )
+
+        loaded, payload = self._round_trip(document)
+
+        self.assertEqual(4096.0, payload['annotations'][0]['area'])
+        self.assertEqual([-1e16, 1e16, 1024.0, 4.0], payload['annotations'][0]['bbox'])
+        self.assertEqual((Polygon,), tuple(type(item) for item in loaded.images[0].annotations))
+        self.assertEqual(points, loaded.images[0].annotations[0].points)
+        self.assertEqual((-1e16, 1e16, -1e16 + 1024, 1e16 + 4), loaded.images[0].annotations[0].bbox)
+
     def test_writes_stable_one_based_ids_in_document_and_first_source_order(self) -> None:
         first_image = CocoImage(
             file_name='z.jpg',

@@ -260,7 +260,24 @@ def _xywh(annotation: Bbox | Pose) -> list[float]:
 
 def _polygon_area(polygon: Polygon) -> float:
     points = polygon.points
-    area = abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=True))) / 2
+    origin_x, origin_y = points[0]
+    shifted = tuple(
+        (
+            _finite_derived(x - origin_x, 'COCO shifted polygon coordinate'),
+            _finite_derived(y - origin_y, 'COCO shifted polygon coordinate'),
+        )
+        for x, y in points
+    )
+    terms = []
+    for (x1, y1), (x2, y2) in zip(shifted, shifted[1:] + shifted[:1], strict=True):
+        first_product = _finite_derived(x1 * y2, 'COCO polygon cross product')
+        second_product = _finite_derived(x2 * y1, 'COCO polygon cross product')
+        terms.append(_finite_derived(first_product - second_product, 'COCO polygon cross product'))
+    try:
+        double_area = math.fsum(terms)
+    except OverflowError as error:
+        raise ValueError('COCO polygon area must be finite') from error
+    area = abs(_finite_derived(double_area, 'COCO polygon area')) / 2
     return _positive_finite_derived(area, 'COCO polygon area')
 
 
