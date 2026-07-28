@@ -1,13 +1,38 @@
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
-from xxtrain.data import Bbox, Circle, ImageInfo, Points, Polygon, Polyline
-from xxtrain.data.formats import read_labelimg, read_labelme
+from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Keypoint, Points, Polygon, Polyline, Pose
+from xxtrain.data.formats import read_labelimg, read_labelme, write_labelme
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 
 
+class UnsupportedAnnotation(Annotation):
+    def _validate_geometry(self) -> None:
+        pass
+
+
 class AnnotationFormatsTest(unittest.TestCase):
+    def _write_labelme(self, root: Path, shapes: list[dict[str, object]]) -> Path:
+        path = root / 'annotations.json'
+        path.write_text(
+            json.dumps(
+                {
+                    'version': '5.0.0',
+                    'flags': {},
+                    'shapes': shapes,
+                    'imagePath': 'sample.jpg',
+                    'imageData': None,
+                    'imageHeight': 80,
+                    'imageWidth': 100,
+                }
+            ),
+            encoding='utf-8',
+        )
+        return path
+
     def test_parses_labelimg_rectangle(self) -> None:
         path = FIXTURES_PATH / 'standard-detect' / 'src' / '20260620' / 'anns' / '0000.xml'
 
@@ -65,6 +90,152 @@ class AnnotationFormatsTest(unittest.TestCase):
         self.assertEqual(7, annotations[2].group)
         self.assertEqual(7, annotations[3].group)
         self.assertNotEqual(annotations[2].id, annotations[3].id)
+
+    def test_labelme_rejects_invalid_line_and_rotation_boundaries(self) -> None:
+        invalid_shapes = (
+            {'label': 'line', 'points': [[1, 1], [2, 2], [3, 3]], 'group_id': None, 'shape_type': 'line', 'flags': {}},
+            {
+                'label': 'rotation',
+                'points': [[1, 1], [3, 1], [3, 3]],
+                'group_id': None,
+                'shape_type': 'rotation',
+                'flags': {},
+            },
+            {
+                'label': 'rotation',
+                'points': [[1, 1], [3, 1], [4, 2], [3, 3], [1, 3]],
+                'group_id': None,
+                'shape_type': 'rotation',
+                'flags': {},
+            },
+            {
+                'label': 'rotation',
+                'points': [[1, 1], [4, 1], [3, 3], [1, 3]],
+                'group_id': None,
+                'shape_type': 'rotation',
+                'flags': {},
+            },
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for shape in invalid_shapes:
+                with self.subTest(shape=shape), self.assertRaisesRegex(Exception, 'Failed to parse annotation'):
+                    path = self._write_labelme(root, [shape])
+                    read_labelme(path, ImageInfo(width=100, height=80))
+
+    def test_labelme_round_trips_supported_non_pose_shapes(self) -> None:
+        annotations = (
+            Bbox(label='box', group=0, x1=1, y1=2, x2=11, y2=12),
+            Circle(label='circle', group='circles', center=(20, 20), edge=(23, 24)),
+            Polygon(label='polygon', group=7, points=((30, 10), (40, 10), (35, 20))),
+            Polyline(label='line', group=7, points=((31, 11), (39, 19))),
+            Polyline(label='path', points=((50, 10), (55, 15), (60, 12))),
+            Points(label='marker', group='markers', points=((70, 30),)),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'sample.json'
+
+            write_labelme(annotations, path, ImageInfo(width=100, height=80))
+
+            data = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(
+                {'version', 'flags', 'shapes', 'imagePath', 'imageData', 'imageHeight', 'imageWidth'}, set(data)
+            )
+            self.assertIsNone(data['imageData'])
+            self.assertEqual(
+                ['rectangle', 'circle', 'polygon', 'line', 'linestrip', 'point'],
+                [shape['shape_type'] for shape in data['shapes']],
+            )
+            self.assertTrue(
+                all({'label', 'points', 'group_id', 'shape_type', 'flags'} == set(shape) for shape in data['shapes'])
+            )
+            output = read_labelme(path, ImageInfo(width=100, height=80))
+
+        self.assertEqual([type(annotation) for annotation in annotations], [type(annotation) for annotation in output])
+        for expected, actual in zip(annotations, output):
+            with self.subTest(expected=expected):
+                self.assertEqual(expected.label, actual.label)
+                self.assertEqual(expected.group, actual.group)
+                self.assertEqual(expected.points, actual.points)
+
+    def test_labelme_round_trips_pose_expansion_and_keypoint_order(self) -> None:
+        annotations = (
+            Pose(
+                label='person-zero',
+                group=0,
+                x1=1,
+                y1=2,
+                x2=30,
+                y2=40,
+                keypoints=(Keypoint(label='nose', x=10, y=12), Keypoint(label='wrist', x=20, y=25)),
+            ),
+            Pose(label='person-id', x1=50, y1=10, x2=90, y2=70, keypoints=(Keypoint(label='eye', x=60, y=20),)),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'poses.json'
+
+            write_labelme(annotations, path, ImageInfo(width=100, height=80))
+
+            shapes = json.loads(path.read_text(encoding='utf-8'))['shapes']
+            self.assertEqual(
+                ['rectangle', 'point', 'point', 'rectangle', 'point'], [shape['shape_type'] for shape in shapes]
+            )
+            self.assertEqual([0, 0, 0], [shape['group_id'] for shape in shapes[:3]])
+            self.assertEqual(
+                [str(annotations[1].id), str(annotations[1].id)], [shape['group_id'] for shape in shapes[3:]]
+            )
+            output = read_labelme(path, ImageInfo(width=100, height=80))
+
+        self.assertEqual([Pose, Pose], [type(annotation) for annotation in output])
+        for index, (expected, actual) in enumerate(zip(annotations, output)):
+            with self.subTest(expected=expected):
+                self.assertEqual(expected.label, actual.label)
+                self.assertEqual(expected.group if index == 0 else str(expected.id), actual.group)
+                self.assertEqual(expected.bbox, actual.bbox)
+                self.assertEqual(
+                    [(keypoint.label, keypoint.x, keypoint.y, 2) for keypoint in expected.keypoints],
+                    [(keypoint.label, keypoint.x, keypoint.y, keypoint.visibility) for keypoint in actual.keypoints],
+                )
+
+    def test_labelme_writer_rejects_lossy_or_unsupported_annotations_before_io(self) -> None:
+        invalid_annotations = (
+            (ValueError, Points(label='markers', points=((1, 1), (2, 2)))),
+            (
+                ValueError,
+                Pose(
+                    label='hidden',
+                    x1=0,
+                    y1=0,
+                    x2=10,
+                    y2=10,
+                    keypoints=(Keypoint(label='nose', x=1, y=1, visibility=0),),
+                ),
+            ),
+            (
+                ValueError,
+                Pose(
+                    label='occluded',
+                    x1=0,
+                    y1=0,
+                    x2=10,
+                    y2=10,
+                    keypoints=(Keypoint(label='nose', x=1, y=1, visibility=1),),
+                ),
+            ),
+            (TypeError, UnsupportedAnnotation(label='unsupported')),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, (error_type, invalid) in enumerate(invalid_annotations):
+                with self.subTest(invalid=invalid):
+                    path = root / str(index) / 'annotations.json'
+                    with self.assertRaises(error_type):
+                        write_labelme(
+                            (Bbox(label='valid', x1=0, y1=0, x2=10, y2=10), invalid),
+                            path,
+                            ImageInfo(width=100, height=80),
+                        )
+                    self.assertFalse(path.parent.exists())
 
 
 if __name__ == '__main__':
