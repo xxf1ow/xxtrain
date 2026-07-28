@@ -237,3 +237,137 @@ def read_coco(json_path: str | Path) -> CocoDoc:
         for image_id in image_order
     )
     return CocoDoc(labels=labels, images=coco_images)
+
+
+def _xywh(annotation: Bbox | Pose) -> list[float]:
+    return [annotation.x1, annotation.y1, annotation.x2 - annotation.x1, annotation.y2 - annotation.y1]
+
+
+def _polygon_area(polygon: Polygon) -> float:
+    points = polygon.points
+    return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1], strict=True))) / 2
+
+
+def _segmentation(polygons: tuple[Polygon, ...]) -> list[list[float]]:
+    return [[coordinate for point in polygon.points for coordinate in point] for polygon in polygons]
+
+
+def _polygon_bbox(polygons: tuple[Polygon, ...]) -> list[float]:
+    points = tuple(point for polygon in polygons for point in polygon.points)
+    xs = tuple(point[0] for point in points)
+    ys = tuple(point[1] for point in points)
+    x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def _annotation_units(annotations: tuple[Annotation, ...]) -> list[list[Annotation]]:
+    units: list[list[Annotation]] = []
+    group_indexes: dict[object, int] = {}
+    for annotation in annotations:
+        if annotation.group is None:
+            units.append([annotation])
+        elif annotation.group in group_indexes:
+            units[group_indexes[annotation.group]].append(annotation)
+        else:
+            group_indexes[annotation.group] = len(units)
+            units.append([annotation])
+    return units
+
+
+def _pose_schemas(doc: CocoDoc, category_ids: dict[str, int]) -> dict[str, tuple[str, ...]]:
+    schemas: dict[str, tuple[str, ...]] = {}
+    supported_types = (Bbox, Polygon, Pose)
+    for image in doc.images:
+        for annotation in image.annotations:
+            if annotation.label not in category_ids:
+                raise ValueError(f'Unknown annotation label: {annotation.label}')
+            if type(annotation) not in supported_types:
+                raise TypeError(f'Unsupported COCO annotation type: {type(annotation).__name__}')
+            if type(annotation) is Pose:
+                schema = tuple(keypoint.label for keypoint in annotation.keypoints)
+                if annotation.label in schemas and schemas[annotation.label] != schema:
+                    raise ValueError(f'Inconsistent COCO keypoint schema for label: {annotation.label}')
+                schemas[annotation.label] = schema
+    return schemas
+
+
+def _encode_unit(
+    unit: list[Annotation], annotation_id: int, image_id: int, category_ids: dict[str, int]
+) -> dict[str, object]:
+    labels = {annotation.label for annotation in unit}
+    if len(labels) != 1:
+        raise ValueError('Grouped COCO annotations must use one label')
+
+    bboxes = tuple(annotation for annotation in unit if type(annotation) is Bbox)
+    polygons = tuple(annotation for annotation in unit if type(annotation) is Polygon)
+    poses = tuple(annotation for annotation in unit if type(annotation) is Pose)
+    if len(unit) > 1:
+        if bboxes:
+            raise ValueError('A grouped COCO annotation cannot contain a Bbox')
+        if len(poses) > 1:
+            raise ValueError('A grouped COCO annotation cannot contain more than one Pose')
+
+    label = unit[0].label
+    encoded: dict[str, object] = {
+        'id': annotation_id,
+        'image_id': image_id,
+        'category_id': category_ids[label],
+        'iscrowd': 0,
+    }
+    if poses:
+        pose = poses[0]
+        encoded['bbox'] = _xywh(pose)
+        encoded['keypoints'] = [
+            value for keypoint in pose.keypoints for value in (keypoint.x, keypoint.y, keypoint.visibility)
+        ]
+        encoded['num_keypoints'] = sum(keypoint.visibility > 0 for keypoint in pose.keypoints)
+        encoded['area'] = (
+            sum(_polygon_area(polygon) for polygon in polygons)
+            if polygons
+            else (pose.x2 - pose.x1) * (pose.y2 - pose.y1)
+        )
+        if polygons:
+            encoded['segmentation'] = _segmentation(polygons)
+        return encoded
+
+    if polygons:
+        encoded['bbox'] = _polygon_bbox(polygons)
+        encoded['segmentation'] = _segmentation(polygons)
+        encoded['area'] = sum(_polygon_area(polygon) for polygon in polygons)
+        return encoded
+
+    bbox = bboxes[0]
+    encoded['bbox'] = _xywh(bbox)
+    encoded['area'] = (bbox.x2 - bbox.x1) * (bbox.y2 - bbox.y1)
+    return encoded
+
+
+def _encode_coco(doc: CocoDoc) -> dict[str, object]:
+    category_ids = {label: index for index, label in enumerate(doc.labels, start=1)}
+    schemas = _pose_schemas(doc, category_ids)
+    categories = []
+    for label, category_id in category_ids.items():
+        category: dict[str, object] = {'id': category_id, 'name': label}
+        if label in schemas:
+            category['keypoints'] = list(schemas[label])
+        categories.append(category)
+
+    images = [
+        {'id': image_id, 'file_name': image.file_name, 'width': image.info.width, 'height': image.info.height}
+        for image_id, image in enumerate(doc.images, start=1)
+    ]
+    annotations = []
+    annotation_id = 1
+    for image_id, image in enumerate(doc.images, start=1):
+        for unit in _annotation_units(image.annotations):
+            annotations.append(_encode_unit(unit, annotation_id, image_id, category_ids))
+            annotation_id += 1
+    return {'categories': categories, 'images': images, 'annotations': annotations}
+
+
+def write_coco(doc: CocoDoc, json_path: str | Path) -> None:
+    payload = _encode_coco(doc)
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    path = Path(json_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding='utf-8')
