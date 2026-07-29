@@ -44,16 +44,16 @@ class DatasetArtifactTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output_path(root, 'scale-pose').mkdir()
-            labels = LabelCatalog(names=('1008', 'point'))
+            labels = LabelCatalog(names=('person', 'nose', 'wrist'))
 
             write_dataset_yaml(root, 'scale-pose', TaskType.POSE, labels)
 
             text = dataset_yaml_path(root, 'scale-pose').read_text(encoding='utf-8')
-            self.assertIn('  0: 1008\n', text)
+            self.assertIn('  0: person\n', text)
             parsed = yaml.safe_load(text)
-            self.assertEqual({0: 1008, 1: 'point'}, parsed['names'])
+            self.assertEqual({0: 'person'}, parsed['names'])
             self.assertEqual([2, 3], parsed['kpt_shape'])
-            self.assertEqual({0: [1008, 'point']}, parsed['kpt_names'])
+            self.assertEqual({0: ['nose', 'wrist']}, parsed['kpt_names'])
 
     def test_non_pose_yaml_has_no_keypoint_section(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

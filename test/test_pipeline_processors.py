@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from xxtrain.data import Bbox, Circle, ImageInfo, LabelCatalog, Line, Points, Polygon, Polyline, RotatedBbox
+from xxtrain.data import Bbox, Circle, ImageInfo, LabelCatalog, Points, Polygon, Polyline
 from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, CropOutput, ImageRef, MatchInput, Sample
 from xxtrain.pipeline.processors import (
     CropDetectionBoxes,
@@ -77,7 +77,7 @@ class PipelineProcessorTest(unittest.TestCase):
         sized = ReadImageInfo().transform(sample, context)
         output = ReadMatchingAnnotations().transform(sized, context)
         self.assertEqual(('rw400',), tuple(parent.label for parent in output.parents))
-        self.assertEqual(('rw400',), tuple(child.label for child in output.children))
+        self.assertEqual(('target',), tuple(child.label for child in output.children))
 
     def test_read_labelme_uses_sibling_anns_seg_path(self) -> None:
         image_path = FIXTURES / 'standard-segment' / 'src' / '251010' / 'imgs' / '0000.jpg'
@@ -132,12 +132,24 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)), output.annotations[0].points)
         self.assertGreaterEqual(len(output.annotations[1].points), 12)
 
+    def test_prepare_segment_rejects_polyline_with_more_than_two_points(self) -> None:
+        annotations = (Polyline(label='known', points=((0, 0), (1, 1), (2, 2))),)
+        sample = self.make_sample(Path('image.jpg'), annotations=annotations)
+        with self.assertRaisesRegex(Exception, "Task segment usually doesn't use"):
+            PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
+
+    def test_prepare_segment_passes_two_point_polyline_unchanged(self) -> None:
+        polyline = Polyline(label='known', points=((0, 0), (1, 1)))
+        sample = self.make_sample(Path('image.jpg'), annotations=(polyline,))
+        output = PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
+        self.assertEqual((Polyline,), tuple(type(value) for value in output.annotations))
+        self.assertEqual(((0.0, 0.0), (1.0, 1.0)), output.annotations[0].points)
+        self.assertIs(polyline, output.annotations[0])
+
     def test_prepare_match_children_accepts_pose_shapes_without_conversion(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
         children = (
             Polygon(label='known', points=((0, 0), (2, 0), (1, 1))),
-            RotatedBbox(label='known', points=((0, 0), (2, 0), (2, 2), (0, 2))),
-            Line(label='known', points=((0, 0), (1, 1))),
             Polyline(label='known', points=((0, 0), (1, 1))),
             Points(label='known', points=((0, 0),)),
         )

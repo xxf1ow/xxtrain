@@ -7,22 +7,17 @@ from unittest.mock import patch
 from test.test_conversion_baseline import FIXTURES_PATH, PROJECT_ROOT
 from xxtrain.data import LabelCatalog
 from xxtrain.pipeline import DatasetRecipe, convert_dataset, standard_recipe
-from xxtrain.pipeline.core import Pipeline
-from xxtrain.pipeline.discovery import DirectorySource
+from xxtrain.pipeline.annotation_io import ReadAnnotations, ValidateObb
+from xxtrain.pipeline.core import Context, Pipeline, Sample
+from xxtrain.pipeline.discovery import CocoSource, DirectorySource
 from xxtrain.pipeline.processors import (
     EncodeDetection,
     EncodePose,
     EncodeSegment,
     FilterLabels,
-    FilterMatchingAnnotations,
-    MatchAnnotations,
     PrepareClassification,
-    PrepareMatchChildren,
     PrepareSegmentShapes,
     ReadImageInfo,
-    ReadLabelImg,
-    ReadLabelMe,
-    ReadMatchingAnnotations,
 )
 from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
@@ -81,16 +76,10 @@ class PipelineRecipeTest(unittest.TestCase):
 
     def test_standard_recipe_processor_sequences(self) -> None:
         expected = {
-            TaskType.DETECT: (ReadImageInfo, ReadLabelImg, FilterLabels, EncodeDetection),
-            TaskType.SEGMENT: (ReadImageInfo, ReadLabelMe, FilterLabels, PrepareSegmentShapes, EncodeSegment),
-            TaskType.POSE: (
-                ReadImageInfo,
-                ReadMatchingAnnotations,
-                FilterMatchingAnnotations,
-                PrepareMatchChildren,
-                MatchAnnotations,
-                EncodePose,
-            ),
+            TaskType.DETECT: (ReadImageInfo, ReadAnnotations, FilterLabels, EncodeDetection),
+            TaskType.SEGMENT: (ReadImageInfo, ReadAnnotations, FilterLabels, PrepareSegmentShapes, EncodeSegment),
+            TaskType.POSE: (ReadImageInfo, ReadAnnotations, FilterLabels, EncodePose),
+            TaskType.OBB: (ReadImageInfo, ReadAnnotations, FilterLabels, ValidateObb, EncodeSegment),
             TaskType.CLASSIFY: (PrepareClassification,),
         }
         for task_type, processor_types in expected.items():
@@ -167,9 +156,73 @@ class PipelineRecipeTest(unittest.TestCase):
                 sink=YoloDatasetSink(),
             )
 
-    def test_standard_recipe_rejects_unsupported_basic_task(self) -> None:
-        with self.assertRaisesRegex(ValueError, 'Unsupported standard task type: obb'):
-            standard_recipe(TaskType.OBB)
+    def test_convert_dataset_uses_coco_source_catalog_when_recipe_labels_are_none(self) -> None:
+        class RecordingSampleSink:
+            input_type = Sample
+
+            def __init__(self) -> None:
+                self.context: Context | None = None
+
+            def write(self, item: Sample, context: Context) -> None:
+                self.context = context
+
+            def finalize(self, context: Context) -> None:
+                self.context = context
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            json_path = root / 'annotations.json'
+            json_path.write_text(
+                '{"categories":[{"id":1,"name":"dial"}],"images":[],"annotations":[]}', encoding='utf-8'
+            )
+            sink = RecordingSampleSink()
+            recipe = DatasetRecipe(
+                name='coco-detect',
+                task_type=TaskType.DETECT,
+                labels=None,
+                source=CocoSource(json_path),
+                pipeline=Pipeline(()),
+                sink=sink,
+            )
+
+            convert_dataset(recipe, root)
+
+            self.assertIsNotNone(sink.context)
+            self.assertEqual(('dial',), sink.context.config.labels.names)
+
+    def test_convert_dataset_preserves_explicit_classification_labels_for_group_sources(self) -> None:
+        class RecordingSampleSink:
+            input_type = Sample
+
+            def __init__(self) -> None:
+                self.context: Context | None = None
+
+            def write(self, item: Sample, context: Context) -> None:
+                self.context = context
+
+            def finalize(self, context: Context) -> None:
+                self.context = context
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            images = root / 'src' / '20260620' / 'imgs'
+            images.mkdir(parents=True)
+            (images / 'sample.jpg').write_bytes(b'image')
+            labels = LabelCatalog(('cc', 'cl', 'tc', 'tl'))
+            sink = RecordingSampleSink()
+            recipe = DatasetRecipe(
+                name='point-classify',
+                task_type=TaskType.CLASSIFY,
+                labels=labels,
+                source=DirectorySource(),
+                pipeline=Pipeline(()),
+                sink=sink,
+            )
+
+            convert_dataset(recipe, root)
+
+            self.assertIsNotNone(sink.context)
+            self.assertIs(labels, sink.context.config.labels)
 
 
 if __name__ == '__main__':

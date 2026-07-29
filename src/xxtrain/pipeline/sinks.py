@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -9,8 +11,13 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from xxtrain.data import CocoDoc, CocoImage, ImageInfo, LabelCatalog
 from xxtrain.data.dataset import split_membership, write_dataset_yaml, write_split_lists
-from xxtrain.pipeline.core import ClassifyOutput, Context, EncodeOutput
+from xxtrain.data.formats import write_labelimg, write_labelme
+from xxtrain.data.formats.coco import write_coco
+from xxtrain.pipeline.annotation_io import validate_annotations_for_task
+from xxtrain.pipeline.core import ClassifyOutput, Context, EncodeOutput, Sample
+from xxtrain.task import TaskType
 
 OutputT = TypeVar('OutputT')
 
@@ -41,6 +48,35 @@ def _symlink_or_copy(source: Path, target: Path) -> None:
 
 def _append_suffix(path: Path, suffix: str) -> Path:
     return path.parent / f'{path.name}{suffix}'
+
+
+def _output_base(sample: Sample, context: Context) -> Path:
+    logical = Path(sample.id)
+    if not logical.parts or logical.is_absolute() or logical.drive or logical.root or '..' in logical.parts:
+        raise ValueError(f'Unsafe sample id: {sample.id}')
+    return context.config.root_path / context.config.task_name / logical
+
+
+def _materialize_crop(sample: Sample, output_base: Path) -> tuple[Path, ImageInfo] | None:
+    if sample.image.crop_box is None:
+        return None
+    image_path = _append_suffix(output_base, '.jpg')
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(sample.image.path) as image:
+        crop = image.crop(sample.image.crop_box)
+        if crop.mode != 'RGB':
+            crop = crop.convert('RGB')
+        crop.save(image_path)
+        width, height = crop.size
+    return image_path, ImageInfo(width=width, height=height)
+
+
+def _image_reference(image_path: Path, output_directory: Path) -> str:
+    try:
+        reference = os.path.relpath(image_path, output_directory)
+    except ValueError:
+        reference = str(image_path.absolute())
+    return reference.replace('\\', '/')
 
 
 def _finalize_dataset(context: Context) -> None:
@@ -87,6 +123,227 @@ class YoloDatasetSink:
 
     def finalize(self, context: Context) -> None:
         _finalize_dataset(context)
+
+
+class CocoSink:
+    input_type = Sample
+
+    def __init__(self) -> None:
+        self._images: list[CocoImage] = []
+        self._claimed_paths: set[Path] = set()
+        self._file_names: set[str] = set()
+
+    def _claim(self, path: Path) -> None:
+        if path in self._claimed_paths:
+            raise ValueError('COCO crop output path collision')
+        self._claimed_paths.add(path)
+
+    def _claim_file_name(self, file_name: str) -> None:
+        if file_name in self._file_names:
+            raise ValueError('COCO image file_name collision')
+        self._file_names.add(file_name)
+
+    @staticmethod
+    def _remove_crop(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def write(self, item: Sample, context: Context) -> None:
+        if not isinstance(item, Sample):
+            raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
+
+        output_base = _output_base(item, context)
+        if not item.annotations:
+            if not context.config.reserve_no_label:
+                context.report.record_missing_annotations(item.source_group)
+                return
+
+        annotations = validate_annotations_for_task(
+            item.annotations, context.config.task_type, context.config.labels.names
+        )
+        output_root = context.config.root_path / context.config.task_name
+        if item.image.crop_box is None:
+            image_path = item.image.path
+            image_info = item.image.require_info()
+            file_name = _image_reference(image_path, output_root)
+            image = CocoImage(file_name=file_name, info=image_info, annotations=annotations)
+        else:
+            crop_path = _append_suffix(output_base, '.jpg')
+            if crop_path in self._claimed_paths or crop_path.exists():
+                raise ValueError('COCO crop output path collision')
+            file_name = _image_reference(crop_path, output_root)
+            if file_name in self._file_names:
+                raise ValueError('COCO image file_name collision')
+            try:
+                image_path, image_info = _materialize_crop(item, output_base)
+                image = CocoImage(file_name=file_name, info=image_info, annotations=annotations)
+            except Exception:
+                self._remove_crop(crop_path)
+                raise
+
+        self._claim_file_name(file_name)
+        if item.image.crop_box is not None:
+            self._claim(image_path)
+        self._images.append(image)
+        if not item.annotations:
+            context.report.record_missing_annotations(item.source_group)
+        in_train, in_val = split_membership(item.source_index, context.config.split)
+        output_item = str(image_path)
+        context.report.record_output(
+            train_item=output_item if in_train else None,
+            val_item=output_item if in_val else None,
+            annotation_count=len(annotations),
+        )
+
+    def finalize(self, context: Context) -> None:
+        labels = (
+            LabelCatalog((context.config.labels.names[0],))
+            if context.config.task_type is TaskType.POSE
+            else context.config.labels
+        )
+        write_coco(
+            CocoDoc(labels=labels, images=tuple(self._images)),
+            context.config.root_path / context.config.task_name / 'annotations.json',
+        )
+        self._images.clear()
+        self._claimed_paths.clear()
+        self._file_names.clear()
+
+
+class _AnnotationSink:
+    input_type = Sample
+    suffix: str
+
+    def __init__(self) -> None:
+        self._claimed_paths: set[Path] = set()
+
+    def _ensure_available(self, *paths: Path) -> None:
+        if any(path in self._claimed_paths or path.exists() for path in paths):
+            raise ValueError('Annotation output path collision')
+
+    def _commit_claim(self, *paths: Path) -> None:
+        self._claimed_paths.update(paths)
+
+    @staticmethod
+    def _remove_new_file(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _prepare(self, item: Sample, context: Context) -> tuple[Path, Path | None, ImageInfo] | None:
+        if not isinstance(item, Sample):
+            raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
+        output_base = _output_base(item, context)
+        if not item.annotations:
+            if not context.config.reserve_no_label:
+                context.report.record_missing_annotations(item.source_group)
+                return None
+
+        validate_annotations_for_task(item.annotations, context.config.task_type, context.config.labels.names)
+        annotation_path = _append_suffix(output_base, self.suffix)
+        crop_path = _append_suffix(output_base, '.jpg') if item.image.crop_box is not None else None
+        paths = (annotation_path, *((crop_path,) if crop_path is not None else ()))
+        self._ensure_available(*paths)
+        try:
+            materialized = _materialize_crop(item, output_base)
+        except Exception:
+            self._remove_new_file(crop_path)
+            raise
+        if materialized is None:
+            return annotation_path, None, item.image.require_info()
+        image_path, image_info = materialized
+        return annotation_path, image_path, image_info
+
+    def _write_annotation(
+        self,
+        item: Sample,
+        context: Context,
+        prepared: tuple[Path, Path | None, ImageInfo],
+        write: Callable[[Path], None],
+    ) -> None:
+        annotation_path, image_path, _ = prepared
+        crop_path = _append_suffix(_output_base(item, context), '.jpg') if item.image.crop_box is not None else None
+        temporary_path: Path | None = None
+        try:
+            annotation_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temp_name = tempfile.mkstemp(
+                prefix=f'.{annotation_path.name}.', suffix='.tmp', dir=annotation_path.parent
+            )
+            temporary_path = Path(temp_name)
+            os.close(descriptor)
+            write(temporary_path)
+            if annotation_path.exists():
+                raise ValueError('Annotation output path collision')
+            os.replace(temporary_path, annotation_path)
+        except Exception:
+            self._remove_new_file(temporary_path)
+            self._remove_new_file(crop_path)
+            raise
+
+        self._commit_claim(annotation_path, *((crop_path,) if crop_path is not None else ()))
+        if not item.annotations:
+            context.report.record_missing_annotations(item.source_group)
+        self._record_output(item, context, image_path)
+
+    def _record_output(self, item: Sample, context: Context, image_path: Path | None) -> None:
+        in_train, in_val = split_membership(item.source_index, context.config.split)
+        output_path = str(image_path if image_path is not None else item.image.path)
+        context.report.record_output(
+            train_item=output_path if in_train else None,
+            val_item=output_path if in_val else None,
+            annotation_count=len(item.annotations),
+        )
+
+    def finalize(self, context: Context) -> None:
+        (context.config.root_path / context.config.task_name).mkdir(parents=True, exist_ok=True)
+
+
+class LabelImgSink(_AnnotationSink):
+    suffix = '.xml'
+
+    def write(self, item: Sample, context: Context) -> None:
+        if not isinstance(item, Sample):
+            raise TypeError(f'{type(self).__name__} expected Sample, got {type(item).__name__}')
+        if context.config.task_type is not TaskType.DETECT:
+            raise ValueError('LabelImgSink only supports detect tasks')
+        prepared = self._prepare(item, context)
+        if prepared is None:
+            return
+        self._write_annotation(
+            item, context, prepared, lambda path: write_labelimg(item.annotations, path, prepared[2])
+        )
+
+
+class LabelMeSink(_AnnotationSink):
+    suffix = '.json'
+
+    def write(self, item: Sample, context: Context) -> None:
+        prepared = self._prepare(item, context)
+        if prepared is None:
+            return
+        annotation_path, image_path, image_info = prepared
+        image_reference = (
+            _image_reference(item.image.path, annotation_path.parent)
+            if image_path is None
+            else _image_reference(image_path, annotation_path.parent)
+        )
+        self._write_annotation(
+            item,
+            context,
+            prepared,
+            lambda path: write_labelme(
+                item.annotations,
+                path,
+                image_info,
+                image_path=image_reference,
+                obb=context.config.task_type is TaskType.OBB,
+            ),
+        )
 
 
 class ClassificationDatasetSink:

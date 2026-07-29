@@ -12,12 +12,17 @@ def convert_dataset(
     recipe: DatasetRecipe, root_path: str | Path, *, split: int = 10, reserve_no_label: bool = False
 ) -> ConversionReport:
     root = Path(root_path)
-    if recipe.labels is None:
-        labels = _read_labels(root, strict=recipe.task_type is TaskType.CLASSIFY)
-        if recipe.task_type is TaskType.CLASSIFY:
-            labels = validate_classification_source(root, labels, split)
-    else:
+    source_catalog = recipe.source.catalog_for(recipe.task_type)
+    if recipe.labels is not None and source_catalog is not None and recipe.labels != source_catalog:
+        raise ValueError('Recipe labels do not match source catalog')
+    if recipe.labels is not None:
         labels = recipe.labels
+    elif source_catalog is not None:
+        labels = source_catalog
+    else:
+        labels = _read_labels(root, strict=recipe.task_type is TaskType.CLASSIFY)
+    if recipe.labels is None and recipe.task_type is TaskType.CLASSIFY and isinstance(recipe.source, DirectorySource):
+        labels = validate_classification_source(root, labels, split)
     context = Context(
         config=ConversionConfig(
             task_name=recipe.name,
@@ -29,8 +34,7 @@ def convert_dataset(
         ),
         report=ConversionReport(),
     )
-    source = DirectorySource()
-    outputs = recipe.pipeline.run(source.read(context), context)
+    outputs = recipe.pipeline.run(recipe.source.read(context), context)
     for output in outputs:
         recipe.sink.write(output, context)
     recipe.sink.finalize(context)

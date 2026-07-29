@@ -41,10 +41,17 @@ def write_dataset_yaml(root_path: str | Path, output_name: str, task_type: TaskT
     content += f'train: {output_name}/train.txt\n'
     content += f'val: {output_name}/val.txt\n'
     content += 'names:\n'
-    for index, name in enumerate(labels):
+    if task_type is TaskType.POSE:
+        if len(labels) < 2:
+            raise ValueError('Pose label catalog requires an object label and keypoint labels')
+        class_names = labels.names[:1]
+    else:
+        class_names = labels.names
+    for index, name in enumerate(class_names):
         content += f'  {index}: {name}\n'
     if task_type is TaskType.POSE:
-        content += f'\nkpt_shape: [{len(labels)}, 3]\nkpt_names:\n  0:\n'
-        for name in labels:
+        keypoint_names = labels.names[1:]
+        content += f'\nkpt_shape: [{len(keypoint_names)}, 3]\nkpt_names:\n  0:\n'
+        for name in keypoint_names:
             content += f'    - {name}\n'
     dataset_yaml_path(root_path, output_name).write_text(content, encoding='utf-8')

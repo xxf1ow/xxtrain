@@ -28,11 +28,12 @@ The data package owns:
 
 - immutable annotation values and geometry;
 - ordered label catalogs;
-- one-way LabelImg and LabelMe readers;
-- pure YOLO line encoders;
+- LabelImg, LabelMe, and COCO readers and writers;
+- YOLO line encode/decode primitives;
+- format- and task-specific validation at I/O boundaries;
 - dataset split and artifact helpers.
 
-Annotation identity uses UUIDs and grouping is independent from labels. Concrete shapes expose immutable tuple geometry. Readers preserve input order and numeric label names remain strings.
+`Annotation` remains a single annotation value and does not encode file-format distinctions. Annotation identity uses UUIDs and grouping is independent from labels. Concrete shapes expose immutable tuple geometry. Readers preserve input order and numeric label names remain strings.
 
 Coordinate rules:
 
@@ -56,7 +57,7 @@ The stable `xxtrain.pipeline` public API is deliberately limited to:
 
 `Context`, `ConversionConfig`, `ConversionReport`, `DatasetRecipe`, `ExpandProcessor`, `ImageRef`, `ItemProcessor`, `Pipeline`, `Sample`, `convert_dataset`, and `standard_recipe`.
 
-`standard_recipe()` owns the detect, segment, pose, and classify pipelines. Special point, knob, and light recipes are composed in their corresponding Scenario files under `data/`, not in a central task-name registry. Stage-specific records, discovery classes, concrete processors, and sinks are internal implementation details; the tracked preset Scenarios may import them from their defining modules, but they are not a general third-party plugin API.
+`standard_recipe()` owns the detect, segment, pose, OBB, and classify pipelines. Special point, knob, and light recipes are composed in their corresponding Scenario files under `data/`, not in a central task-name registry. Stage-specific records and concrete sources, processors, sinks, and helpers are internal implementation details; the tracked preset Scenarios may import them from their defining modules, but they are not part of the stable 11-symbol API or a general third-party plugin API.
 
 ### `xxtrain.training`
 
@@ -116,11 +117,12 @@ Test fixtures live in `test/fixtures/` and human-reviewed semantic snapshots liv
 
 ## Recipe ownership
 
-`standard_recipe(TaskType)` supports four standard recipes:
+`standard_recipe(TaskType)` supports five standard recipes:
 
 - `detect`
 - `segment`
 - `pose`
+- `obb`
 - `classify`
 
 Seven special recipes are owned by tracked Scenario files:
@@ -133,7 +135,7 @@ Seven special recipes are owned by tracked Scenario files:
 - `light1-detect`
 - `light2-detect`
 
-There is no task-name registry, legacy `Recipe`, or `build_recipe()`. `DatasetRecipe.task_type` directly selects the Ultralytics model family; OBB has no standard conversion recipe yet. `scale-pose` remains unsupported.
+There is no task-name registry, legacy `Recipe`, or `build_recipe()`. `DatasetRecipe.task_type` directly selects the Ultralytics model family. `scale-pose` remains unsupported.
 
 ## Scenario and dataset convention
 

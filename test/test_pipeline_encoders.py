@@ -1,17 +1,8 @@
 import unittest
 from pathlib import Path
 
-from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Line, Points, Polygon
-from xxtrain.pipeline.core import (
-    AnnotationMatch,
-    Context,
-    ConversionConfig,
-    ConversionReport,
-    CropOutput,
-    ImageRef,
-    MatchOutput,
-    Sample,
-)
+from xxtrain.data import Bbox, ImageInfo, Keypoint, LabelCatalog, Polygon, Polyline, Pose
+from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, CropOutput, ImageRef, Sample
 from xxtrain.pipeline.processors import (
     EncodeCropDetection,
     EncodeDetection,
@@ -69,7 +60,7 @@ class PipelineEncoderTest(unittest.TestCase):
 
     def test_point_segment_reproduces_legacy_triangle(self) -> None:
         context = self.make_context(('Point',), TaskType.SEGMENT)
-        line = Line(label='1', points=((10, 10), (20, 30)))
+        line = Polyline(label='1', points=((10, 10), (20, 30)))
         sample = self.make_sample((line,), size=(40, 40))
         crop = CropOutput(sample=sample, parent=Bbox(label='cc', x1=0, y1=0, x2=40, y2=40))
         output = EncodePointSegment().transform(crop, context)
@@ -84,14 +75,32 @@ class PipelineEncoderTest(unittest.TestCase):
         output = EncodeKnobSegment().transform(CropOutput(sample=sample, parent=parent), context)
         self.assertEqual(('0 0.000000 0.100000 1.000000 0.100000 0.500000 1.000000',), output.lines)
 
-    def test_pose_encoder_uses_catalog_order(self) -> None:
-        context = self.make_context(('kp',), TaskType.POSE)
-        sample = self.make_sample((), size=(100, 100))
-        parent = Bbox(label='object', x1=10, y1=10, x2=90, y2=90)
-        point = Points(label='kp', points=((20, 30),))
-        item = MatchOutput(sample=sample, matches=(AnnotationMatch(parent=parent, children=(point,)),))
-        output = EncodePose().transform(item, context)
-        self.assertEqual(('0 0.500000 0.500000 0.800000 0.800000 0.200000 0.300000 2',), output.lines)
+    def test_pose_encoder_preserves_legacy_bytes_in_catalog_order(self) -> None:
+        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
+        sample = self.make_sample(
+            (
+                Pose(
+                    label='object',
+                    x1=10,
+                    y1=10,
+                    x2=90,
+                    y2=90,
+                    keypoints=(Keypoint(label='start', x=20, y=30), Keypoint(label='end', x=80, y=70)),
+                ),
+            ),
+            size=(100, 100),
+        )
+        output = EncodePose().transform(sample, context)
+        self.assertEqual(
+            ('0 0.500000 0.500000 0.800000 0.800000 0.200000 0.300000 2 0.800000 0.700000 2',), output.lines
+        )
+
+    def test_pose_encoder_rejects_non_pose_annotations(self) -> None:
+        context = self.make_context(('object', 'start', 'end'), TaskType.POSE)
+        sample = self.make_sample((Bbox(label='object', x1=10, y1=10, x2=90, y2=90),), size=(100, 100))
+
+        with self.assertRaisesRegex(TypeError, 'EncodePose requires only Pose annotations'):
+            EncodePose().transform(sample, context)
 
 
 if __name__ == '__main__':

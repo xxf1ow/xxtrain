@@ -32,7 +32,7 @@
     "dataset.yaml": {
       "kpt_names": {
         "0": [
-          "rw400"
+          "target"
         ]
       },
       "kpt_shape": [

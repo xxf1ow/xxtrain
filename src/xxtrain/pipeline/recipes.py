@@ -1,25 +1,20 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from xxtrain.data import LabelCatalog
 from xxtrain.task import TaskType
 
+from .annotation_io import ReadAnnotations, ValidateObb
 from .core import Pipeline
-from .discovery import DirectorySource
+from .discovery import DirectorySource, SampleSource
 from .processors import (
     EncodeDetection,
     EncodePose,
     EncodeSegment,
     FilterLabels,
-    FilterMatchingAnnotations,
-    MatchAnnotations,
     PrepareClassification,
-    PrepareMatchChildren,
     PrepareSegmentShapes,
     ReadImageInfo,
-    ReadLabelImg,
-    ReadLabelMe,
-    ReadMatchingAnnotations,
 )
 from .sinks import ClassificationDatasetSink, DatasetSink, YoloDatasetSink
 
@@ -31,9 +26,10 @@ class DatasetRecipe:
     labels: LabelCatalog | None
     pipeline: Pipeline
     sink: DatasetSink
+    source: SampleSource = field(default_factory=DirectorySource)
 
     def __post_init__(self) -> None:
-        self.pipeline.validate_boundaries(DirectorySource.output_type, self.sink.input_type)
+        self.pipeline.validate_boundaries(self.source.output_type, self.sink.input_type)
 
 
 class _LegacyLabelCatalog(LabelCatalog):
@@ -56,7 +52,7 @@ def standard_recipe(task_type: TaskType) -> DatasetRecipe:
             name='detect',
             task_type=task_type,
             labels=None,
-            pipeline=Pipeline((ReadImageInfo(), ReadLabelImg(), FilterLabels(), EncodeDetection())),
+            pipeline=Pipeline((ReadImageInfo(), ReadAnnotations(), FilterLabels(), EncodeDetection())),
             sink=YoloDatasetSink(),
         )
     if task_type is TaskType.SEGMENT:
@@ -65,7 +61,7 @@ def standard_recipe(task_type: TaskType) -> DatasetRecipe:
             task_type=task_type,
             labels=None,
             pipeline=Pipeline(
-                (ReadImageInfo(), ReadLabelMe(), FilterLabels(), PrepareSegmentShapes(), EncodeSegment())
+                (ReadImageInfo(), ReadAnnotations(), FilterLabels(), PrepareSegmentShapes(), EncodeSegment())
             ),
             sink=YoloDatasetSink(),
         )
@@ -74,16 +70,15 @@ def standard_recipe(task_type: TaskType) -> DatasetRecipe:
             name='pose',
             task_type=task_type,
             labels=None,
-            pipeline=Pipeline(
-                (
-                    ReadImageInfo(),
-                    ReadMatchingAnnotations(),
-                    FilterMatchingAnnotations(),
-                    PrepareMatchChildren(TaskType.POSE),
-                    MatchAnnotations(),
-                    EncodePose(),
-                )
-            ),
+            pipeline=Pipeline((ReadImageInfo(), ReadAnnotations(), FilterLabels(), EncodePose())),
+            sink=YoloDatasetSink(),
+        )
+    if task_type is TaskType.OBB:
+        return DatasetRecipe(
+            name='obb',
+            task_type=task_type,
+            labels=None,
+            pipeline=Pipeline((ReadImageInfo(), ReadAnnotations(), FilterLabels(), ValidateObb(), EncodeSegment())),
             sink=YoloDatasetSink(),
         )
     if task_type is TaskType.CLASSIFY:

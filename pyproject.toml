@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["PyYAML", "ruff"]
+dev = ["PyYAML", "pycocotools", "ruff"]
 
 [project.scripts]
 xxtrain = "xxtrain.cli:main"
