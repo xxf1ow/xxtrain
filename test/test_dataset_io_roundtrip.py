@@ -12,11 +12,11 @@ from pycocotools.coco import COCO
 from test.support.annotation_projection import project_annotations
 from xxtrain.data import ImageInfo, Keypoint, LabelCatalog, Pose
 from xxtrain.data.formats import decode_pose, decode_segment, read_labelimg, read_labelme
-from xxtrain.pipeline import CocoSink, CocoSource, LabelImgSink, LabelMeSink, ReadAnnotations
+from xxtrain.pipeline.annotation_io import ReadAnnotations
 from xxtrain.pipeline.core import Context, ConversionConfig, ConversionReport, Pipeline
-from xxtrain.pipeline.discovery import DirectorySource
+from xxtrain.pipeline.discovery import CocoSource, DirectorySource
 from xxtrain.pipeline.processors import EncodePose, EncodeSegment, ReadImageInfo
-from xxtrain.pipeline.sinks import YoloDatasetSink
+from xxtrain.pipeline.sinks import CocoSink, LabelImgSink, LabelMeSink, YoloDatasetSink
 from xxtrain.task import TaskType
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

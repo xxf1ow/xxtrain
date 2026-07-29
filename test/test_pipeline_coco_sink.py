@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from PIL import Image
 
-import xxtrain.pipeline as pipeline
 from xxtrain.data import Bbox, ImageInfo, Keypoint, LabelCatalog, Polygon, Polyline, Pose
 from xxtrain.data.formats.coco import read_coco
 from xxtrain.pipeline import sinks
@@ -65,7 +64,6 @@ class CocoSinkTest(unittest.TestCase):
 
     def make_sink(self) -> object:
         self.assertTrue(hasattr(sinks, 'CocoSink'), 'CocoSink must be exported by xxtrain.pipeline.sinks')
-        self.assertIs(sinks.CocoSink, pipeline.CocoSink)
         return sinks.CocoSink
 
     def test_detect_bbox_round_trips_through_coco(self) -> None:

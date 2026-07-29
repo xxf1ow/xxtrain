@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 from test.test_conversion_baseline import FIXTURES_PATH, PROJECT_ROOT
 from xxtrain.data import LabelCatalog
-from xxtrain.pipeline import CocoSource, DatasetRecipe, convert_dataset, standard_recipe
+from xxtrain.pipeline import DatasetRecipe, convert_dataset, standard_recipe
 from xxtrain.pipeline.annotation_io import ReadAnnotations, ValidateObb
 from xxtrain.pipeline.core import Context, Pipeline, Sample
-from xxtrain.pipeline.discovery import DirectorySource
+from xxtrain.pipeline.discovery import CocoSource, DirectorySource
 from xxtrain.pipeline.processors import (
     EncodeDetection,
     EncodePose,
