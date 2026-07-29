@@ -38,9 +38,11 @@ def _validate_normalized(values: Sequence[float], message: str) -> None:
         raise ValueError(message)
 
 
-def _validate_bbox_inside_image(x1: float, y1: float, x2: float, y2: float, image_info: ImageInfo) -> None:
+def _validate_bbox_inside_image(
+    x1: float, y1: float, x2: float, y2: float, image_info: ImageInfo, message: str
+) -> None:
     if not 0 <= x1 < x2 <= image_info.width or not 0 <= y1 < y2 <= image_info.height:
-        raise ValueError('YOLO pose bbox must be inside image bounds')
+        raise ValueError(message)
 
 
 def _bbox_values(annotation: Bbox | Pose, image_info: ImageInfo) -> tuple[float, float, float, float]:
@@ -57,24 +59,47 @@ def _bbox_values(annotation: Bbox | Pose, image_info: ImageInfo) -> tuple[float,
 def decode_detect(line: str, image_info: ImageInfo, labels: LabelCatalog) -> Bbox:
     tokens = _tokens(line, count=5)
     label = labels.names[_class_id(tokens[0], labels)]
-    x_center, y_center, width, height = _finite_values(tokens[1:])
+    values = _finite_values(tokens[1:])
+    _validate_normalized(values, 'YOLO detect values must be normalized')
+    x_center, y_center, width, height = values
     x_center *= image_info.width
     y_center *= image_info.height
     width *= image_info.width
     height *= image_info.height
+    x1, y1 = x_center - width / 2.0, y_center - height / 2.0
+    x2, y2 = x_center + width / 2.0, y_center + height / 2.0
+    _validate_bbox_inside_image(x1, y1, x2, y2, image_info, 'YOLO detect bbox must be inside image bounds')
     return Bbox(
         label=label,
-        x1=x_center - width / 2.0,
-        y1=y_center - height / 2.0,
-        x2=x_center + width / 2.0,
-        y2=y_center + height / 2.0,
+        x1=x1,
+        y1=y1,
+        x2=x2,
+        y2=y2,
     )
 
 
 def encode_detect(annotation: Bbox, image_info: ImageInfo, labels: LabelCatalog) -> str:
     label_id = labels.index(annotation.label)
+    _validate_bbox_inside_image(
+        annotation.x1, annotation.y1, annotation.x2, annotation.y2, image_info, 'YOLO detect bbox must be inside image bounds'
+    )
     x_center, y_center, width, height = _bbox_values(annotation, image_info)
-    return f'{label_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}'
+    _validate_normalized((x_center, y_center, width, height), 'YOLO detect values must be normalized')
+    values = tuple(f'{value:.6f}' for value in (x_center, y_center, width, height))
+    x_center, y_center, width, height = _finite_values(values)
+    x_center *= image_info.width
+    y_center *= image_info.height
+    width *= image_info.width
+    height *= image_info.height
+    _validate_bbox_inside_image(
+        x_center - width / 2.0,
+        y_center - height / 2.0,
+        x_center + width / 2.0,
+        y_center + height / 2.0,
+        image_info,
+        'YOLO detect bbox must be inside image bounds',
+    )
+    return f'{label_id} {" ".join(values)}'
 
 
 def decode_segment(line: str, image_info: ImageInfo, labels: LabelCatalog) -> Polygon:
@@ -124,7 +149,7 @@ def decode_pose(line: str, image_info: ImageInfo, labels: LabelCatalog) -> Pose:
     height *= image_info.height
     x1, y1 = x_center - width / 2.0, y_center - height / 2.0
     x2, y2 = x_center + width / 2.0, y_center + height / 2.0
-    _validate_bbox_inside_image(x1, y1, x2, y2, image_info)
+    _validate_bbox_inside_image(x1, y1, x2, y2, image_info, 'YOLO pose bbox must be inside image bounds')
     keypoint_values = _finite_values(tokens[5:])
     keypoints = tuple(
         Keypoint(
@@ -150,7 +175,9 @@ def encode_pose(pose: Pose, image_info: ImageInfo, labels: LabelCatalog) -> str:
     keypoints = {keypoint.label: keypoint for keypoint in pose.keypoints}
     if set(keypoints) != set(keypoint_labels):
         raise ValueError('关键点标签与目录不匹配')
-    _validate_bbox_inside_image(pose.x1, pose.y1, pose.x2, pose.y2, image_info)
+    _validate_bbox_inside_image(
+        pose.x1, pose.y1, pose.x2, pose.y2, image_info, 'YOLO pose bbox must be inside image bounds'
+    )
     x_center, y_center, width, height = _bbox_values(pose, image_info)
     _validate_normalized((x_center, y_center, width, height), '骨骼标注边界框必须位于 YOLO 归一化范围内')
     values = ['0', f'{x_center:.6f}', f'{y_center:.6f}', f'{width:.6f}', f'{height:.6f}']

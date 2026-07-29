@@ -269,31 +269,51 @@ class YoloFormatTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             encode_pose(pose, self.image, empty_catalog)
 
-    def test_detect_preserves_legacy_out_of_image_bbox_encoding(self) -> None:
+    def test_detect_encoder_rejects_bbox_corners_outside_image(self) -> None:
         labels = LabelCatalog(names=('x',))
-        cases = (
-            (Bbox(label='x', x1=-30, y1=10, x2=-10, y2=50), '0 -0.100000 0.300000 0.100000 0.400000'),
-            (Bbox(label='x', x1=190, y1=10, x2=210, y2=50), '0 1.000000 0.300000 0.100000 0.400000'),
+        annotations = (
+            Bbox(label='x', x1=-1, y1=10, x2=20, y2=50),
+            Bbox(label='x', x1=190, y1=10, x2=210, y2=50),
         )
-        for annotation, expected in cases:
+        for annotation in annotations:
             with self.subTest(annotation=annotation):
-                self.assertEqual(expected, encode_detect(annotation, self.image, labels))
+                with self.assertRaisesRegex(ValueError, 'YOLO detect bbox must be inside image bounds'):
+                    encode_detect(annotation, self.image, labels)
 
-    def test_detect_decoder_preserves_legacy_out_of_image_bbox_behavior(self) -> None:
-        decoded = decode_detect('0 0.000000 0.500000 0.100000 0.400000', self.image, LabelCatalog(names=('x',)))
+    def test_detect_decoder_rejects_out_of_image_bboxes(self) -> None:
+        labels = LabelCatalog(names=('x',))
+        for line in ('0 -0.1 0.5 0.1 0.4', '0 0.0 0.5 0.1 0.4'):
+            with self.subTest(line=line):
+                with self.assertRaises(ValueError):
+                    decode_detect(line, self.image, labels)
 
-        self.assertEqual((-10.0, 30.0, 10.0, 70.0), decoded.bbox)
+    def test_detect_accepts_exact_image_boundary(self) -> None:
+        labels = LabelCatalog(names=('x',))
+        annotation = Bbox(label='x', x1=0, y1=0, x2=200, y2=100)
+
+        decoded = decode_detect('0 0.5 0.5 1.0 1.0', self.image, labels)
+
+        self.assertEqual(annotation, decoded.wrap(id=annotation.id))
+        self.assertEqual('0 0.500000 0.500000 1.000000 1.000000', encode_detect(annotation, self.image, labels))
+
+    def test_detect_encoder_rejects_bboxes_that_escape_after_six_decimal_formatting(self) -> None:
+        labels = LabelCatalog(names=('x',))
+        annotations = (
+            Bbox(label='x', x1=0, y1=10, x2=0.0002, y2=50),
+            Bbox(label='x', x1=199.9999, y1=10, x2=200, y2=50),
+        )
+        for annotation in annotations:
+            with self.subTest(annotation=annotation):
+                with self.assertRaisesRegex(ValueError, 'YOLO detect bbox must be inside image bounds'):
+                    encode_detect(annotation, self.image, labels)
 
     def test_detect_encoder_rejects_non_finite_derived_values(self) -> None:
         labels = LabelCatalog(names=('x',))
-        cases = (
-            (Bbox(label='x', x1=1e308, y1=0, x2=1.7e308, y2=1), ImageInfo(width=200, height=100)),
-            (Bbox(label='x', x1=-1e308, y1=0, x2=1e308, y2=1), ImageInfo(width=200, height=100)),
-            (Bbox(label='x', x1=0, y1=0, x2=1, y2=1), ImageInfo(width=5e-324, height=100)),
-        )
-        for annotation, image_info in cases:
-            with self.subTest(annotation=annotation, image_info=image_info), self.assertRaises(ValueError):
-                encode_detect(annotation, image_info, labels)
+        annotation = Bbox(label='x', x1=1e308, y1=0, x2=1.7e308, y2=1)
+        image_info = ImageInfo(width=1.7e308, height=100)
+
+        with self.assertRaisesRegex(ValueError, 'YOLO bbox values must be finite'):
+            encode_detect(annotation, image_info, labels)
 
     def test_pose_encoder_rejects_bbox_corners_outside_image(self) -> None:
         keypoint_labels = LabelCatalog(names=('person', 'point'))
