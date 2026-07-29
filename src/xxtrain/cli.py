@@ -20,6 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument('scenario', type=Path)
     review_parser.add_argument('--weights', type=Path, required=True)
     review_parser.add_argument('--directory', type=Path, required=True)
+    review_parser.add_argument('--unlabeled', action='store_true')
     return parser
 
 
@@ -30,4 +31,4 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.command == 'export':
         export(args.scenario, args.weights)
     else:
-        review(args.scenario, args.weights, args.directory)
+        review(args.scenario, args.weights, args.directory, args.unlabeled)

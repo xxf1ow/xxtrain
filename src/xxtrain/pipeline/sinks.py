@@ -346,6 +346,22 @@ class LabelMeSink(_AnnotationSink):
         )
 
 
+def _letterbox_classification_image(image: np.ndarray, image_size: int = 224) -> np.ndarray:
+    height, width = image.shape[:2]
+    scale = min(image_size / width, image_size / height)
+    if abs(scale - 1.0) >= 1e-6:
+        image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+    resized_height, resized_width = image.shape[:2]
+    pad_width = image_size - resized_width
+    pad_height = image_size - resized_height
+    top = pad_height // 2
+    left = pad_width // 2
+    return cv2.copyMakeBorder(
+        image, top, pad_height - top, left, pad_width - left, cv2.BORDER_CONSTANT, value=(114, 114, 114)
+    )
+
+
 class ClassificationDatasetSink:
     input_type = ClassifyOutput
 
@@ -389,20 +405,7 @@ class ClassificationDatasetSink:
         if crop_box is not None:
             x1, y1, x2, y2 = map(int, crop_box)
             image = image[y1:y2, x1:x2]
-
-        height, width = image.shape[:2]
-        scale = min(self.image_size / width, self.image_size / height)
-        if abs(scale - 1.0) >= 1e-6:
-            image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-
-        resized_height, resized_width = image.shape[:2]
-        pad_width = self.image_size - resized_width
-        pad_height = self.image_size - resized_height
-        top = pad_height // 2
-        left = pad_width // 2
-        return cv2.copyMakeBorder(
-            image, top, pad_height - top, left, pad_width - left, cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )
+        return _letterbox_classification_image(image, self.image_size)
 
     def finalize(self, context: Context) -> None:
         _finalize_dataset(context)

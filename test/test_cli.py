@@ -24,7 +24,13 @@ class CliTest(unittest.TestCase):
     def test_review_dispatches_scenario_weights_and_directory(self, review) -> None:
         main(['review', 'scenario.py', '--weights', 'best.pt', '--directory', 'images'])
 
-        review.assert_called_once_with(Path('scenario.py'), Path('best.pt'), Path('images'))
+        review.assert_called_once_with(Path('scenario.py'), Path('best.pt'), Path('images'), False)
+
+    @patch('xxtrain.cli.review')
+    def test_review_dispatches_unlabeled_mode(self, review) -> None:
+        main(['review', 'scenario.py', '--weights', 'best.pt', '--directory', 'images', '--unlabeled'])
+
+        review.assert_called_once_with(Path('scenario.py'), Path('best.pt'), Path('images'), True)
 
     def test_required_subcommand_and_arguments_are_enforced(self) -> None:
         invalid_arguments = [

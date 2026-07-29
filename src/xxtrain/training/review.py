@@ -2,9 +2,12 @@ import os
 import shutil
 from pathlib import Path
 
+import cv2
 from tqdm import tqdm
 from ultralytics.engine.results import Probs
 from ultralytics.models import YOLO
+
+from xxtrain.pipeline.sinks import _letterbox_classification_image
 
 from .scenario import load_scenario
 
@@ -19,7 +22,7 @@ def _review_standard(best_model: YOLO, directory: str | Path) -> None:
     print(f'✅ Inference completed. Results are saved in {best_model.predictor.save_dir}')
 
 
-def _review_classification(best_model: YOLO, directory: str | Path) -> None:
+def _review_classification(best_model: YOLO, directory: str | Path, unlabeled: bool = False) -> None:
     assert best_model.task == 'classify'
     class_names = best_model.names
     name_to_idx = {value: key for key, value in class_names.items()}
@@ -42,15 +45,26 @@ def _review_classification(best_model: YOLO, directory: str | Path) -> None:
     total_count = 0
     mismatched = []
     for image_path in tqdm(image_paths, leave=True, colour='CYAN'):
-        results = best_model.predict(source=image_path, verbose=False, save=False)
+        source = image_path
+        if unlabeled:
+            image = cv2.imread(image_path)
+            assert image is not None
+            source = _letterbox_classification_image(image)
+        results = best_model.predict(source=source, verbose=False, save=False)
         result = results[0]
         total_count += 1
-        true_name = os.path.basename(os.path.dirname(image_path))
-        true_idx = name_to_idx.get(true_name)
-        assert true_idx is not None
         assert isinstance(result.probs, Probs)
         pred_idx = result.probs.top1
         pred_name = class_names[pred_idx]
+        if unlabeled:
+            assert best_model.predictor and hasattr(best_model.predictor, 'save_dir')
+            save_dir = Path(best_model.predictor.save_dir) / pred_name
+            save_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(image_path, save_dir / os.path.basename(image_path))
+            continue
+        true_name = os.path.basename(os.path.dirname(image_path))
+        true_idx = name_to_idx.get(true_name)
+        assert true_idx is not None
         if pred_idx != true_idx:
             assert best_model.predictor and hasattr(best_model.predictor, 'save_dir')
             save_dir = Path(best_model.predictor.save_dir) / f'{true_name} - {pred_name}'
@@ -71,14 +85,16 @@ def _review_classification(best_model: YOLO, directory: str | Path) -> None:
         print(f'📄 Results saved at: {mismatched_txt}\n')
 
 
-def review_model(best_model: YOLO, directory: str | Path) -> None:
+def review_model(best_model: YOLO, directory: str | Path, unlabeled: bool = False) -> None:
+    if unlabeled and best_model.task != 'classify':
+        raise ValueError('Unlabeled review is only supported for classification models.')
     if best_model.task == 'classify':
-        _review_classification(best_model, directory)
+        _review_classification(best_model, directory, unlabeled)
     else:
         _review_standard(best_model, directory)
 
 
-def review(scenario_path: str | Path, weights: str | Path, directory: str | Path) -> None:
+def review(scenario_path: str | Path, weights: str | Path, directory: str | Path, unlabeled: bool = False) -> None:
     load_scenario(scenario_path)
     best_model = YOLO(weights)
-    review_model(best_model, directory)
+    review_model(best_model, directory, unlabeled)

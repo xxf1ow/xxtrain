@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
+from PIL import Image
+
 from xxtrain.training import review
 from xxtrain.training.review import review_model
 
@@ -101,6 +103,57 @@ class TrainingReviewTest(unittest.TestCase):
                 report,
             )
 
+    def test_unlabeled_classification_review_copies_images_to_predicted_class(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_root = root / 'images'
+            first = image_root / 'first.jpg'
+            second = image_root / 'incoming' / 'second.PNG'
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            Image.new('RGB', (10, 5), (10, 20, 30)).save(first)
+            Image.new('RGB', (5, 10), (40, 50, 60)).save(second)
+            first_bytes = first.read_bytes()
+            second_bytes = second.read_bytes()
+            save_dir = root / 'predictions'
+            model = self.classification_model(save_dir)
+            model.predict.side_effect = lambda *, source, **_arguments: [
+                SimpleNamespace(probs=FakeProbs(0 if tuple(source[112, 112]) == (30, 20, 10) else 1))
+            ]
+
+            with patch('xxtrain.training.review.Probs', FakeProbs):
+                review_model(model, image_root, unlabeled=True)
+
+            self.assertEqual(2, model.predict.call_count)
+            self.assertEqual(first_bytes, (save_dir / 'cat' / first.name).read_bytes())
+            self.assertEqual(second_bytes, (save_dir / 'dog' / second.name).read_bytes())
+            self.assertFalse((save_dir / 'mismatched_samples.txt').exists())
+
+    def test_unlabeled_classification_review_letterboxes_raw_image_before_prediction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_root = root / 'images'
+            image = image_root / 'wide.png'
+            image.parent.mkdir(parents=True)
+            Image.new('RGB', (10, 5), (10, 20, 30)).save(image)
+            model = self.classification_model(root / 'predictions')
+
+            with patch('xxtrain.training.review.Probs', FakeProbs):
+                review_model(model, image_root, unlabeled=True)
+
+            source = model.predict.call_args.kwargs['source']
+            self.assertEqual((224, 224, 3), source.shape)
+            self.assertEqual((114, 114, 114), tuple(source[0, 0]))
+            self.assertEqual((30, 20, 10), tuple(source[112, 112]))
+
+    def test_unlabeled_review_rejects_non_classification_model(self) -> None:
+        model = self.detection_model(Path('predictions'))
+
+        with self.assertRaisesRegex(ValueError, 'only supported for classification models'):
+            review_model(model, Path('images'), unlabeled=True)
+
+        model.predict.assert_not_called()
+
     def test_review_loads_scenario_and_checkpoint_without_running_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -119,8 +172,23 @@ class TrainingReviewTest(unittest.TestCase):
             self.assertIsNone(result)
             load_scenario.assert_called_once_with(scenario_path)
             yolo.assert_called_once_with(weights)
-            inspect_predictions.assert_called_once_with(model, directory)
+            inspect_predictions.assert_called_once_with(model, directory, False)
             model.val.assert_not_called()
+
+    def test_review_forwards_unlabeled_mode(self) -> None:
+        scenario_path = Path('scenario.py')
+        weights = Path('best.pt')
+        directory = Path('images')
+        model = self.classification_model(Path('predictions'))
+
+        with (
+            patch('xxtrain.training.review.load_scenario'),
+            patch('xxtrain.training.review.YOLO', return_value=model),
+            patch('xxtrain.training.review.review_model') as inspect_predictions,
+        ):
+            review(scenario_path, weights, directory, unlabeled=True)
+
+        inspect_predictions.assert_called_once_with(model, directory, True)
 
 
 if __name__ == '__main__':
