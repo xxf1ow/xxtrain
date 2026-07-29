@@ -1,5 +1,4 @@
 import json
-import os
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
@@ -7,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import xxtrain.data as data
+import xxtrain.data.formats.coco as coco
 from xxtrain.data import (
     Annotation,
     Bbox,
@@ -22,7 +22,6 @@ from xxtrain.data import (
     Pose,
 )
 from xxtrain.data.formats import read_coco
-import xxtrain.data.formats.coco as coco
 from xxtrain.data.formats.coco import write_coco
 
 
@@ -293,7 +292,10 @@ class CocoWriterTest(unittest.TestCase):
                 write_bytes(temporary_path, b'partial')
                 raise OSError('write failed')
 
-            with patch.object(Path, 'write_bytes', autospec=True, side_effect=write_partial), self.assertRaises(OSError):
+            with (
+                patch.object(Path, 'write_bytes', autospec=True, side_effect=write_partial),
+                self.assertRaises(OSError),
+            ):
                 write_coco(self._document(), path)
 
             self.assertEqual(b'sentinel', path.read_bytes())
@@ -304,7 +306,7 @@ class CocoWriterTest(unittest.TestCase):
             path = Path(temp_dir) / 'annotations.json'
             path.write_bytes(b'sentinel')
 
-            with patch.object(coco, 'os', os, create=True), patch.object(os, 'replace', side_effect=OSError('replace failed')):
+            with patch.object(coco.os, 'replace', side_effect=OSError('replace failed')):
                 with self.assertRaises(OSError):
                     write_coco(self._document(), path)
 

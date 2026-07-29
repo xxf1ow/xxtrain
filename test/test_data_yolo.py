@@ -271,10 +271,7 @@ class YoloFormatTest(unittest.TestCase):
 
     def test_detect_encoder_rejects_bbox_corners_outside_image(self) -> None:
         labels = LabelCatalog(names=('x',))
-        annotations = (
-            Bbox(label='x', x1=-1, y1=10, x2=20, y2=50),
-            Bbox(label='x', x1=190, y1=10, x2=210, y2=50),
-        )
+        annotations = (Bbox(label='x', x1=-1, y1=10, x2=20, y2=50), Bbox(label='x', x1=190, y1=10, x2=210, y2=50))
         for annotation in annotations:
             with self.subTest(annotation=annotation):
                 with self.assertRaisesRegex(ValueError, 'YOLO detect bbox must be inside image bounds'):

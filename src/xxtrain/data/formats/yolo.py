@@ -69,19 +69,18 @@ def decode_detect(line: str, image_info: ImageInfo, labels: LabelCatalog) -> Bbo
     x1, y1 = x_center - width / 2.0, y_center - height / 2.0
     x2, y2 = x_center + width / 2.0, y_center + height / 2.0
     _validate_bbox_inside_image(x1, y1, x2, y2, image_info, 'YOLO detect bbox must be inside image bounds')
-    return Bbox(
-        label=label,
-        x1=x1,
-        y1=y1,
-        x2=x2,
-        y2=y2,
-    )
+    return Bbox(label=label, x1=x1, y1=y1, x2=x2, y2=y2)
 
 
 def encode_detect(annotation: Bbox, image_info: ImageInfo, labels: LabelCatalog) -> str:
     label_id = labels.index(annotation.label)
     _validate_bbox_inside_image(
-        annotation.x1, annotation.y1, annotation.x2, annotation.y2, image_info, 'YOLO detect bbox must be inside image bounds'
+        annotation.x1,
+        annotation.y1,
+        annotation.x2,
+        annotation.y2,
+        image_info,
+        'YOLO detect bbox must be inside image bounds',
     )
     x_center, y_center, width, height = _bbox_values(annotation, image_info)
     _validate_normalized((x_center, y_center, width, height), 'YOLO detect values must be normalized')
