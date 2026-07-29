@@ -1,8 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from unittest.mock import patch
 
 import xxtrain.data as data
 from xxtrain.data import (
@@ -20,6 +22,7 @@ from xxtrain.data import (
     Pose,
 )
 from xxtrain.data.formats import read_coco
+import xxtrain.data.formats.coco as coco
 from xxtrain.data.formats.coco import write_coco
 
 
@@ -267,12 +270,49 @@ class _UnknownAnnotation(Annotation):
 
 
 class CocoWriterTest(unittest.TestCase):
+    def _document(self) -> CocoDoc:
+        return CocoDoc(
+            labels=LabelCatalog(('object',)),
+            images=(CocoImage(file_name='image.jpg', info=ImageInfo(width=10, height=10), annotations=()),),
+        )
+
     def _round_trip(self, document: CocoDoc) -> tuple[CocoDoc, dict[str, object]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / 'nested' / 'annotations.json'
             write_coco(document, path)
             payload = json.loads(path.read_text(encoding='utf-8'))
             return read_coco(path), payload
+
+    def test_writer_failure_preserves_existing_document_and_removes_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'annotations.json'
+            path.write_bytes(b'sentinel')
+            write_bytes = Path.write_bytes
+
+            def write_partial(temporary_path: Path, content: bytes) -> int:
+                write_bytes(temporary_path, b'partial')
+                raise OSError('write failed')
+
+            with patch.object(Path, 'write_bytes', autospec=True, side_effect=write_partial), self.assertRaises(OSError):
+                write_coco(self._document(), path)
+
+            self.assertEqual(b'sentinel', path.read_bytes())
+            self.assertEqual([], list(path.parent.glob(f'.{path.name}.*.tmp')))
+
+    def test_replace_failure_preserves_existing_document_cleans_up_and_allows_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'annotations.json'
+            path.write_bytes(b'sentinel')
+
+            with patch.object(coco, 'os', os, create=True), patch.object(os, 'replace', side_effect=OSError('replace failed')):
+                with self.assertRaises(OSError):
+                    write_coco(self._document(), path)
+
+            self.assertEqual(b'sentinel', path.read_bytes())
+            self.assertEqual([], list(path.parent.glob(f'.{path.name}.*.tmp')))
+
+            write_coco(self._document(), path)
+            self.assertEqual(self._document(), read_coco(path))
 
     def test_round_trip_preserves_independent_bbox_polygon_and_pose(self) -> None:
         annotations = (

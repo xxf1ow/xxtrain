@@ -1,5 +1,7 @@
 import json
 import math
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -425,5 +427,25 @@ def write_coco(doc: CocoDoc, json_path: str | Path) -> None:
     payload = _encode_coco(doc)
     content = (json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
     path = Path(json_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    temporary_path: Path | None = None
+    descriptor: int | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent)
+        temporary_path = Path(temporary_name)
+        os.close(descriptor)
+        descriptor = None
+        temporary_path.write_bytes(content)
+        os.replace(temporary_path, path)
+    except Exception:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
