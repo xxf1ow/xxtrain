@@ -65,6 +65,26 @@ class PipelineValueObjectsTest(unittest.TestCase):
         self.assertEqual((2, 3), (report.train_annotation_count, report.val_annotation_count))
         self.assertEqual({'group': 1}, report.missing_annotation_counts)
 
+    def test_conversion_report_counts_labels_and_source_files(self) -> None:
+        report = ConversionReport()
+        first = Path('group/a.jpg')
+        second = Path('group/b.jpg')
+
+        report.record_source_label('tl', first)
+        report.record_source_label('tl', first)
+        report.record_source_label('tl', second)
+        report.record_source_label('旧标签', second)
+        report.record_ignored_label('旧标签')
+        report.record_output_label('Point')
+        report.record_output_label('Point')
+        report.set_missing_output_labels(('tc',))
+
+        self.assertEqual({'tl': 3, '旧标签': 1}, report.source_label_counts)
+        self.assertEqual({'tl': {first, second}, '旧标签': {second}}, report.source_label_files)
+        self.assertEqual({'旧标签': 1}, report.ignored_label_counts)
+        self.assertEqual({'Point': 2}, report.output_label_counts)
+        self.assertEqual(('tc',), report.missing_output_labels)
+
     def test_config_is_immutable(self) -> None:
         config = ConversionConfig(
             task_name='detect',

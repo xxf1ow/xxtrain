@@ -100,6 +100,11 @@ class ConversionReport:
     skipped_labels: set[str] = field(default_factory=set)
     skipped_files: set[Path] = field(default_factory=set)
     missing_annotation_counts: dict[str, int] = field(default_factory=dict)
+    source_label_counts: dict[str, int] = field(default_factory=dict)
+    source_label_files: dict[str, set[Path]] = field(default_factory=dict)
+    ignored_label_counts: dict[str, int] = field(default_factory=dict)
+    output_label_counts: dict[str, int] = field(default_factory=dict)
+    missing_output_labels: tuple[str, ...] = ()
 
     def record_output(self, *, train_item: str | None, val_item: str | None, annotation_count: int) -> None:
         if train_item is not None:
@@ -119,6 +124,19 @@ class ConversionReport:
 
     def record_missing_annotations(self, source_group: str) -> None:
         self.missing_annotation_counts[source_group] = self.missing_annotation_counts.get(source_group, 0) + 1
+
+    def record_source_label(self, label: str, source_path: Path) -> None:
+        self.source_label_counts[label] = self.source_label_counts.get(label, 0) + 1
+        self.source_label_files.setdefault(label, set()).add(source_path)
+
+    def record_ignored_label(self, label: str) -> None:
+        self.ignored_label_counts[label] = self.ignored_label_counts.get(label, 0) + 1
+
+    def record_output_label(self, label: str) -> None:
+        self.output_label_counts[label] = self.output_label_counts.get(label, 0) + 1
+
+    def set_missing_output_labels(self, labels: tuple[str, ...]) -> None:
+        self.missing_output_labels = labels
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
