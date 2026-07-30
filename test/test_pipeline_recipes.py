@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,17 @@ from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
 
 
+class CatalogOnlySink:
+    def __init__(self, input_type: type):
+        self.input_type = input_type
+
+    def write(self, item, context: Context) -> None:
+        raise AssertionError('catalog-only conversion must not write outputs')
+
+    def finalize(self, context: Context) -> None:
+        pass
+
+
 class PipelineRecipeTest(unittest.TestCase):
     def copy_fixture(self, fixture_name: str) -> Path:
         temp_dir = tempfile.TemporaryDirectory(prefix='xxtrain-recipe-')
@@ -36,12 +48,13 @@ class PipelineRecipeTest(unittest.TestCase):
         return root_path
 
     def converted_labels(self, task_type: TaskType, root_path: Path) -> LabelCatalog:
+        recipe = standard_recipe(task_type)
+        recipe = replace(recipe, sink=CatalogOnlySink(recipe.sink.input_type))
         with (
             patch.object(DirectorySource, 'read', return_value=iter(())),
-            patch('xxtrain.pipeline.workflow._validate_output_labels'),
             patch('xxtrain.pipeline.workflow.print_conversion_report') as print_report,
         ):
-            convert_dataset(standard_recipe(task_type), root_path)
+            convert_dataset(recipe, root_path)
         (context,) = print_report.call_args.args
         return context.config.labels
 

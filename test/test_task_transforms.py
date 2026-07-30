@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-from test.support.scenarios import load_case_scenario, materialization_only
+from test.support.scenarios import load_case_scenario
 from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
@@ -25,20 +25,28 @@ class TaskTransformsTest(unittest.TestCase):
 
         for task_type in ('point-detect', 'point-classify', 'point-segment'):
             scenario = load_case_scenario(task_type)
-            with materialization_only(task_type):
-                convert_dataset(
-                    scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
-                )
+            convert_dataset(
+                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+            )
 
         dataset = yaml.safe_load((root_path / 'point-detect' / 'dataset.yaml').read_text(encoding='utf-8'))
         self.assertEqual({0: 'Point'}, dataset['names'])
         self.assertEqual(
-            '0 0.601823 0.480556 0.254688 0.400000',
-            (root_path / 'point-detect' / '20260620' / '0000.txt').read_text(encoding='utf-8'),
+            [
+                '0 0.601823 0.480556 0.254688 0.400000',
+                '0 0.104167 0.185185 0.104167 0.185185',
+                '0 0.234375 0.185185 0.104167 0.185185',
+                '0 0.364583 0.185185 0.104167 0.185185',
+            ],
+            (root_path / 'point-detect' / '20260620' / '0000.txt').read_text(encoding='utf-8').splitlines(),
         )
 
         with Image.open(root_path / 'point-classify' / 'val' / '03-cc' / '20260620_0_0.jpg') as crop:
             self.assertEqual((224, 224), crop.size)
+        self.assertEqual(
+            {'00-tl', '01-tc', '02-cl', '03-cc'},
+            {path.name for path in (root_path / 'point-classify' / 'val').iterdir() if path.is_dir()},
+        )
 
         self.assertEqual(
             '0 0.460208 0.490227 0.449131 0.496201 0.278136 0.073777',

@@ -23,4 +23,40 @@
             <ymax>735</ymax>
         </bndbox>
     </object>
+    <object>
+        <name>tl</name>
+        <pose>Unspecified</pose>
+        <truncated>0</truncated>
+        <difficult>0</difficult>
+        <bndbox>
+            <xmin>100</xmin>
+            <ymin>100</ymin>
+            <xmax>300</xmax>
+            <ymax>300</ymax>
+        </bndbox>
+    </object>
+    <object>
+        <name>tc</name>
+        <pose>Unspecified</pose>
+        <truncated>0</truncated>
+        <difficult>0</difficult>
+        <bndbox>
+            <xmin>350</xmin>
+            <ymin>100</ymin>
+            <xmax>550</xmax>
+            <ymax>300</ymax>
+        </bndbox>
+    </object>
+    <object>
+        <name>cl</name>
+        <pose>Unspecified</pose>
+        <truncated>0</truncated>
+        <difficult>0</difficult>
+        <bndbox>
+            <xmin>600</xmin>
+            <ymin>100</ymin>
+            <xmax>800</xmax>
+            <ymax>300</ymax>
+        </bndbox>
+    </object>
 </annotation>

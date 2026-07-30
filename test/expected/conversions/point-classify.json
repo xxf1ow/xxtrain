@@ -4,10 +4,31 @@
     "train.txt",
     "train/03-cc/20260620_1_0.jpg",
     "val.txt",
+    "val/00-tl/20260620_0_1.jpg",
+    "val/01-tc/20260620_0_2.jpg",
+    "val/02-cl/20260620_0_3.jpg",
     "val/03-cc/20260620_0_0.jpg"
   ],
   "images": {
     "train/03-cc/20260620_1_0.jpg": {
+      "size": [
+        224,
+        224
+      ]
+    },
+    "val/00-tl/20260620_0_1.jpg": {
+      "size": [
+        224,
+        224
+      ]
+    },
+    "val/01-tc/20260620_0_2.jpg": {
+      "size": [
+        224,
+        224
+      ]
+    },
+    "val/02-cl/20260620_0_3.jpg": {
       "size": [
         224,
         224
@@ -22,7 +43,7 @@
   },
   "text_files": {
     "train.txt": "<ROOT>/point-classify/train/03-cc/20260620_1_0.jpg",
-    "val.txt": "<ROOT>/point-classify/val/03-cc/20260620_0_0.jpg"
+    "val.txt": "<ROOT>/point-classify/val/03-cc/20260620_0_0.jpg\n<ROOT>/point-classify/val/00-tl/20260620_0_1.jpg\n<ROOT>/point-classify/val/01-tc/20260620_0_2.jpg\n<ROOT>/point-classify/val/02-cl/20260620_0_3.jpg"
   },
   "yaml_files": {
     "dataset.yaml": {
