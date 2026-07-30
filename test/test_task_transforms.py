@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-from test.support.scenarios import load_case_scenario
+from test.support.scenarios import load_case_scenario, materialization_only
 from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
@@ -25,9 +25,10 @@ class TaskTransformsTest(unittest.TestCase):
 
         for task_type in ('point-detect', 'point-classify', 'point-segment'):
             scenario = load_case_scenario(task_type)
-            convert_dataset(
-                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
-            )
+            with materialization_only(task_type):
+                convert_dataset(
+                    scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+                )
 
         dataset = yaml.safe_load((root_path / 'point-detect' / 'dataset.yaml').read_text(encoding='utf-8'))
         self.assertEqual({0: 'Point'}, dataset['names'])

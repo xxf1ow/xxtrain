@@ -5,14 +5,12 @@ import sys
 import tempfile
 import unittest
 import warnings
-from contextlib import nullcontext
 from pathlib import Path
-from unittest.mock import patch
 
 from PIL import Image
 
 from test.support.output_manifest import collect_output_manifest
-from test.support.scenarios import load_case_scenario
+from test.support.scenarios import load_case_scenario, materialization_only
 from xxtrain.pipeline import convert_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,12 +31,6 @@ BASELINE_CASES = [
     ('light1-detect', 'light'),
     ('light2-detect', 'light'),
 ]
-
-
-def materialization_only(task_type: str):
-    return (
-        patch('xxtrain.pipeline.workflow._validate_output_labels') if task_type == 'point-classify' else nullcontext()
-    )
 
 
 def update_snapshots() -> None:

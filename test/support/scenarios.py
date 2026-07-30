@@ -1,4 +1,6 @@
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
 from xxtrain.training import TrainingScenario, load_scenario
 
@@ -23,3 +25,9 @@ SCENARIO_PATHS = {
 
 def load_case_scenario(name: str) -> TrainingScenario:
     return load_scenario(SCENARIO_PATHS[name])
+
+
+def materialization_only(task_type: str):
+    return (
+        patch('xxtrain.pipeline.workflow._validate_output_labels') if task_type == 'point-classify' else nullcontext()
+    )
