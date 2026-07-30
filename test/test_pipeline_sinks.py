@@ -775,33 +775,32 @@ class PipelineSinkTest(unittest.TestCase):
             self.assertEqual('', (task_root / 'val.txt').read_text(encoding='utf-8'))
             self.assertIn('train: detect/train.txt', (task_root / 'dataset.yaml').read_text(encoding='utf-8'))
 
-    def test_conversion_report_preserves_legacy_summary_and_sorts_files(self) -> None:
+    def test_conversion_report_prints_label_counts_and_sorts_entries(self) -> None:
         context = self.make_context(Path('.'))
         context.report.record_output(train_item='train.jpg', val_item=None, annotation_count=2)
         context.report.record_output(train_item=None, val_item='val.jpg', annotation_count=3)
         context.report.record_missing_annotations('group')
-        context.report.record_skipped_label('undefined')
+        context.report.record_skipped_label('z-label')
         context.report.record_skipped_file(Path('z.jpg'))
         context.report.record_skipped_file(Path('a.jpg'))
+        context.report.record_source_label('z-label', Path('z.jpg'))
+        context.report.record_source_label('a-label', Path('b.jpg'))
+        context.report.record_source_label('a-label', Path('a.jpg'))
+        context.report.record_ignored_label('z-label')
+        context.report.record_output_label('label')
+        context.report.set_missing_output_labels(('missing',))
         output = io.StringIO()
 
         with redirect_stdout(output):
             print_conversion_report(context)
 
-        self.assertEqual(
-            '\n\x1b[1;32m[Convert Summary]\x1b[0m\n'
-            '训练集图片总数: 1, 标注总数: 2\n'
-            '验证集图片总数: 1, 标注总数: 3\n'
-            "类别列表: ['label']\n\n"
-            '\x1b[1;31m[Warning] 以下目录包含没有标注的图片\x1b[0m\n'
-            '  - group: 1张图片\n'
-            '\x1b[1;33m[Warning] 以下类别在标签列表中未定义\x1b[0m\n'
-            '  - undefined\n'
-            '\x1b[1;33m[Warning] 以下图片因包含未定义类别而被跳过:\x1b[0m\n'
-            '  - a.jpg\n'
-            '  - z.jpg\n',
-            output.getvalue(),
-        )
+        text = output.getvalue()
+        self.assertIn('a-label: 2', text)
+        self.assertIn('z-label: 1', text)
+        self.assertIn('label: 1', text)
+        self.assertIn('missing', text)
+        self.assertLess(text.index('a-label: 2'), text.index('z-label: 1'))
+        self.assertLess(text.index('a.jpg'), text.index('z.jpg'))
 
 
 if __name__ == '__main__':

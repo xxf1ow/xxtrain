@@ -116,8 +116,7 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(set(), context.report.skipped_labels)
         self.assertEqual(set(), context.report.skipped_files)
         self.assertEqual(
-            {'parent': 1, 'other-parent': 1, 'child': 1, 'other-child': 1},
-            context.report.source_label_counts,
+            {'parent': 1, 'other-parent': 1, 'child': 1, 'other-child': 1}, context.report.source_label_counts
         )
         self.assertEqual({'other-parent': 1, 'other-child': 1}, context.report.ignored_label_counts)
 

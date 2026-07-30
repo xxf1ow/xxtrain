@@ -39,7 +39,7 @@ def _normalize_pose(annotation: Annotation, pose_label: str, keypoint_labels: tu
 
 
 def validate_annotations_for_task(
-    annotations: tuple[Annotation, ...], task_type: TaskType, labels: tuple[str, ...]
+    annotations: tuple[Annotation, ...], task_type: TaskType, labels: tuple[str, ...], *, validate_labels: bool = True
 ) -> tuple[Annotation, ...]:
     if task_type is TaskType.DETECT:
         expected = Bbox
@@ -57,7 +57,7 @@ def validate_annotations_for_task(
     for annotation in annotations:
         if not isinstance(annotation, expected):
             raise TypeError(f'{task_type.value} does not support {type(annotation).__name__}')
-        if annotation.label not in labels:
+        if validate_labels and annotation.label not in labels:
             raise ValueError(f'Unknown {task_type.value} label: {annotation.label}')
         if task_type is TaskType.POSE:
             expected_keypoints = labels[1:]
@@ -110,7 +110,12 @@ class ReadAnnotations(ItemProcessor[Sample, Sample]):
                 raise ValueError('multiple non-empty annotation formats')
             annotations = tuple(annotation for values in source_values for annotation in values)
 
-        validate_annotations_for_task(annotations, context.config.task_type, context.config.labels.names)
+        validate_annotations_for_task(
+            annotations,
+            context.config.task_type,
+            context.config.labels.names,
+            validate_labels=context.config.task_type is TaskType.POSE,
+        )
         return item.wrap(annotations=annotations)
 
 

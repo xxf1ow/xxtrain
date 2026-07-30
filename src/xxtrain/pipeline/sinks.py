@@ -430,11 +430,24 @@ def print_conversion_report(context: Context) -> None:
         print('\033[1;31m[Warning] 以下目录包含没有标注的图片\033[0m')
         for directory, count in report.missing_annotation_counts.items():
             print(f'  - {directory}: {count}张图片')
-    if report.skipped_labels:
-        print('\033[1;33m[Warning] 以下类别在标签列表中未定义\033[0m')
-        for label in report.skipped_labels:
+    if report.source_label_counts:
+        print('\n来源标签统计:')
+        for label, count in sorted(report.source_label_counts.items()):
+            file_count = len(report.source_label_files[label])
+            print(f'  - {label}: {count}条标注, {file_count}张图片')
+    if report.ignored_label_counts:
+        print('\n已忽略的非目标标签:')
+        for label, count in sorted(report.ignored_label_counts.items()):
+            print(f'  - {label}: {count}条标注')
+    if report.output_label_counts:
+        print('\n最终输出类别统计:')
+        for label, count in sorted(report.output_label_counts.items()):
+            print(f'  - {label}: {count}条样本')
+    if report.missing_output_labels:
+        print('\n\033[1;31m[Error] 以下目标类别没有最终输出样本\033[0m')
+        for label in report.missing_output_labels:
             print(f'  - {label}')
     if report.skipped_files:
-        print('\033[1;33m[Warning] 以下图片因包含未定义类别而被跳过:\033[0m')
+        print('\033[1;33m[Warning] 以下图片包含被忽略的非目标标签:\033[0m')
         for path in sorted(report.skipped_files):
             print(f'  - {path}')

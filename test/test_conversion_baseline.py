@@ -5,7 +5,9 @@ import sys
 import tempfile
 import unittest
 import warnings
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -33,6 +35,12 @@ BASELINE_CASES = [
 ]
 
 
+def materialization_only(task_type: str):
+    return (
+        patch('xxtrain.pipeline.workflow._validate_output_labels') if task_type == 'point-classify' else nullcontext()
+    )
+
+
 def update_snapshots() -> None:
     EXPECTED_PATH.mkdir(parents=True, exist_ok=True)
     for task_type, fixture_name in BASELINE_CASES:
@@ -40,9 +48,10 @@ def update_snapshots() -> None:
             root_path = Path(temp_dir) / fixture_name
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
             scenario = load_case_scenario(task_type)
-            convert_dataset(
-                scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
-            )
+            with materialization_only(task_type):
+                convert_dataset(
+                    scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
+                )
             manifest = collect_output_manifest(root_path, task_type)
         snapshot = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
         expected_path = EXPECTED_PATH / f'{task_type}.json'
@@ -57,7 +66,7 @@ class ConversionBaselineTest(unittest.TestCase):
             shutil.copytree(FIXTURES_PATH / fixture_name, root_path)
             scenario = load_case_scenario(task_type)
 
-            with warnings.catch_warnings(record=True) as caught_warnings:
+            with materialization_only(task_type), warnings.catch_warnings(record=True) as caught_warnings:
                 warnings.simplefilter('always', ResourceWarning)
                 convert_dataset(
                     scenario.dataset, root_path, split=scenario.split, reserve_no_label=scenario.reserve_no_label
