@@ -47,6 +47,8 @@ Coordinate rules:
 Conversion uses a typed, streaming `Source -> Pipeline -> Sink` architecture:
 
 - `DirectorySource` discovers samples in deterministic directory/image order.
+- Standard annotation pipelines derive fixed same-stem candidates from each image: `labels/<name>.txt`, `anns/<name>.xml`, and `anns_seg/<name>.json`.
+- Pose may assemble a LabelImg box with LabelMe keypoints. Other tasks reject multiple non-empty annotation formats instead of merging ambiguous duplicates.
 - Immutable records (`Sample`, `ImageRef`, and stage-specific `*Input` / `*Output` values) carry data between processors.
 - `ItemProcessor` maps one input to at most one output; `ExpandProcessor` maps one input to multiple ordered outputs.
 - `Pipeline` validates neighboring processor types and streams values without a shared payload dictionary.
@@ -156,6 +158,8 @@ The Scenario file's parent directory is the dataset root:
 
 Standard recipes read labels at conversion time from `<scenario_dir>/src/labels.txt`; special recipes carry a fixed `LabelCatalog` in their Scenario. Non-classification outputs are written under `<scenario_dir>/<recipe.name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are materialized under `train/<class>/` and `val/<class>/` as centered `224×224` Letterbox images; their finalization also writes `train.txt`, `val.txt`, and `dataset.yaml`. Existing generated classification directories from before this contract must be deleted and rebuilt from the sibling `src/` input directory. Generated outputs are disposable, but a Scenario's `src/` directory is immutable source data and must never be deleted or modified during rebuilding.
 
+Automatic annotation-file discovery and automatic class-catalog discovery are separate contracts. `DirectorySource` supports the former only: it uses the fixed same-stem paths above and reads every annotation object in the selected file. It does not recursively search arbitrary locations or aggregate LabelImg/LabelMe labels across the dataset. Standard directory recipes therefore still require `src/labels.txt`, preserve its declared order, and reject annotations whose labels are absent from that catalog. COCO sources may derive a catalog from their category schema; special recipes may provide one explicitly.
+
 `TrainingScenario.split=N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `TrainingScenario.reserve_no_label` defaults to `False`; set it to `True` in the Scenario only when zero-annotation images must remain in split lists. For every task type, training treats `<scenario_dir>/<recipe.name>/dataset.yaml` as the conversion-completion signal and skips conversion only when that file exists. A classification output directory without `dataset.yaml` is incomplete and must be converted again. Source-change detection and forced rebuilding remain future work.
 
 The repository ignores `data/` by default. New Scenario files therefore require forced staging:
@@ -166,10 +170,33 @@ git add -f data/<dataset>/<scenario>.py
 
 Do not force-add raw datasets or generated outputs.
 
-## Migration status
+## Project status
 
 - Behavior baseline: complete.
 - Data layer migration: complete.
 - Typed pipeline and conversion-entry cutover: complete.
 - Scenario-driven training, export, and prediction-review migration: complete.
 - Packaging and installed CLI: complete.
+- LabelImg/LabelMe/YOLO/COCO read/write primitives and pipeline round-trips: complete.
+- Classification review for unlabeled image directories: complete.
+- Fixed-layout annotation-file discovery by image: complete.
+- Automatic LabelImg/LabelMe class-catalog discovery for directory sources: pending.
+- Source-change detection and forced dataset rebuild: pending design.
+- Offline semi-supervised training and the thin platform: direction approved, implementation blocked on the preceding input/build boundaries.
+
+Active milestones and acceptance gates are tracked in `PROGRESS.md`. Durable architecture and completed capability boundaries belong in `ARCHITECTURE.md`; completed implementation history remains in Git rather than the active progress document.
+
+## Approved next-stage direction
+
+The following decisions are approved planning constraints, not implemented capabilities:
+
+- A customer-facing training job always trains exactly one model from a developer-defined task template. Multi-level business tasks do not create an automatic model DAG.
+- A template may require complete, per-image human-confirmed prerequisite annotations before accepting a partial seed set of target annotations.
+- Secondary Point classification and segmentation depend on complete reviewed Point boxes, not on a prior `point-detect` job or checkpoint.
+- Managed datasets contain original images plus human-confirmed labels only. Candidate predictions, unreviewed pseudo-labels, review progress, frozen input manifests, and materialized crops are workspace or run artifacts.
+- Starting training locks managed images and labels. Editing requires terminating the active training run.
+- Point boxes use one hierarchical label value: `Point` is a reviewed but unclassified box; `tl`, `tc`, `cl`, and `cc` are classified Point boxes. Detection projects all five labels to `Point`; classification uses only the four subclasses.
+- Point prerequisite completion is per source image, not per predicted box. Point boxes may not overlap, and every valid Point box has a real secondary target; a missing recorded secondary label means unlabeled target data rather than a negative example.
+- V1 product acceptance uses an independently submitted Point secondary classification or segmentation job to validate prerequisite annotation acquisition, seed-only target annotation, disposable crop generation, training progress, and reviewed-label promotion.
+
+The complete durable direction is recorded in `ARCHITECTURE.md` and the active milestone ordering in `PROGRESS.md`. Algorithm choices for similarity-aware seed budgets, pseudo-label thresholds, review selection, and stopping criteria remain deliberately unresolved until real-data experiments.
