@@ -78,6 +78,7 @@ class PipelineSinkTest(unittest.TestCase):
             self.assertEqual('', (root / 'detect' / 'val.txt').read_text(encoding='utf-8'))
             self.assertTrue((root / 'detect' / 'dataset.yaml').is_file())
             self.assertEqual((1, 1), (context.report.train_image_count, context.report.train_annotation_count))
+            self.assertEqual({'label': 1}, context.report.output_label_counts)
 
     def test_yolo_sink_preserves_relative_output_paths_in_split_lists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, chdir(temp_dir):
@@ -729,6 +730,7 @@ class PipelineSinkTest(unittest.TestCase):
                     context.report.val_annotation_count,
                 ),
             )
+            self.assertEqual({'label': 1}, context.report.output_label_counts)
 
     def test_classification_write_failure_raises_before_recording_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -744,6 +746,7 @@ class PipelineSinkTest(unittest.TestCase):
             self.assertEqual(f'failed to write classification image: {target}', str(raised.exception))
             self.assertEqual(([], []), (context.report.train_items, context.report.val_items))
             self.assertEqual((0, 0), (context.report.train_image_count, context.report.val_image_count))
+            self.assertEqual({}, context.report.output_label_counts)
 
     def test_sinks_reject_wrong_runtime_input_type(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

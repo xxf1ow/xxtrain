@@ -88,6 +88,7 @@ def _finalize_dataset(context: Context) -> None:
 
 class YoloDatasetSink:
     input_type = EncodeOutput
+    tracks_output_labels = True
 
     def write(self, item: EncodeOutput, context: Context) -> None:
         if not isinstance(item, EncodeOutput):
@@ -108,6 +109,9 @@ class YoloDatasetSink:
                 crop.save(image_path)
 
         _append_suffix(output_base, '.txt').write_text('\n'.join(item.lines), encoding='utf-8')
+        for line in item.lines:
+            label_index = int(line.split(maxsplit=1)[0])
+            context.report.record_output_label(context.config.labels.names[label_index])
         if not item.lines:
             context.report.record_missing_annotations(sample.source_group)
             if not context.config.reserve_no_label:
@@ -364,6 +368,7 @@ def _letterbox_classification_image(image: np.ndarray, image_size: int = 224) ->
 
 class ClassificationDatasetSink:
     input_type = ClassifyOutput
+    tracks_output_labels = True
 
     def __init__(self, *, image_size: int = 224, indexed_class_directories: bool = False):
         self.image_size = image_size
@@ -381,6 +386,7 @@ class ClassificationDatasetSink:
         image = self._prepare_image(item)
         in_train, in_val = split_membership(item.sample.source_index, context.config.split)
         selected_splits = (('train', in_train), ('val', in_val))
+        wrote_output = False
         for split_name, selected in selected_splits:
             if not selected:
                 continue
@@ -397,6 +403,9 @@ class ClassificationDatasetSink:
                 val_item=output_path if split_name == 'val' else None,
                 annotation_count=1,
             )
+            wrote_output = True
+        if wrote_output:
+            context.report.record_output_label(item.class_name)
 
     def _prepare_image(self, item: ClassifyOutput) -> np.ndarray:
         image = cv2.imread(str(item.sample.image.path))
