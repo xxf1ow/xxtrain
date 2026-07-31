@@ -1,9 +1,14 @@
+import copy
+import json
 import shutil
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from test.support.scenarios import load_case_scenario
 from test.test_conversion_baseline import FIXTURES_PATH, PROJECT_ROOT
 from xxtrain.data import LabelCatalog
 from xxtrain.pipeline import DatasetRecipe, convert_dataset, standard_recipe
@@ -23,6 +28,17 @@ from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
 
 
+class CatalogOnlySink:
+    def __init__(self, input_type: type):
+        self.input_type = input_type
+
+    def write(self, item, context: Context) -> None:
+        raise AssertionError('catalog-only conversion must not write outputs')
+
+    def finalize(self, context: Context) -> None:
+        pass
+
+
 class PipelineRecipeTest(unittest.TestCase):
     def copy_fixture(self, fixture_name: str) -> Path:
         temp_dir = tempfile.TemporaryDirectory(prefix='xxtrain-recipe-')
@@ -32,11 +48,13 @@ class PipelineRecipeTest(unittest.TestCase):
         return root_path
 
     def converted_labels(self, task_type: TaskType, root_path: Path) -> LabelCatalog:
+        recipe = standard_recipe(task_type)
+        recipe = replace(recipe, sink=CatalogOnlySink(recipe.sink.input_type))
         with (
             patch.object(DirectorySource, 'read', return_value=iter(())),
             patch('xxtrain.pipeline.workflow.print_conversion_report') as print_report,
         ):
-            convert_dataset(standard_recipe(task_type), root_path)
+            convert_dataset(recipe, root_path)
         (context,) = print_report.call_args.args
         return context.config.labels
 
@@ -96,6 +114,73 @@ class PipelineRecipeTest(unittest.TestCase):
 
         self.assertEqual(2, report.train_image_count + report.val_image_count)
         self.assertTrue((root_path / 'detect' / 'dataset.yaml').is_file())
+
+    def test_labelimg_extra_label_is_filtered_and_reported(self) -> None:
+        root_path = self.copy_fixture('standard-detect')
+        xml_path = root_path / 'src' / '20260620' / 'anns' / '0000.xml'
+        tree = ET.parse(xml_path)
+        original = tree.getroot().find('object')
+        assert original is not None
+        for label in ('历史标签', '1008'):
+            extra = copy.deepcopy(original)
+            name = extra.find('name')
+            assert name is not None
+            name.text = label
+            tree.getroot().append(extra)
+        tree.write(xml_path, encoding='utf-8')
+
+        report = convert_dataset(standard_recipe(TaskType.DETECT), root_path)
+
+        self.assertEqual(1, report.ignored_label_counts['历史标签'])
+        self.assertEqual(1, report.ignored_label_counts['1008'])
+        self.assertEqual(1, report.source_label_counts['历史标签'])
+        self.assertEqual(1, report.source_label_counts['1008'])
+        self.assertNotIn('历史标签', report.output_label_counts)
+        self.assertNotIn('1008', report.output_label_counts)
+        self.assertGreater(report.output_label_counts['cc'], 0)
+
+    def test_labelme_extra_label_is_filtered_and_reported(self) -> None:
+        root_path = self.copy_fixture('standard-segment')
+        json_path = root_path / 'src' / '251010' / 'anns_seg' / '0000.json'
+        payload = json.loads(json_path.read_text(encoding='utf-8'))
+        extra = copy.deepcopy(payload['shapes'][0])
+        extra['label'] = 'legacy'
+        payload['shapes'].append(extra)
+        json_path.write_text(json.dumps(payload), encoding='utf-8')
+
+        report = convert_dataset(standard_recipe(TaskType.SEGMENT), root_path)
+
+        self.assertEqual(1, report.ignored_label_counts['legacy'])
+        self.assertNotIn('legacy', report.output_label_counts)
+        self.assertGreater(report.output_label_counts['switch'], 0)
+
+    def test_missing_final_target_label_fails_before_finalize(self) -> None:
+        root_path = self.copy_fixture('standard-detect')
+        (root_path / 'src' / 'labels.txt').write_text('cc\nmissing\n', encoding='utf-8')
+
+        with self.assertRaisesRegex(ValueError, 'Converted dataset has no output samples for target labels: missing'):
+            convert_dataset(standard_recipe(TaskType.DETECT), root_path)
+
+        self.assertFalse((root_path / 'detect' / 'dataset.yaml').exists())
+
+    def test_pose_coverage_requires_object_label_not_keypoint_names(self) -> None:
+        root_path = self.copy_fixture('standard-pose')
+
+        report = convert_dataset(standard_recipe(TaskType.POSE), root_path)
+
+        object_label = (root_path / 'src' / 'labels.txt').read_text(encoding='utf-8').splitlines()[0]
+        self.assertGreater(report.output_label_counts[object_label], 0)
+        self.assertEqual((), report.missing_output_labels)
+
+    def test_special_recipe_validates_projected_output_label(self) -> None:
+        root_path = self.copy_fixture('point')
+        scenario = load_case_scenario('point-detect')
+
+        report = convert_dataset(scenario.dataset, root_path)
+
+        self.assertEqual({'Point'}, set(report.output_label_counts))
+        self.assertGreater(report.output_label_counts['Point'], 0)
+        self.assertTrue({'tl', 'tc', 'cl', 'cc'} & set(report.source_label_counts))
 
     def test_pipeline_package_does_not_import_legacy_modules(self) -> None:
         pipeline_root = PROJECT_ROOT / 'src' / 'xxtrain' / 'pipeline'

@@ -96,6 +96,9 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(('known',), tuple(annotation.label for annotation in output.annotations))
         self.assertEqual({'unknown'}, context.report.skipped_labels)
         self.assertEqual({image_path}, context.report.skipped_files)
+        self.assertEqual({'known': 1, 'unknown': 1}, context.report.source_label_counts)
+        self.assertEqual({'known': {image_path}, 'unknown': {image_path}}, context.report.source_label_files)
+        self.assertEqual({'unknown': 1}, context.report.ignored_label_counts)
 
     def test_matching_filter_filters_both_sides_without_reporting_when_not_strict(self) -> None:
         sample = self.make_sample(Path('image.jpg'))
@@ -112,6 +115,10 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(('child',), tuple(value.label for value in output.children))
         self.assertEqual(set(), context.report.skipped_labels)
         self.assertEqual(set(), context.report.skipped_files)
+        self.assertEqual(
+            {'parent': 1, 'other-parent': 1, 'child': 1, 'other-child': 1}, context.report.source_label_counts
+        )
+        self.assertEqual({'other-parent': 1, 'other-child': 1}, context.report.ignored_label_counts)
 
     def test_relabel_returns_new_annotations(self) -> None:
         annotation = Bbox(label='source', x1=0, y1=0, x2=2, y2=2)

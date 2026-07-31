@@ -88,6 +88,7 @@ def _finalize_dataset(context: Context) -> None:
 
 class YoloDatasetSink:
     input_type = EncodeOutput
+    tracks_output_labels = True
 
     def write(self, item: EncodeOutput, context: Context) -> None:
         if not isinstance(item, EncodeOutput):
@@ -108,6 +109,9 @@ class YoloDatasetSink:
                 crop.save(image_path)
 
         _append_suffix(output_base, '.txt').write_text('\n'.join(item.lines), encoding='utf-8')
+        for line in item.lines:
+            label_index = int(line.split(maxsplit=1)[0])
+            context.report.record_output_label(context.config.labels.names[label_index])
         if not item.lines:
             context.report.record_missing_annotations(sample.source_group)
             if not context.config.reserve_no_label:
@@ -364,6 +368,7 @@ def _letterbox_classification_image(image: np.ndarray, image_size: int = 224) ->
 
 class ClassificationDatasetSink:
     input_type = ClassifyOutput
+    tracks_output_labels = True
 
     def __init__(self, *, image_size: int = 224, indexed_class_directories: bool = False):
         self.image_size = image_size
@@ -381,6 +386,7 @@ class ClassificationDatasetSink:
         image = self._prepare_image(item)
         in_train, in_val = split_membership(item.sample.source_index, context.config.split)
         selected_splits = (('train', in_train), ('val', in_val))
+        wrote_output = False
         for split_name, selected in selected_splits:
             if not selected:
                 continue
@@ -397,6 +403,9 @@ class ClassificationDatasetSink:
                 val_item=output_path if split_name == 'val' else None,
                 annotation_count=1,
             )
+            wrote_output = True
+        if wrote_output:
+            context.report.record_output_label(item.class_name)
 
     def _prepare_image(self, item: ClassifyOutput) -> np.ndarray:
         image = cv2.imread(str(item.sample.image.path))
@@ -421,11 +430,24 @@ def print_conversion_report(context: Context) -> None:
         print('\033[1;31m[Warning] 以下目录包含没有标注的图片\033[0m')
         for directory, count in report.missing_annotation_counts.items():
             print(f'  - {directory}: {count}张图片')
-    if report.skipped_labels:
-        print('\033[1;33m[Warning] 以下类别在标签列表中未定义\033[0m')
-        for label in report.skipped_labels:
+    if report.source_label_counts:
+        print('\n来源标签统计:')
+        for label, count in sorted(report.source_label_counts.items()):
+            file_count = len(report.source_label_files[label])
+            print(f'  - {label}: {count}条标注, {file_count}张图片')
+    if report.ignored_label_counts:
+        print('\n已忽略的非目标标签:')
+        for label, count in sorted(report.ignored_label_counts.items()):
+            print(f'  - {label}: {count}条标注')
+    if report.output_label_counts:
+        print('\n最终输出类别统计:')
+        for label, count in sorted(report.output_label_counts.items()):
+            print(f'  - {label}: {count}条样本')
+    if report.missing_output_labels:
+        print('\n\033[1;31m[Error] 以下目标类别没有最终输出样本\033[0m')
+        for label in report.missing_output_labels:
             print(f'  - {label}')
     if report.skipped_files:
-        print('\033[1;33m[Warning] 以下图片因包含未定义类别而被跳过:\033[0m')
+        print('\033[1;33m[Warning] 以下图片包含被忽略的非目标标签:\033[0m')
         for path in sorted(report.skipped_files):
             print(f'  - {path}')

@@ -8,6 +8,25 @@ from .recipes import DatasetRecipe, _read_labels
 from .sinks import print_conversion_report
 
 
+def _required_output_labels(context: Context) -> tuple[str, ...]:
+    names = (
+        context.config.labels.names[:1] if context.config.task_type is TaskType.POSE else context.config.labels.names
+    )
+    return tuple(dict.fromkeys(name for name in names if name))
+
+
+def _validate_output_labels(recipe: DatasetRecipe, context: Context) -> None:
+    if not getattr(recipe.sink, 'tracks_output_labels', False):
+        return
+    missing = tuple(
+        name for name in _required_output_labels(context) if context.report.output_label_counts.get(name, 0) == 0
+    )
+    context.report.set_missing_output_labels(missing)
+    if missing:
+        print_conversion_report(context)
+        raise ValueError(f'Converted dataset has no output samples for target labels: {", ".join(missing)}')
+
+
 def convert_dataset(
     recipe: DatasetRecipe, root_path: str | Path, *, split: int = 10, reserve_no_label: bool = False
 ) -> ConversionReport:
@@ -37,6 +56,7 @@ def convert_dataset(
     outputs = recipe.pipeline.run(recipe.source.read(context), context)
     for output in outputs:
         recipe.sink.write(output, context)
+    _validate_output_labels(recipe, context)
     recipe.sink.finalize(context)
     print_conversion_report(context)
     return context.report

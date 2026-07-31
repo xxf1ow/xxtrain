@@ -33,6 +33,10 @@ def _filter(
     annotations: tuple[Annotation, ...], labels: set[str], *, strict: bool, sample: Sample, context: Context
 ) -> tuple[Annotation, ...]:
     invalid = tuple(annotation for annotation in annotations if annotation.label not in labels)
+    for annotation in annotations:
+        context.report.record_source_label(annotation.label, sample.image.path)
+    for annotation in invalid:
+        context.report.record_ignored_label(annotation.label)
     if strict and invalid:
         context.report.record_skipped_file(sample.image.path)
         for annotation in invalid:
