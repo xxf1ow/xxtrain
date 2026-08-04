@@ -12,6 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 xxtrain is a training harness around [Ultralytics YOLO](https://github.com/ultralytics/ultralytics). It converts LabelImg/LabelMe annotations into YOLO datasets, generates model configuration, downloads pretrained weights, trains, inspects prediction results, and exports ONNX models.
 
+The approved product direction extends this training core into a small internal self-service platform. xxtrain will remain the single user-facing control layer, while CVAT provides annotation and ClearML provides queued execution, run records, and model artifacts. The platform is not a general AutoML, dataset-management, or MLOps product.
+
 All Python source lives under `src/xxtrain/` and is installed as the `xxtrain` package. `xxtrain.cli` is the only command entry and dispatches to the package's conversion and training APIs; do not recreate the removed checkout scripts `src/train.py`, `src/export.py`, or `src/review.py`, and do not recreate or import the removed flat modules `annparser.py`, `annprocessor.py`, or `annconverter.py`.
 
 Do not confuse the repository's `src/` directory with a Scenario's `<scenario_dir>/src/` input directory. They are unrelated despite the shared name.
@@ -158,9 +160,9 @@ The Scenario file's parent directory is the dataset root:
 
 Standard recipes read labels at conversion time from `<scenario_dir>/src/labels.txt`; special recipes carry a fixed `LabelCatalog` in their Scenario. Non-classification outputs are written under `<scenario_dir>/<recipe.name>/` as images plus YOLO `.txt` labels, `train.txt`, `val.txt`, and `dataset.yaml`. Whole-image outputs prefer symlinks and fall back to `shutil.copy2`. Crop outputs are materialized by the sink. Classification outputs are materialized under `train/<class>/` and `val/<class>/` as centered `224×224` Letterbox images; their finalization also writes `train.txt`, `val.txt`, and `dataset.yaml`. Existing generated classification directories from before this contract must be deleted and rebuilt from the sibling `src/` input directory. Generated outputs are disposable, but a Scenario's `src/` directory is immutable source data and must never be deleted or modified during rebuilding.
 
-Annotation-file discovery and class-catalog ownership are separate contracts. `DirectorySource` uses the fixed same-stem paths above and reads every annotation object in the selected file. It does not recursively search arbitrary locations or derive a `LabelCatalog` from LabelImg/LabelMe content. Standard directory recipes therefore still require `src/labels.txt` and preserve its declared order. The active M1 milestone will count every source label while converting, filter and report non-target labels without adding them to the catalog, and reject a completed conversion when a final target class has no samples. COCO sources may derive a catalog from their category schema; special recipes may provide one explicitly.
+Annotation-file discovery and class-catalog ownership are separate contracts. `DirectorySource` uses the fixed same-stem paths above and reads every annotation object in the selected file. It does not recursively search arbitrary locations or derive a `LabelCatalog` from LabelImg/LabelMe content. Standard directory recipes therefore still require `src/labels.txt` and preserve its declared order. Conversion counts every source label, filters and reports non-target labels without adding them to the catalog, and rejects a completed conversion when a final target class has no samples. COCO sources may derive a catalog from their category schema; special recipes may provide one explicitly.
 
-`TrainingScenario.split=N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `TrainingScenario.reserve_no_label` defaults to `False`; set it to `True` in the Scenario only when zero-annotation images must remain in split lists. For every task type, training treats `<scenario_dir>/<recipe.name>/dataset.yaml` as the conversion-completion signal and skips conversion only when that file exists. A classification output directory without `dataset.yaml` is incomplete and must be converted again. Source-change detection and forced rebuilding remain future work.
+`TrainingScenario.split=N` sends every Nth source image to validation; `N <= 0` includes every image in both splits. `TrainingScenario.reserve_no_label` defaults to `False`; set it to `True` in the Scenario only when zero-annotation images must remain in split lists. For every task type, training treats `<scenario_dir>/<recipe.name>/dataset.yaml` as the conversion-completion signal and skips conversion only when that file exists. A classification output directory without `dataset.yaml` is incomplete and must be converted again. Automatic source-change detection is not on the active route; generated datasets remain explicitly disposable and rebuildable.
 
 The repository ignores `data/` by default. New Scenario files therefore require forced staging:
 
@@ -180,23 +182,26 @@ Do not force-add raw datasets or generated outputs.
 - LabelImg/LabelMe/YOLO/COCO read/write primitives and pipeline round-trips: complete.
 - Classification review for unlabeled image directories: complete.
 - Fixed-layout annotation-file discovery by image: complete.
-- LabelImg/LabelMe target-subset conversion, source-label statistics, and final-class coverage validation: pending.
-- Source-change detection and forced dataset rebuild: pending design.
-- Offline semi-supervised training and the thin platform: direction approved, implementation blocked on the preceding input/build boundaries.
+- LabelImg/LabelMe target-subset conversion, source-label statistics, and final-class coverage validation: complete.
+- P1 integration feasibility: complete. A real single-class point-detect flow passed through CVAT annotation, COCO export, xxtrain conversion, ClearML Agent GPU training, and programmatic ONNX retrieval.
+- P2 platform data foundation: next active milestone, not yet designed or implemented.
+- Semi-supervised training: not on the roadmap. Unreviewed predictions must not enter training as labels.
 
 Active milestones and acceptance gates are tracked in `PROGRESS.md`. Durable architecture and completed capability boundaries belong in `ARCHITECTURE.md`; completed implementation history remains in Git rather than the active progress document.
 
-## Approved next-stage direction
+## Approved platform direction
 
-The following decisions are approved planning constraints, not implemented capabilities:
+The following decisions are approved planning constraints, not implemented capabilities unless the project-status list says otherwise:
 
-- A customer-facing training job always trains exactly one model from a developer-defined task template. Multi-level business tasks do not create an automatic model DAG.
-- A template may require complete, per-image human-confirmed prerequisite annotations before accepting a partial seed set of target annotations.
-- Secondary Point classification and segmentation depend on complete reviewed Point boxes, not on a prior `point-detect` job or checkpoint.
-- Managed datasets contain original images plus human-confirmed labels only. Candidate predictions, unreviewed pseudo-labels, review progress, frozen input manifests, and materialized crops are workspace or run artifacts.
-- Starting training locks managed images and labels. Editing requires terminating the active training run.
+- xxtrain is the only normal user entry. CVAT is an annotation engine and ClearML is an execution engine; neither owns platform task state or managed dataset truth.
+- Do not maintain Chinese forks of CVAT or ClearML. ClearML remains an administrator backend. xxtrain must own annotation entry, submission, status polling, failure feedback, and return navigation around the minimum CVAT surface.
+- A training job always trains exactly one model from a developer-defined task template. Multi-level business tasks do not create an automatic model DAG.
+- A lower-level model task requires complete, per-image human-confirmed prerequisite annotations. It does not depend on a previous upper-level training job, checkpoint, or execution history.
+- Every image or instance admitted to a training snapshot has complete target labels for that model. Incomplete target annotations remain in the workspace and are not interpreted as negatives.
+- Managed truth consists of original images, human labels, human-approved model suggestions, task templates, and their relationships. Unreviewed suggestions, review progress, temporary crops, caches, logs, and metrics are workspace or run artifacts.
 - Point boxes use one hierarchical label value: `Point` is a reviewed but unclassified box; `tl`, `tc`, `cl`, and `cc` are classified Point boxes. Detection projects all five labels to `Point`; classification uses only the four subclasses.
-- Point prerequisite completion is per source image, not per predicted box. Point boxes may not overlap, and every valid Point box has a real secondary target; a missing recorded secondary label means unlabeled target data rather than a negative example.
-- V1 product acceptance uses an independently submitted Point secondary classification or segmentation job to validate prerequisite annotation acquisition, seed-only target annotation, disposable crop generation, training progress, and reviewed-label promotion.
+- Point prerequisite completion is per source image, not per predicted box. Point boxes may not overlap, and every valid Point box has a real secondary target; a missing secondary label means unfinished annotation rather than a negative example.
+- P2 first establishes SQLite metadata, content-addressed single-copy image storage, isolated site workspaces, hidden per-template baseline data, independent logical image states, and immutable training snapshots. It does not yet build the full user UI.
+- The first platform version is single-machine and internal. Complex authorization, billing, general workflow editing, distributed training, and FiftyOne are outside its scope.
 
-The complete durable direction is recorded in `ARCHITECTURE.md` and the active milestone ordering in `PROGRESS.md`. Algorithm choices for similarity-aware seed budgets, pseudo-label thresholds, review selection, and stopping criteria remain deliberately unresolved until real-data experiments.
+The complete durable direction is recorded in `ARCHITECTURE.md`; the active milestone and acceptance gate are recorded in `PROGRESS.md`.
