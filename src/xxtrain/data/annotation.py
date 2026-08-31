@@ -3,14 +3,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import ClassVar, Self, TypeAlias
+from typing import ClassVar, Self
 from uuid import UUID, uuid4
 
 import numpy as np
 
-Point: TypeAlias = tuple[float, float]
-PointLike: TypeAlias = Sequence[float] | np.ndarray
-PointSetInput: TypeAlias = Sequence[PointLike] | np.ndarray
+type Point = tuple[float, float]
+type PointLike = Sequence[float] | np.ndarray
+type PointSetInput = Sequence[PointLike] | np.ndarray
 
 
 class AnnotationType(Enum):

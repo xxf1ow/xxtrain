@@ -1,23 +1,23 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xxtrain"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "numpy",
-    "opencv-python",
-    "Pillow",
-    "platformdirs",
-    "ruamel.yaml",
-    "tqdm",
-    "ultralytics",
+    "numpy>=2.5.1",
+    "opencv-python>=5.0.0.93",
+    "Pillow>=12.3.0",
+    "platformdirs>=4.11.0",
+    "ruamel.yaml>=0.19.1",
+    "tqdm>=4.70.0",
+    "ultralytics>=8.4.110",
 ]
 
 [project.optional-dependencies]
-dev = ["PyYAML", "pycocotools", "ruff"]
+dev = ["PyYAML>=6.0.3", "pycocotools>=2.0.11", "ruff>=0.15.22"]
 
 [project.scripts]
 xxtrain = "xxtrain.cli:main"

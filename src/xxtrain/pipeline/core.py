@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Generic, Self, TypeVar
+from typing import Self
 
 from xxtrain.data import Annotation, Bbox, ImageInfo, LabelCatalog, Shape
 from xxtrain.task import TaskType
@@ -145,15 +145,11 @@ class Context:
     report: ConversionReport
 
 
-InputT = TypeVar('InputT')
-OutputT = TypeVar('OutputT')
-
-
 def _type_name(value_type: type) -> str:
     return value_type.__name__
 
 
-class ItemProcessor(ABC, Generic[InputT, OutputT]):
+class ItemProcessor[InputT, OutputT](ABC):
     input_type: type[InputT]
     output_type: type[OutputT]
 
@@ -180,7 +176,7 @@ class ItemProcessor(ABC, Generic[InputT, OutputT]):
             )
 
 
-class ExpandProcessor(ABC, Generic[InputT, OutputT]):
+class ExpandProcessor[InputT, OutputT](ABC):
     input_type: type[InputT]
     output_type: type[OutputT]
 

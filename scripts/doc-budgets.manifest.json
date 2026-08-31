@@ -1,0 +1,13 @@
+{
+  "README.md": 450,
+  "CLAUDE.md": 300,
+  "docs/architecture.md": 800,
+  "docs/development.md": 700,
+  "docs/testing.md": 650,
+  "docs/subsystems/annotation-data.md": 750,
+  "docs/subsystems/dataset-pipeline.md": 900,
+  "docs/subsystems/training-workflow.md": 900,
+  "docs/agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md": 2200,
+  "docs/agent-notes/implemented/process/2026-08-31-uv-python-environment.md": 900,
+  "docs/agent-notes/implemented/process/2026-08-31-project-documentation-authority.md": 1400
+}
