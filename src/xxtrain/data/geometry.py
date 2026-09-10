@@ -2,10 +2,52 @@ import math
 from collections.abc import Sequence
 from uuid import UUID
 
-from .annotation import Circle, Polygon, Shape
+from .annotation import Circle, ImageInfo, Polygon, Shape
 
 BboxTuple = tuple[float, float, float, float]
 PointTuple = tuple[float, float]
+
+
+def clip_polygon_to_image(polygon: Polygon, image_info: ImageInfo) -> Polygon | None:
+    """Clip a polygon to the image rectangle, returning None for zero visible area."""
+    points = polygon.points
+    bounds = ((0, 0.0, True), (0, image_info.width, False), (1, 0.0, True), (1, image_info.height, False))
+
+    for axis, limit, keep_greater in bounds:
+
+        def inside(point: PointTuple) -> bool:
+            return point[axis] >= limit if keep_greater else point[axis] <= limit
+
+        def intersection(start: PointTuple, end: PointTuple) -> PointTuple:
+            ratio = (limit - start[axis]) / (end[axis] - start[axis])
+            return (start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio)
+
+        clipped: list[PointTuple] = []
+        for index, end in enumerate(points):
+            start = points[index - 1]
+            start_inside, end_inside = inside(start), inside(end)
+            if end_inside != start_inside:
+                clipped.append(intersection(start, end))
+            if end_inside:
+                clipped.append(end)
+        points = tuple(clipped)
+        if not points:
+            return None
+
+    cleaned = tuple(point for index, point in enumerate(points) if point != points[index - 1])
+    if len(cleaned) < 3:
+        return None
+    area = (
+        abs(
+            sum(
+                first[0] * second[1] - second[0] * first[1] for first, second in zip(cleaned, cleaned[1:] + cleaned[:1])
+            )
+        )
+        / 2
+    )
+    if area == 0:
+        return None
+    return Polygon(label=polygon.label, id=polygon.id, group=polygon.group, points=cleaned)
 
 
 def validate_obb(polygon: Polygon, *, tolerance: float = 1e-6) -> None:

@@ -5,7 +5,7 @@ import PIL.Image
 
 from xxtrain.data import Annotation, Bbox, Circle, ImageInfo, Points, Polygon, Polyline, Pose, Shape
 from xxtrain.data.formats import encode_detect, encode_pose, encode_segment, read_labelimg, read_labelme
-from xxtrain.data.geometry import match_parent_children
+from xxtrain.data.geometry import clip_polygon_to_image, match_parent_children
 from xxtrain.pipeline.core import (
     AnnotationMatch,
     ClassifyOutput,
@@ -44,11 +44,11 @@ def _filter(
     return tuple(annotation for annotation in annotations if annotation.label in labels)
 
 
-def _prepare_segment_shape(shape: Shape) -> Shape:
+def _prepare_segment_shape(shape: Shape, image_info: ImageInfo | None = None) -> Shape | None:
     common = {'label': shape.label, 'id': shape.id, 'group': shape.group}
     if isinstance(shape, Bbox):
-        return Polygon(points=shape.points, **common)
-    if isinstance(shape, Circle):
+        prepared: Shape = Polygon(points=shape.points, **common)
+    elif isinstance(shape, Circle):
         radius = shape.radius
         count = max(int(np.pi / np.arccos(1 - 1 / radius)), 12)
         cx, cy = shape.center
@@ -56,12 +56,14 @@ def _prepare_segment_shape(shape: Shape) -> Shape:
             (cx + radius * np.sin(2 * np.pi / count * index), cy + radius * np.cos(2 * np.pi / count * index))
             for index in range(count)
         )
-        return Polygon(points=points, **common)
-    if isinstance(shape, Polygon):
+        prepared = Polygon(points=points, **common)
+    elif isinstance(shape, Polygon):
+        prepared = shape
+    elif isinstance(shape, Polyline) and len(shape.points) == 2:
         return shape
-    if isinstance(shape, Polyline) and len(shape.points) == 2:
-        return shape
-    raise Exception(f"[Error] Task segment usually doesn't use {shape.type}")
+    else:
+        raise Exception(f"[Error] Task segment usually doesn't use {shape.type}")
+    return clip_polygon_to_image(prepared, image_info) if image_info is not None else prepared
 
 
 class ReadImageInfo(ItemProcessor[Sample, Sample]):
@@ -158,7 +160,13 @@ class PrepareSegmentShapes(ItemProcessor[Sample, Sample]):
     output_type = Sample
 
     def transform(self, item: Sample, context: Context) -> Sample:
-        return item.wrap(annotations=tuple(_prepare_segment_shape(annotation) for annotation in item.annotations))
+        image_info = item.image.info
+        annotations = tuple(
+            prepared
+            for annotation in item.annotations
+            if (prepared := _prepare_segment_shape(annotation, image_info)) is not None
+        )
+        return item.wrap(annotations=annotations)
 
 
 class PrepareMatchChildren(ItemProcessor[MatchInput, MatchInput]):
@@ -170,7 +178,12 @@ class PrepareMatchChildren(ItemProcessor[MatchInput, MatchInput]):
 
     def transform(self, item: MatchInput, context: Context) -> MatchInput:
         if self.task_type is TaskType.SEGMENT:
-            children = tuple(_prepare_segment_shape(child) for child in item.children)
+            image_info = item.sample.image.info
+            children = tuple(
+                prepared
+                for child in item.children
+                if (prepared := _prepare_segment_shape(child, image_info)) is not None
+            )
             return MatchInput(sample=item.sample, parents=item.parents, children=children)
         if self.task_type is TaskType.POSE:
             accepted = (Polygon, Polyline, Points)

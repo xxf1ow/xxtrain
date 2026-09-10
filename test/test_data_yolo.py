@@ -293,16 +293,19 @@ class YoloFormatTest(unittest.TestCase):
         self.assertEqual(annotation, decoded.wrap(id=annotation.id))
         self.assertEqual('0 0.500000 0.500000 1.000000 1.000000', encode_detect(annotation, self.image, labels))
 
+    def test_detect_accepts_boundary_after_coordinate_quantization(self) -> None:
+        labels = LabelCatalog(names=('x',))
+        image = ImageInfo(width=1920, height=1080)
+        annotation = Bbox(label='x', x1=929, y1=904, x2=1144, y2=1080)
+
+        self.assertEqual('0 0.539844 0.918519 0.111979 0.162963', encode_detect(annotation, image, labels))
+
     def test_detect_encoder_rejects_bboxes_that_escape_after_six_decimal_formatting(self) -> None:
         labels = LabelCatalog(names=('x',))
-        annotations = (
-            Bbox(label='x', x1=0, y1=10, x2=0.0002, y2=50),
-            Bbox(label='x', x1=199.9999, y1=10, x2=200, y2=50),
-        )
-        for annotation in annotations:
-            with self.subTest(annotation=annotation):
-                with self.assertRaisesRegex(ValueError, 'YOLO detect bbox must be inside image bounds'):
-                    encode_detect(annotation, self.image, labels)
+        annotation = Bbox(label='x', x1=0, y1=10, x2=0.0001, y2=50)
+
+        with self.assertRaisesRegex(ValueError, 'YOLO detect bbox must be inside image bounds'):
+            encode_detect(annotation, self.image, labels)
 
     def test_detect_encoder_rejects_non_finite_derived_values(self) -> None:
         labels = LabelCatalog(names=('x',))

@@ -39,9 +39,13 @@ def _validate_normalized(values: Sequence[float], message: str) -> None:
 
 
 def _validate_bbox_inside_image(
-    x1: float, y1: float, x2: float, y2: float, image_info: ImageInfo, message: str
+    x1: float, y1: float, x2: float, y2: float, image_info: ImageInfo, message: str, tolerance: bool = False
 ) -> None:
-    if not 0 <= x1 < x2 <= image_info.width or not 0 <= y1 < y2 <= image_info.height:
+    x_tolerance = image_info.width * 1e-6 if tolerance else 0.0
+    y_tolerance = image_info.height * 1e-6 if tolerance else 0.0
+    if not -x_tolerance <= x1 < x2 <= image_info.width + x_tolerance or not (
+        -y_tolerance <= y1 < y2 <= image_info.height + y_tolerance
+    ):
         raise ValueError(message)
 
 
@@ -97,6 +101,7 @@ def encode_detect(annotation: Bbox, image_info: ImageInfo, labels: LabelCatalog)
         y_center + height / 2.0,
         image_info,
         'YOLO detect bbox must be inside image bounds',
+        tolerance=True,
     )
     return f'{label_id} {" ".join(values)}'
 

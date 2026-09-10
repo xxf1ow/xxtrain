@@ -139,6 +139,26 @@ class PipelineProcessorTest(unittest.TestCase):
         self.assertEqual(((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)), output.annotations[0].points)
         self.assertGreaterEqual(len(output.annotations[1].points), 12)
 
+    def test_prepare_segment_clips_polygon_to_image_bounds(self) -> None:
+        polygon = Polygon(label='known', points=((-10, 20), (60, 20), (60, 80), (-10, 80)))
+        sample = self.make_sample(Path('image.jpg'), annotations=(polygon,)).wrap(
+            image=ImageRef(path=Path('image.jpg'), info=ImageInfo(width=100, height=100))
+        )
+
+        output = PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
+
+        self.assertEqual(((0.0, 20.0), (60.0, 20.0), (60.0, 80.0), (0.0, 80.0)), output.annotations[0].points)
+
+    def test_prepare_segment_omits_polygon_with_no_visible_area(self) -> None:
+        polygon = Polygon(label='known', points=((-20, 20), (-10, 20), (-10, 80), (-20, 80)))
+        sample = self.make_sample(Path('image.jpg'), annotations=(polygon,)).wrap(
+            image=ImageRef(path=Path('image.jpg'), info=ImageInfo(width=100, height=100))
+        )
+
+        output = PrepareSegmentShapes().transform(sample, self.make_context(Path('.')))
+
+        self.assertEqual((), output.annotations)
+
     def test_prepare_segment_rejects_polyline_with_more_than_two_points(self) -> None:
         annotations = (Polyline(label='known', points=((0, 0), (1, 1), (2, 2))),)
         sample = self.make_sample(Path('image.jpg'), annotations=annotations)
