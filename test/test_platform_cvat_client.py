@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -41,6 +42,14 @@ def page(results: list[dict], *, next_url: str | None = None) -> dict:
 
 
 class CvatClientTest(unittest.TestCase):
+    def test_base_url_rejects_username_or_password(self):
+        http = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+
+        for base_url in ('http://user@cvat.test', 'http://:password@cvat.test'):
+            with self.subTest(base_url=base_url):
+                with self.assertRaisesRegex(ValueError, 'username or password'):
+                    CvatClient(base_url, 'private-token', http)
+
     def test_codec_and_preparation_values_import_without_httpx(self):
         script = textwrap.dedent(
             """
@@ -481,6 +490,9 @@ class CvatClientTest(unittest.TestCase):
         self.assertIn('/api/users/self', str(caught.exception))
         self.assertNotIn('network-secret', str(caught.exception))
         self.assertNotIn('browser-secret', str(caught.exception))
+        rendered = ''.join(traceback.format_exception(caught.exception))
+        self.assertNotIn('network-secret', rendered)
+        self.assertNotIn('httpx.ConnectError', rendered)
 
     def test_browser_login_does_not_follow_external_redirects(self):
         requests = []

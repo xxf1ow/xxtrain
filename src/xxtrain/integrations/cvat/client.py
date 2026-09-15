@@ -31,6 +31,8 @@ class CvatClient:
         parsed = httpx.URL(base_url)
         if parsed.scheme not in {'http', 'https'} or not parsed.host:
             raise ValueError('CVAT base URL must be an HTTP origin')
+        if parsed.username or parsed.password:
+            raise ValueError('CVAT base URL must not include a username or password')
         if parsed.query or parsed.fragment or parsed.path not in {'', '/'}:
             raise ValueError('CVAT base URL must not include a path, query, or fragment')
         self._base_url = parsed.copy_with(path='/')
@@ -344,8 +346,8 @@ class CvatClient:
                 method, url, headers=headers, extensions={'timeout': httpx.Timeout(timeout).as_dict()}, **kwargs
             )
             response = self._http.send(request, auth=None, follow_redirects=False)
-        except httpx.HTTPError as error:
-            raise PlatformError(f'CVAT {method} {url.path} failed') from error
+        except httpx.HTTPError:
+            raise PlatformError(f'CVAT {method} {url.path} failed') from None
         if access_errors and response.status_code in {401, 403}:
             raise PlatformAccessError(f'CVAT {method} {url.path} denied access ({response.status_code})')
         if not 200 <= response.status_code < 300:
