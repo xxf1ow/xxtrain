@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Point 检测标注台</title>
+  <link rel="stylesheet" href="/platform/style.css">
+  <script src="/platform/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <header class="utility-header">
+    <div class="brand-mark" aria-hidden="true">XX</div>
+    <div>
+      <p class="utility-label">现场标注工具</p>
+      <p class="product-name">Point 检测标注台</p>
+    </div>
+    <div id="session-tools" class="session-tools" hidden>
+      <span id="session-user" class="session-user"></span>
+      <button id="logout-button" class="text-button" type="button">退出登录</button>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section id="login-panel" class="login-panel" aria-labelledby="login-title">
+      <div class="section-code" aria-hidden="true">POINT / ACCESS</div>
+      <h1 id="login-title">登录后继续现场标注</h1>
+      <p class="lede">使用分配给你的 CVAT 账号。平台只显示当前预置现场。</p>
+      <form id="login-form" class="login-form" method="post" action="/platform/api/login">
+        <label for="username">用户名</label>
+        <input id="username" name="username" autocomplete="username" required>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button id="login-button" class="primary-button" type="submit">登录</button>
+      </form>
+      <p id="login-error" class="error-message" role="alert" hidden></p>
+    </section>
+
+    <section id="workspace-panel" class="workspace-panel" aria-labelledby="workspace-title" hidden>
+      <div class="workspace-heading">
+        <div>
+          <p class="section-code">POINT / DETECTION</p>
+          <h1 id="workspace-title"><span id="workspace-name">现场</span></h1>
+        </div>
+        <dl class="workspace-facts">
+          <div>
+            <dt>业务任务</dt>
+            <dd id="task-name">Point</dd>
+          </div>
+          <div>
+            <dt>现场图片</dt>
+            <dd><span id="image-count">—</span> 张</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div class="status-strip">
+        <span class="status-lamp" aria-hidden="true"></span>
+        <div>
+          <p class="status-label">平台保存状态</p>
+          <p id="status-value" class="status-value" aria-live="polite">正在读取…</p>
+        </div>
+      </div>
+      <p id="workspace-message" class="workspace-message" role="status" aria-live="polite"></p>
+      <p id="workspace-error" class="error-message" role="alert" hidden></p>
+
+      <div class="shared-data-label">
+        <span>同一组现场图片与完整标注</span>
+      </div>
+      <div class="target-rail" aria-label="Point 模型目标">
+        <article class="target target-active" data-target="detect">
+          <div class="target-index" aria-hidden="true">D</div>
+          <div>
+            <h2>检测</h2>
+            <p>编辑 Point、tl、tc、cl、cc 检测框。</p>
+          </div>
+          <span class="availability">可用</span>
+        </article>
+        <article class="target" data-target="classify" aria-disabled="true">
+          <div class="target-index" aria-hidden="true">C</div>
+          <div>
+            <h2>分类</h2>
+            <p>沿用相同图片和检测框。</p>
+          </div>
+          <span class="availability">未开放</span>
+        </article>
+        <article class="target" data-target="segment" aria-disabled="true">
+          <div class="target-index" aria-hidden="true">S</div>
+          <div>
+            <h2>分割</h2>
+            <p>沿用相同图片和完整标注。</p>
+          </div>
+          <span class="availability">未开放</span>
+        </article>
+      </div>
+
+      <div class="action-row">
+        <p>完成后，CVAT 先保存并返回；平台取回并写入现场标注后才显示“已保存”。</p>
+        <button id="primary-action" class="primary-button" type="button">开始标注</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
