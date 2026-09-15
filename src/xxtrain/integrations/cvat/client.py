@@ -95,10 +95,14 @@ class CvatClient:
         task = self._json(
             self._service_request('GET', f'/api/tasks/{task_id}', deadline=deadline, deadline_task_id=task_id)
         )
-        size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
+        if not isinstance(task, dict):
+            raise PlatformError(f'CVAT /api/tasks/{task_id} returned an invalid size')
+        size = task.get('size')
+        if size is not None:
+            size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
 
         current = preparation
-        if size == 0:
+        if size in (None, 0):
             if current.stage == 'uploading':
                 if current.request_id is None:
                     raise PlatformError(
@@ -188,10 +192,10 @@ class CvatClient:
         with ExitStack() as stack:
             files = [
                 (
-                    'client_files',
+                    f'client_files[{index}]',
                     (filename, stack.enter_context(image.image_path.open('rb')), 'application/octet-stream'),
                 )
-                for image, filename in zip(images, filenames, strict=True)
+                for index, (image, filename) in enumerate(zip(images, filenames, strict=True))
             ]
             response = self._service_request(
                 'POST',
@@ -305,7 +309,7 @@ class CvatClient:
     def _service_request(
         self, method: str, target: str, *, deadline: float | None = None, deadline_task_id: int = 0, **kwargs
     ) -> httpx.Response:
-        headers = {'Accept': 'application/json', 'Authorization': f'Token {self._service_token}'}
+        headers = {'Accept': 'application/vnd.cvat+json', 'Authorization': f'Token {self._service_token}'}
         return self._request(
             method,
             target,
@@ -319,7 +323,7 @@ class CvatClient:
     def _browser_request(
         self, method: str, target: str, *, cookie: str | None = None, csrf: str | None = None, **kwargs
     ) -> httpx.Response:
-        headers = {'Accept': 'application/json'}
+        headers = {'Accept': 'application/vnd.cvat+json'}
         if cookie is not None:
             headers['Cookie'] = cookie
         if csrf is not None:

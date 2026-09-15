@@ -83,6 +83,7 @@ class CvatClientTest(unittest.TestCase):
             self.assertEqual(request.method, 'POST')
             self.assertEqual(str(request.url), 'http://cvat.test/api/tasks')
             self.assertEqual(request.headers['authorization'], 'Token private-token')
+            self.assertEqual(request.headers['accept'], 'application/vnd.cvat+json')
             self.assertNotIn('cookie', request.headers)
             payload = json.loads(request.content)
             self.assertEqual(payload['name'], 'Point detection')
@@ -135,11 +136,11 @@ class CvatClientTest(unittest.TestCase):
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path, request.url.query, request.content))
                 if request.url.path == '/api/tasks/7':
-                    return httpx.Response(200, json={'id': 7, 'size': 0})
+                    return httpx.Response(200, json={'id': 7})
                 if request.url.path == '/api/tasks/7/data':
                     body = request.content
-                    self.assertIn(b'name="client_files"; filename="00000000.jpg"', body)
-                    self.assertIn(b'name="client_files"; filename="00000001.png"', body)
+                    self.assertIn(b'name="client_files[0]"; filename="00000000.jpg"', body)
+                    self.assertIn(b'name="client_files[1]"; filename="00000001.png"', body)
                     self.assertIn(b'first-image', body)
                     self.assertIn(b'second-image', body)
                     self.assertIn(b'name="sorting_method"', body)
@@ -400,6 +401,7 @@ class CvatClientTest(unittest.TestCase):
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             self.assertNotIn('authorization', request.headers)
+            self.assertEqual(request.headers['accept'], 'application/vnd.cvat+json')
             if request.url.path == '/api/auth/login':
                 self.assertNotIn('cookie', request.headers)
                 return httpx.Response(

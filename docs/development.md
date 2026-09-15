@@ -61,7 +61,7 @@ xxtrain-platform --config '<workspace.json>' --host 127.0.0.1 --port 8000
 docker build --file deploy/platform/cvat-ui.Dockerfile --tag xxtrain-cvat-ui:2.51.0 .
 ```
 
-`deploy/platform/nginx.conf` 是唯一对浏览器开放的同源代理配置。部署编排需在同一私有网络提供 `xxtrain_platform:8000`、`cvat_server:8080` 和 `xxtrain_cvat_ui:8080`，把选定的外部端口映射到代理的 8080，而不发布后端或专用 CVAT UI。代理保留带端口的 Host，向 CVAT 响应添加隔离头，并为最长 120 秒的任务准备留出 130 秒读写超时。启动或恢复远程 CVAT 属于单独的受控验收步骤。
+`deploy/platform/nginx.conf` 是唯一对浏览器开放的同源代理配置。部署编排需在同一私有网络提供 `xxtrain_platform:8000`、`cvat_server:8080` 和 `xxtrain_cvat_ui:8000`，把选定的外部端口映射到代理的 8080，而不发布后端或专用 CVAT UI。代理保留带端口的 Host，向 CVAT 响应添加隔离头，并为最长 120 秒的任务准备留出 130 秒读写超时。启动或恢复远程 CVAT 属于单独的受控验收步骤。
 
 ## Scenario files
 

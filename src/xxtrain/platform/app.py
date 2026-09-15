@@ -17,7 +17,7 @@ from xxtrain.platform.contracts import PlatformAccessError, PlatformError, Works
 from xxtrain.platform.service import AnnotationService
 
 _CSRF_COOKIE = 'xxtrain_csrf'
-_CSRF_HEADER = 'x-xxtrain-csrf'
+_CSRF_HEADER = 'x-xtrain-csrf'
 _OPERATIONAL_ERROR = '平台暂时无法完成操作，请重试。'
 _TARGET_NAMES = {'detect': '检测', 'classify': '分类', 'segment': '分割'}
 

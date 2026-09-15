@@ -12,4 +12,4 @@ RUN set -eu; \
     grep -Fq 'src="/xxtrain/return-plugin.js"' "$index"
 USER 101
 
-EXPOSE 8080
+EXPOSE 8000

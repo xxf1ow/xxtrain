@@ -3,21 +3,26 @@ import json
 import os
 import tempfile
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import httpx
-from PIL import Image
+_MISSING_HTTP_DEPENDENCIES = tuple(name for name in ('fastapi', 'httpx') if find_spec(name) is None)
+if _MISSING_HTTP_DEPENDENCIES:
+    raise unittest.SkipTest(f'platform extra is required: {", ".join(_MISSING_HTTP_DEPENDENCIES)}')
+else:
+    import httpx
+    from PIL import Image
 
-from xxtrain.business_tasks import POINT_BOX_LABELS
-from xxtrain.integrations.cvat import CvatClient
-from xxtrain.platform.app import create_app
-from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformError, WorkspaceView
-from xxtrain.platform.service import AnnotationService
-from xxtrain.platform.state import StateStore
-from xxtrain.workspace_data import WorkspaceData
+    from xxtrain.business_tasks import POINT_BOX_LABELS
+    from xxtrain.integrations.cvat import CvatClient
+    from xxtrain.platform.app import create_app
+    from xxtrain.platform.config import WorkspaceConfig
+    from xxtrain.platform.contracts import PlatformAccessError, PlatformError, WorkspaceView
+    from xxtrain.platform.service import AnnotationService
+    from xxtrain.platform.state import StateStore
+    from xxtrain.workspace_data import WorkspaceData
 
 
 class AsgiTestClient:
@@ -124,7 +129,7 @@ class PlatformHttpTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         token = self.client.cookies.get('xxtrain_csrf')
         self.assertIsNotNone(token)
-        return {'origin': 'http://testserver', 'x-xxtrain-csrf': token}
+        return {'origin': 'http://testserver', 'x-xtrain-csrf': token}
 
     def test_session_and_workspace_require_a_browser_session(self) -> None:
         for path in ('/platform/api/session', '/platform/api/workspace'):
@@ -197,7 +202,7 @@ class PlatformHttpTest(unittest.TestCase):
     def test_login_session_logout_round_trip_forwards_only_session_cookies(self) -> None:
         self.client.get('/platform/')
         token = self.client.cookies.get('xxtrain_csrf')
-        headers = {'origin': 'http://testserver', 'x-xxtrain-csrf': token}
+        headers = {'origin': 'http://testserver', 'x-xtrain-csrf': token}
 
         login = self.client.post(
             '/platform/api/login', headers=headers, json={'username': 'worker', 'password': 'password'}
@@ -328,7 +333,7 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             with AsgiTestClient(create_app(config, service, cvat)) as client:
                 client.get('/platform/')
                 token = client.cookies.get('xxtrain_csrf')
-                headers = {'origin': 'http://testserver', 'x-xxtrain-csrf': token}
+                headers = {'origin': 'http://testserver', 'x-xtrain-csrf': token}
                 login = client.post(
                     '/platform/api/login', headers=headers, json={'username': 'worker', 'password': 'password'}
                 )
