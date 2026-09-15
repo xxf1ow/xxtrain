@@ -11,6 +11,12 @@ type Status = Literal['pending', 'preparing', 'annotating', 'sync_failed', 'save
 
 @dataclass(frozen=True)
 class DetectionBox:
+    """Detection geometry plus loss-preserving raw LabelMe rectangle metadata.
+
+    ``extra`` preserves every raw rectangle field except ``label``, ``points``, and ``shape_type``. Group
+    metadata remains transport metadata and is not a business association ID.
+    """
+
     geometry: Bbox
     extra: JsonObject = field(default_factory=dict)
 
