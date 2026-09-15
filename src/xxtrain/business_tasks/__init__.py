@@ -1,0 +1,3 @@
+from .point import MODEL_TARGETS, POINT_BOX_LABELS
+
+__all__ = ['MODEL_TARGETS', 'POINT_BOX_LABELS']
