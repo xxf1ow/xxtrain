@@ -141,11 +141,23 @@ class WorkspaceData:
                 boxed_image_count += 1
         return DetectionSummary(image_count, annotated_image_count, boxed_image_count)
 
-    def detection_fingerprint(self) -> str:
-        """Hash current image bytes and canonical detection boxes or negative markers."""
+    def detection_fingerprint(self, results: tuple[FrameResult, ...] | None = None) -> str:
+        """Hash image bytes and canonical detection boxes or negative markers.
+
+        Optional results predict the fingerprint after saving without changing files. Results must cover every
+        workspace image exactly once or raise ``ValueError``; existing explicit negative flags remain effective.
+        """
+        images = self._image_paths()
+        by_sample = None
+        if results is not None:
+            by_sample = {result.sample_id: result for result in results}
+            if len(by_sample) != len(results) or set(by_sample) != {path.stem for path in images}:
+                raise ValueError('Detection results must cover every workspace image exactly once')
         records = []
-        for image_path in self._image_paths():
+        for image_path in images:
             document = self._read_document(self._annotation_path(image_path.stem))
+            if by_sample is not None:
+                document = merge_detection(document, by_sample[image_path.stem].boxes)
             boxes = _detection_boxes(document)
             if boxes:
                 detection = {

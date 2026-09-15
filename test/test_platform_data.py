@@ -373,6 +373,24 @@ class PlatformDataTest(unittest.TestCase):
         self.assertEqual(original, annotation.read_bytes())
         self.assertEqual(fingerprint, self.workspace.detection_fingerprint())
 
+    def test_result_fingerprint_predicts_saved_detection_without_writing(self) -> None:
+        self.make_image()
+        annotation = self.write_annotation('a', {'flags': {'xxtrain_detection_negative': True}, 'shapes': []})
+        for boxes in ((DetectionBox(Bbox(label='tl', x1=1, y1=2, x2=20, y2=30)),), ()):
+            with self.subTest(boxes=boxes):
+                original = annotation.read_bytes()
+                results = (FrameResult('a', boxes),)
+                fingerprint = self.workspace.detection_fingerprint(results)
+                self.assertEqual(original, annotation.read_bytes())
+                self.workspace.save_detection(results)
+                self.assertEqual(fingerprint, self.workspace.detection_fingerprint())
+
+    def test_result_fingerprint_requires_each_workspace_image_exactly_once(self) -> None:
+        self.make_image()
+        for results in ((), (FrameResult('unknown', ()),), (FrameResult('a', ()), FrameResult('a', ()))):
+            with self.subTest(results=results), self.assertRaises(ValueError):
+                self.workspace.detection_fingerprint(results)
+
 
 if __name__ == '__main__':
     unittest.main()

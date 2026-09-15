@@ -79,17 +79,19 @@ class AnnotationService:
         """Overwrite detection fields from the current-fingerprint Job and return file-derived counts.
 
         A missing Job or failed fetch/save raises ``PlatformError``; failed writes restore prior annotations.
-        Successful saves associate the Job with the resulting fingerprint so repeated syncs remain valid.
+        The Job is associated with the predicted resulting fingerprint before saving, so a mapping failure leaves
+        annotations unchanged and successful saves remain repeatable.
         """
         with self._write(user_id):
             ref = self.runtime.job_for('detect', self.data.detection_fingerprint())
             if ref is None:
                 raise PlatformError('Annotation job is not ready for the current input')
             try:
-                self.data.save_detection(self.cvat.fetch_detection(ref))
+                results = self.cvat.fetch_detection(ref)
+                self.runtime.remember_job('detect', self.data.detection_fingerprint(results), ref)
+                self.data.save_detection(results)
             except (OSError, ValueError, PlatformError) as error:
                 raise PlatformError('无法取回或保存标注，请重试。') from error
-            self.runtime.remember_job('detect', self.data.detection_fingerprint(), ref)
             return self.view(user_id)
 
     def generate_detection_cache(self, user_id: int) -> WorkspaceView:

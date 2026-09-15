@@ -220,6 +220,27 @@ class AnnotationServiceTest(unittest.TestCase):
         self.assertNotEqual(first, self.service.begin_detection(17))
         self.assertEqual(2, self.cvat.create_task_calls)
 
+    def test_sync_mapping_failure_preserves_annotations_and_same_job_retry(self):
+        self.create_workspace(boxed=1)
+        self.service.begin_detection(17)
+        before = {path: path.read_bytes() for path in self.annotations.iterdir()}
+        fingerprint = self.data.detection_fingerprint()
+        self.cvat.results = (FrameResult('000', ()),)
+        real_replace = os.replace
+
+        def fail_mapping(source, destination):
+            if Path(destination) == self.config.runtime_dir / 'jobs.json':
+                raise OSError('runtime disk full')
+            return real_replace(source, destination)
+
+        with patch('xxtrain.platform.runtime.os.replace', side_effect=fail_mapping):
+            with self.assertRaises((OSError, PlatformError)):
+                self.service.sync_detection(17)
+        self.assertEqual(before, {path: path.read_bytes() for path in self.annotations.iterdir()})
+        self.assertEqual(fingerprint, self.data.detection_fingerprint())
+        self.assertEqual(0, self.service.sync_detection(17).boxed_image_count)
+        self.assertEqual(1, self.cvat.create_task_calls)
+
     def test_sync_save_failure_is_visible_and_lock_is_released(self):
         self.create_workspace(incomplete=1)
         self.service.begin_detection(17)
