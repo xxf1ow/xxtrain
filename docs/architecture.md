@@ -27,7 +27,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、模型配置、训练、ONNX 导出和预测检查；
 - `xxtrain.platform.contracts` 定义平台组件共享的数据类型、状态和错误，包根不导入服务或页面实现；`xxtrain.platform.config` 从严格字段的 JSON 对象加载单个预置工作区并相对配置文件解析路径，`xxtrain.platform.state` 以单文件原子替换保存流程私有状态，`xxtrain.platform.service.AnnotationService` 串行协调数据存储与 CVAT 的开始、继续和取回保存；
 - `xxtrain.platform.app` 提供同源页面与窄 HTTP 接口；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；
-- `xxtrain.workspace_data` 读取预置平铺图片及同 stem LabelMe 文件，只替换检测矩形并保留其他标注和未知字段，以逐文件原子替换保存结果；
+- `xxtrain.workspace_data` 以工作区的 `images/` 和 `annotations/` 为权威输入，按 SHA-256 文件名接纳去重后的图片，并从当前图片及 LabelMe 检测框或显式负样本派生检测摘要和输入指纹；保存只替换检测矩形，保留其他标注和未知字段，并以逐文件原子替换落盘；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签和检测、分类、分割目标开放状态；
 - `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换矩形，按 CVAT 标签定义解析真实 ID，并拒绝无法无损映射的标注类型；
 - `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建、准备、分配和读取 CVAT 标注任务；浏览器会话与服务令牌隔离，准备进度由调用方通过不依赖 HTTPX 的公开检查点持久化；同版本 CVAT UI 加载的返回插件只负责保存、完成状态确认和返回平台，不写平台文件；

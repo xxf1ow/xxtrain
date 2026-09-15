@@ -31,6 +31,25 @@ class ImageInput:
 
 
 @dataclass(frozen=True)
+class UploadResult:
+    """Counts outcomes from one staged-image admission attempt."""
+
+    received_count: int
+    accepted_count: int
+    exact_duplicate_count: int
+    similar_duplicate_count: int
+
+
+@dataclass(frozen=True)
+class DetectionSummary:
+    """Counts workspace images and their completed detection annotations."""
+
+    image_count: int
+    annotated_image_count: int
+    boxed_image_count: int
+
+
+@dataclass(frozen=True)
 class FrameResult:
     sample_id: str
     boxes: tuple[DetectionBox, ...]
