@@ -31,8 +31,8 @@ class AnnotationService:
     def view(self, user_id: int) -> WorkspaceView:
         """Return the configured owner's current local workflow status.
 
-        Other users receive ``PlatformAccessError`` before workspace files are read. Invalid durable state raises
-        ``PlatformError``.
+        Other users receive ``PlatformAccessError`` before workspace files are read. Malformed or non-object durable
+        JSON from ``StateStore.load`` raises ``ValueError``; subsequent state validation raises ``PlatformError``.
         """
         self._require_owner(user_id)
         state = self.state.load()
