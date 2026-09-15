@@ -50,6 +50,12 @@ class PlatformDataTest(unittest.TestCase):
     def image_names(self) -> list[str]:
         return sorted(path.name for path in self.images_dir.iterdir())
 
+    def test_workspace_accepts_root_and_explicit_directory_construction(self) -> None:
+        root_workspace = WorkspaceData(self.root)
+        explicit_workspace = WorkspaceData(self.images_dir, self.annotations_dir)
+
+        self.assertEqual(root_workspace.images(), explicit_workspace.images())
+
     def write_annotation(self, stem: str, document: dict[str, object]) -> Path:
         path = self.annotations_dir / f'{stem}.json'
         path.write_text(json.dumps(document), encoding='utf-8')

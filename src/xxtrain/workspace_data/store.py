@@ -21,12 +21,15 @@ _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
 
 
 class WorkspaceData:
-    """Access one workspace's authoritative ``images`` and ``annotations`` directories."""
+    """Access workspace ``images`` and ``annotations`` directories from a root or explicit paths."""
 
-    def __init__(self, workspace_dir: Path) -> None:
-        self._workspace_dir = Path(workspace_dir)
-        self._images_dir = self._workspace_dir / 'images'
-        self._annotations_dir = self._workspace_dir / 'annotations'
+    def __init__(self, workspace_dir: Path, annotations_dir: Path | None = None) -> None:
+        if annotations_dir is None:
+            self._images_dir = Path(workspace_dir) / 'images'
+            self._annotations_dir = Path(workspace_dir) / 'annotations'
+        else:
+            self._images_dir = Path(workspace_dir)
+            self._annotations_dir = Path(annotations_dir)
         self._require_directory(self._images_dir, writable=True)
         self._require_directory(self._annotations_dir, writable=True)
 

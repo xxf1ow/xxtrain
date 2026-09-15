@@ -138,7 +138,7 @@ CVAT v2.51.0 的隔离原型验证了同源登录与全屏标注返回：自建�
 
 职责分配沿用六模块骨架：页面展示与导航，业务流程协调和记录关联，数据管理读取图片及已有 JSON 并保存结果，任务规则提供 Point 检测标注要求和标签定义，CVAT 适配负责创建任务、传入已有框、生成入口及取回映射。ClearML 适配不参与本增量。
 
-`xxtrain.workspace_data.WorkspaceData` 管理工作区的 `images/` 和 `annotations/`。它重枚举当前文件，按完整 SHA-256 和 DCT 感知哈希接纳临时图片，删除每个候选并以 SHA-256 stem 保存接纳图片；图片真实尺寸、检测框、检测摘要和检测输入指纹都从当前文件派生。检测摘要只将矩形或 `flags.xxtrain_detection_negative: true` 的空 `shapes` 计为已标注。保存要求结果恰好覆盖全部当前图片，保留 LabelMe 顶层字段、非矩形标注及矩形附加字段，缺失 JSON 使用相对 `imagePath` 和真实尺寸创建。全部文档在落盘前完成编码，每个 JSON 经同目录临时文件、`fsync` 和 `os.replace` 独立替换；该批次不是多文件事务，前序成功文件可保留，重试以同一结果覆盖。该组件不表示平台流程已经完成保存状态转换。
+`xxtrain.workspace_data.WorkspaceData` 管理工作区的 `images/` 和 `annotations/`。根目录形式派生这两个目录；现有平台组合也可显式传入两个目录，两种形式共享同一数据行为。它重枚举当前文件，按完整 SHA-256 和 DCT 感知哈希接纳临时图片，删除每个候选并以 SHA-256 stem 保存接纳图片；图片真实尺寸、检测框、检测摘要和检测输入指纹都从当前文件派生。检测摘要只将矩形或 `flags.xxtrain_detection_negative: true` 的空 `shapes` 计为已标注。保存要求结果恰好覆盖全部当前图片，保留 LabelMe 顶层字段、非矩形标注及矩形附加字段，缺失 JSON 使用相对 `imagePath` 和真实尺寸创建。全部文档在落盘前完成编码，每个 JSON 经同目录临时文件、`fsync` 和 `os.replace` 独立替换；该批次不是多文件事务，前序成功文件可保留，重试以同一结果覆盖。该组件不表示平台流程已经完成保存状态转换。
 
 `xxtrain.business_tasks` 定义 Point 的 `Point/tl/tc/cl/cc` 框标签及三个目标的开放状态。`xxtrain.integrations.cvat.codec` 使用 CVAT 返回的真实标签和保留文本属性 ID 映射矩形标注，文本属性以 JSON 对象携带 LabelMe 矩形附加字段，新建框没有该属性时使用空对象。适配器保留五种框的原标签和空帧，拒绝越界帧、未知标签、轨迹、非矩形及其他无法映射的 shape 属性，不把原始 CVAT 字典或 SDK 对象带入其他包。
 
