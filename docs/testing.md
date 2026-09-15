@@ -43,7 +43,7 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
-HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，其中一个成功路径组合真实 `AnnotationService`、`WorkspaceData`、`StateStore` 和 `CvatClient`，只在 CVAT 网络边界使用受控响应。离线页面测试通过包内 HTTP 资源检查布局，并在 Node.js 可用时执行页面返回同步和 CVAT 返回插件；缺少 Node.js 时这两项脚本检查明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收，不由离线测试替代。
+HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，其中一个成功路径组合真实 `AnnotationService`、`WorkspaceData`、`RuntimeCache` 和 `CvatClient`，只在 CVAT 网络边界使用受控响应。服务测试覆盖文件派生计数、50 张有框图片门槛、完成 Job 的替换、指纹匹配、并发写入拒绝和多文件保存失败回滚。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件；缺少 Node.js 时明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收。
 
 真实验收显式安装 `platform-test` 并提供全部三个环境变量；未配置时浏览器测试在启动浏览器或访问网络前跳过。只可使用独立生成的临时 fixture，并在验收后停用临时服务：
 

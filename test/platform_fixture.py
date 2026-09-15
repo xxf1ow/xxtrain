@@ -41,11 +41,13 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
     parent = parent.resolve()
     parent.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix='xxtrain-point-acceptance-', dir=parent))
-    images_dir = root / 'images'
-    annotations_dir = root / 'annotations'
+    workspace_dir = root / 'workspace'
+    workspace_dir.mkdir()
+    images_dir = workspace_dir / 'images'
+    annotations_dir = workspace_dir / 'annotations'
     baseline_dir = root / 'baseline'
-    state_dir = root / 'state'
-    for directory in (images_dir, annotations_dir, baseline_dir, state_dir):
+    runtime_dir = root / 'runtime'
+    for directory in (images_dir, annotations_dir, baseline_dir, runtime_dir):
         directory.mkdir()
 
     first_image = images_dir / 'point-a.jpg'
@@ -108,9 +110,8 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
             'workspace_id': workspace_id,
             'display_name': display_name,
             'owner_user_id': owner_user_id,
-            'images_dir': str(images_dir),
-            'annotations_dir': str(annotations_dir),
-            'state_path': str(state_dir / 'workspace.json'),
+            'workspace_dir': str(workspace_dir),
+            'runtime_dir': str(runtime_dir),
             'cvat_internal_url': cvat_internal_url,
         },
     )

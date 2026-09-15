@@ -163,7 +163,7 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
     def start_annotation(request: Request, body: _EmptyBody) -> dict[str, str]:
         user_id = authenticated_user(request)
         try:
-            annotation_url = service.begin(user_id)
+            annotation_url = service.begin_detection(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):
@@ -174,7 +174,7 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
     def sync_annotation(request: Request, body: _EmptyBody) -> dict[str, object]:
         user_id = authenticated_user(request)
         try:
-            view = service.sync(user_id)
+            view = service.sync_detection(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):

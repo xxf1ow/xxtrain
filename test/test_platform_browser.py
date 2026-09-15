@@ -79,9 +79,7 @@ def assert_preserved_mixed_annotation(test: unittest.TestCase, document: dict[st
 
 class PlatformBrowserTest(unittest.TestCase):
     def setUp(self) -> None:
-        config = WorkspaceConfig(
-            'line-3', '三号现场', 17, Path('images'), Path('annotations'), Path('state.json'), 'http://cvat.test'
-        )
+        config = WorkspaceConfig('line-3', '三号现场', 17, Path('workspace'), Path('runtime'), 'http://cvat.test')
         self.service = FakeService()
         self.cvat = FakeCvat()
         self.client = AsgiTestClient(create_app(config, self.service, self.cvat))
@@ -199,15 +197,7 @@ setTimeout(() => {{
         payload = json.loads(path.read_text(encoding='utf-8'))
 
         self.assertEqual(
-            {
-                'workspace_id',
-                'display_name',
-                'owner_user_id',
-                'images_dir',
-                'annotations_dir',
-                'state_path',
-                'cvat_internal_url',
-            },
+            {'workspace_id', 'display_name', 'owner_user_id', 'workspace_dir', 'runtime_dir', 'cvat_internal_url'},
             set(payload),
         )
         config = load_config(path)

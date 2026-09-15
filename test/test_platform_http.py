@@ -19,9 +19,9 @@ else:
     from xxtrain.integrations.cvat import CvatClient
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig
-    from xxtrain.platform.contracts import PlatformAccessError, PlatformError, WorkspaceView
+    from xxtrain.platform.contracts import JobRef, PlatformAccessError, PlatformError, WorkspaceView
+    from xxtrain.platform.runtime import RuntimeCache
     from xxtrain.platform.service import AnnotationService
-    from xxtrain.platform.state import StateStore
     from xxtrain.workspace_data import WorkspaceData
 
 
@@ -57,7 +57,7 @@ class AsgiTestClient:
 class FakeService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
-        self.view_result = WorkspaceView('line-3', '三号现场', 2, 'pending')
+        self.view_result = WorkspaceView('line-3', '三号现场', 2, 0, 0, False, False)
         self.errors: dict[str, Exception] = {}
 
     def _result(self, name: str, user_id: int) -> object:
@@ -71,10 +71,10 @@ class FakeService:
     def view(self, user_id: int) -> WorkspaceView:
         return self._result('view', user_id)  # type: ignore[return-value]
 
-    def begin(self, user_id: int) -> str:
+    def begin_detection(self, user_id: int) -> str:
         return self._result('begin', user_id)  # type: ignore[return-value]
 
-    def sync(self, user_id: int) -> WorkspaceView:
+    def sync_detection(self, user_id: int) -> WorkspaceView:
         return self._result('sync', user_id)  # type: ignore[return-value]
 
 
@@ -112,9 +112,8 @@ class PlatformHttpTest(unittest.TestCase):
             workspace_id='line-3',
             display_name='三号现场',
             owner_user_id=17,
-            images_dir=Path('images'),
-            annotations_dir=Path('annotations'),
-            state_path=Path('state.json'),
+            workspace_dir=Path('workspace'),
+            runtime_dir=Path('runtime'),
             cvat_internal_url='http://cvat.test',
         )
         self.service = FakeService()
@@ -156,8 +155,10 @@ class PlatformHttpTest(unittest.TestCase):
                 'workspace_id': 'line-3',
                 'name': '三号现场',
                 'image_count': 2,
-                'status': 'pending',
-                'error': None,
+                'annotated_image_count': 0,
+                'boxed_image_count': 0,
+                'can_generate_detection_cache': False,
+                'detection_cache_ready': False,
                 'task': {'id': 'point', 'name': 'Point'},
                 'targets': [
                     {'id': 'detect', 'name': '检测', 'available': True},
@@ -247,11 +248,10 @@ class PlatformHttpTest(unittest.TestCase):
         response = self.client.post('/platform/api/annotation/sync', headers=self.authenticate(), json={})
 
         self.assertEqual(502, response.status_code)
-        self.assertNotIn('saved', response.json().get('status', ''))
         self.assertNotIn('C:/private/site', response.text)
 
-    def test_malformed_local_state_is_an_operational_error(self) -> None:
-        self.service.errors['view'] = ValueError('Workspace state must be a JSON object')
+    def test_malformed_workspace_annotation_is_an_operational_error(self) -> None:
+        self.service.errors['view'] = ValueError('LabelMe shapes must be a list')
         self.client.cookies.set('sessionid', 'active')
         response = self.client.get('/platform/api/workspace')
 
@@ -282,11 +282,10 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                 ),
                 encoding='utf-8',
             )
-            state = StateStore(root / 'state.json')
-            state.save({'status': 'annotating', 'job': {'task_id': 41, 'job_id': 73, 'sample_ids': ['frame']}})
-            config = WorkspaceConfig(
-                'line-3', '三号现场', 17, images, annotations, root / 'state.json', 'http://cvat.test'
-            )
+            data = WorkspaceData(root)
+            runtime = RuntimeCache(root / 'runtime')
+            runtime.remember_job('detect', data.detection_fingerprint(), JobRef(41, 73, ('frame',)))
+            config = WorkspaceConfig('line-3', '三号现场', 17, root, root / 'runtime', 'http://cvat.test')
             labels = [
                 {'id': 41 + index, 'name': name, 'attributes': [{'id': 71 + index, 'name': 'xxtrain_labelme_extra'}]}
                 for index, name in enumerate(POINT_BOX_LABELS)
@@ -304,6 +303,8 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                     )
                 if request.url.path == '/api/users/self':
                     return httpx.Response(200, json={'id': 17})
+                if request.url.path == '/api/jobs/73':
+                    return httpx.Response(200, json={'id': 73, 'state': 'in progress'})
                 if request.url.path == '/api/labels':
                     return httpx.Response(200, json={'count': 5, 'next': None, 'results': labels})
                 if request.url.path == '/api/jobs/73/annotations':
@@ -329,7 +330,7 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             http = httpx.Client(transport=httpx.MockTransport(respond))
             self.addCleanup(http.close)
             cvat = CvatClient(config.cvat_internal_url, 'service-secret', http)
-            service = AnnotationService(config, WorkspaceData(images, annotations), cvat, state)
+            service = AnnotationService(config, data, cvat, runtime)
             with AsgiTestClient(create_app(config, service, cvat)) as client:
                 client.get('/platform/')
                 token = client.cookies.get('xxtrain_csrf')
@@ -343,7 +344,9 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             document = json.loads(annotation_path.read_text(encoding='utf-8'))
             self.assertEqual(204, login.status_code)
             self.assertEqual({'annotation_url': '/tasks/41/jobs/73'}, start.json())
-            self.assertEqual('saved', saved.json()['status'])
+            self.assertEqual(1, saved.json()['annotated_image_count'])
+            self.assertEqual(1, saved.json()['boxed_image_count'])
+            self.assertFalse((root / 'state.json').exists())
             self.assertEqual(['mask', 'tl'], [shape['label'] for shape in document['shapes']])
             self.assertEqual('kept', document['shapes'][1]['description'])
 
@@ -363,9 +366,8 @@ class PlatformEntrypointTest(unittest.TestCase):
                         'workspace_id': 'line-3',
                         'display_name': '三号现场',
                         'owner_user_id': 17,
-                        'images_dir': 'images',
-                        'annotations_dir': 'annotations',
-                        'state_path': 'state.json',
+                        'workspace_dir': '.',
+                        'runtime_dir': 'runtime',
                         'cvat_internal_url': 'http://cvat.test:8080',
                     }
                 ),

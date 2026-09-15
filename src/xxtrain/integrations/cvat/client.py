@@ -80,8 +80,8 @@ class CvatClient:
     ) -> JobRef:
         """Attach frames, initialize annotations once, assign the Job, and return its server IDs.
 
-        The complete operation, including polling, has a 120-second deadline. The workflow persists each supplied
-        checkpoint before retrying this method. Ambiguous in-flight writes raise ``PlatformError`` and require
+        The complete operation, including polling, has a 120-second deadline. Callers may supply a preparation
+        checkpoint when resuming a task. Ambiguous in-flight writes raise ``PlatformError`` and require
         administrator reconciliation; the adapter never guesses whether it is safe to repeat them.
         """
 
@@ -150,6 +150,17 @@ class CvatClient:
         labels = self._labels(ref.task_id)
         response = self._service_request('GET', f'/api/jobs/{ref.job_id}/annotations')
         return decode_annotations(self._json(response), ref, labels)
+
+    def job_is_unfinished(self, ref: JobRef) -> bool:
+        """Return whether the Job state differs from completed.
+
+        Malformed states and operational failures raise ``PlatformError`` without response details.
+        """
+        path = f'/api/jobs/{ref.job_id}'
+        job = self._json(self._service_request('GET', path))
+        if not isinstance(job, dict) or not isinstance(job.get('state'), str):
+            raise PlatformError(f'CVAT {path} returned an invalid state')
+        return job['state'] != 'completed'
 
     def job_path(self, ref: JobRef) -> str:
         """Return the local same-origin CVAT UI path for a Job."""

@@ -25,13 +25,13 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.data`](subsystems/annotation-data.md) 拥有不可变标注、几何、标签目录、格式 I/O 和数据集产物辅助函数；
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、模型配置、训练、ONNX 导出和预测检查；
-- `xxtrain.platform.contracts` 定义平台组件共享的数据类型、状态和错误，包根不导入服务或页面实现；`xxtrain.platform.config` 从严格字段的 JSON 对象加载单个预置工作区并相对配置文件解析路径，`xxtrain.platform.state` 以单文件原子替换保存流程私有状态，`xxtrain.platform.service.AnnotationService` 串行协调数据存储与 CVAT 的开始、继续和取回保存；
+- `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 从文件派生计数与缓存资格，以一个非阻塞进程锁协调上传接纳、CVAT 创建和同步、检测缓存生成；
 - `xxtrain.platform.app` 提供同源页面与窄 HTTP 接口；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；
 - `xxtrain.workspace_data` 以工作区的 `images/` 和 `annotations/` 为权威输入，按 SHA-256 文件名接纳去重后的图片，并从当前图片及 LabelMe 检测框或显式负样本派生检测摘要和输入指纹；保存只替换检测矩形，保留其他标注和未知字段，并以逐文件原子替换落盘；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签和检测、分类、分割目标开放状态；
 - `xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存；
 - `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换矩形，按 CVAT 标签定义解析真实 ID，并拒绝无法无损映射的标注类型；
-- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建、准备、分配和读取 CVAT 标注任务；浏览器会话与服务令牌隔离，准备进度由调用方通过不依赖 HTTPX 的公开检查点持久化；同版本 CVAT UI 加载的返回插件只负责保存、完成状态确认和返回平台，不写平台文件；
+- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建、准备、分配和读取 CVAT 标注任务，并读取 Job 是否完成；浏览器会话与服务令牌隔离。同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
 - `xxtrain.cli` 只把命令参数传给训练包 API，不重新实现数据或训练逻辑。
 
 三个子系统页面完整描述各自契约；本文只维护它们之间的运行关系和所有权边界。
@@ -50,4 +50,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-内部自助训练平台仍处于提案阶段；当前实现到达预置 Point 现场的登录、检测编辑和平台文件保存闭环，上传、现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现。平台边界、路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有，未实现内容不属于当前架构。
+内部自助训练平台仍处于提案阶段；当前服务层支持 Point 图片接纳、检测标注同步和至少 50 张有框图片的检测缓存生成，HTTP 保留登录、开始和同步入口。上传及缓存生成页面、现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

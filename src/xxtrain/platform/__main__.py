@@ -10,8 +10,8 @@ import uvicorn
 from xxtrain.integrations.cvat import CvatClient
 from xxtrain.platform.app import create_app
 from xxtrain.platform.config import load_config
+from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
-from xxtrain.platform.state import StateStore
 from xxtrain.workspace_data import WorkspaceData
 
 _SERVICE_TOKEN_ENV = 'XXTRAIN_CVAT_SERVICE_TOKEN'
@@ -57,11 +57,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error(f'{_SERVICE_TOKEN_ENV} must be set')
 
     config = load_config(args.config)
-    data = WorkspaceData(config.images_dir, config.annotations_dir)
-    state = StateStore(config.state_path)
+    data = WorkspaceData(config.workspace_dir)
+    runtime = RuntimeCache(config.runtime_dir)
     with httpx.Client() as http:
         cvat = CvatClient(config.cvat_internal_url, token, http)
-        service = AnnotationService(config, data, cvat, state)
+        service = AnnotationService(config, data, cvat, runtime)
         app = create_app(config, service, cvat)
         uvicorn.run(app, host=args.host, port=args.port, workers=1, proxy_headers=True, forwarded_allow_ips='*')
 

@@ -387,6 +387,30 @@ class CvatClientTest(unittest.TestCase):
         client = CvatClient('http://cvat.test', 'private-token', http)
         self.assertEqual(client.fetch_detection(JobRef(7, 8, ('b', 'a'))), (FrameResult('b', ()), FrameResult('a', ())))
 
+    def test_job_is_unfinished_reads_state_without_exposing_response_details(self):
+        for state, expected in (('new', True), ('in progress', True), ('completed', False)):
+            with self.subTest(state=state):
+
+                def respond(request):
+                    self.assertEqual(('GET', '/api/jobs/8'), (request.method, request.url.path))
+                    return httpx.Response(200, json={'id': 8, 'state': state})
+
+                with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+                    client = CvatClient('http://cvat.test', 'private-token', http)
+                    self.assertEqual(expected, client.job_is_unfinished(JobRef(7, 8, ('a',))))
+
+    def test_job_is_unfinished_rejects_malformed_state_and_sanitizes_failures(self):
+        responses = [httpx.Response(200, json=body) for body in ({}, [], {'state': None}, {'state': 1})]
+        responses.append(httpx.Response(403, text='private-response'))
+        for response in responses:
+            with self.subTest(response=response):
+                with httpx.Client(transport=httpx.MockTransport(lambda _: response)) as http:
+                    client = CvatClient('http://cvat.test', 'private-token', http)
+                    with self.assertRaises(PlatformError) as caught:
+                        client.job_is_unfinished(JobRef(7, 8, ('a',)))
+                    self.assertNotIsInstance(caught.exception, PlatformAccessError)
+                    self.assertNotIn('private-response', str(caught.exception))
+
     def test_job_path_is_a_local_same_origin_path(self):
         client = CvatClient(
             'http://cvat.test',

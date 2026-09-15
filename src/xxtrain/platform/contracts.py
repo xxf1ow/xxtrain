@@ -1,12 +1,10 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from xxtrain.data import Bbox
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
-type Status = Literal['pending', 'preparing', 'annotating', 'sync_failed', 'saved']
 
 
 @dataclass(frozen=True)
@@ -69,8 +67,10 @@ class WorkspaceView:
     workspace_id: str
     name: str
     image_count: int
-    status: Status
-    error: str | None = None
+    annotated_image_count: int
+    boxed_image_count: int
+    can_generate_detection_cache: bool
+    detection_cache_ready: bool
 
 
 class PlatformError(Exception):

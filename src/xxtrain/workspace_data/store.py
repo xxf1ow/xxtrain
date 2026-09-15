@@ -22,15 +22,11 @@ _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
 
 
 class WorkspaceData:
-    """Access workspace ``images`` and ``annotations`` directories from a root or explicit paths."""
+    """Access the writable ``images`` and ``annotations`` directories beneath one workspace root."""
 
-    def __init__(self, workspace_dir: Path, annotations_dir: Path | None = None) -> None:
-        if annotations_dir is None:
-            self._images_dir = Path(workspace_dir) / 'images'
-            self._annotations_dir = Path(workspace_dir) / 'annotations'
-        else:
-            self._images_dir = Path(workspace_dir)
-            self._annotations_dir = Path(annotations_dir)
+    def __init__(self, workspace_dir: Path) -> None:
+        self._images_dir = Path(workspace_dir) / 'images'
+        self._annotations_dir = Path(workspace_dir) / 'annotations'
         self._require_directory(self._images_dir, writable=True)
         self._require_directory(self._annotations_dir, writable=True)
 
@@ -222,7 +218,8 @@ class WorkspaceData:
     def save_detection(self, results: tuple[FrameResult, ...]) -> None:
         """Replace rectangles after exact-set validation and encoding, using one atomic replacement per JSON.
 
-        Earlier replacements remain if a later replacement fails; retrying overwrites the same paths.
+        On a write failure, restore replaced files to their prior bytes or absence before re-raising.
+        Rollback failures remain visible; process termination cannot guarantee a multi-file transaction.
         """
         images = self._image_paths()
         expected = {path.stem for path in images}
@@ -234,8 +231,10 @@ class WorkspaceData:
 
         by_sample = {result.sample_id: result for result in results}
         encoded = []
+        previous = {}
         for image_path in images:
             destination = self._annotation_path(image_path.stem)
+            previous[destination] = destination.read_bytes() if destination.is_file() else None
             document = self._read_document(destination)
             if not destination.is_file():
                 with Image.open(image_path) as image:
@@ -249,8 +248,19 @@ class WorkspaceData:
             payload = json.dumps(merged, ensure_ascii=False, allow_nan=False, indent=2).encode('utf-8')
             encoded.append((destination, payload))
 
-        for destination, payload in encoded:
-            self._replace(destination, payload)
+        replaced = []
+        try:
+            for destination, payload in encoded:
+                self._replace(destination, payload)
+                replaced.append(destination)
+        except OSError:
+            for destination in reversed(replaced):
+                original = previous[destination]
+                if original is None:
+                    destination.unlink()
+                else:
+                    self._replace(destination, original)
+            raise
 
     def _annotation_path(self, sample_id: str) -> Path:
         return self._annotations_dir / f'{sample_id}.json'

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from hashlib import sha256
@@ -67,12 +68,6 @@ class PlatformDataTest(unittest.TestCase):
 
     def image_names(self) -> list[str]:
         return sorted(path.name for path in self.images_dir.iterdir())
-
-    def test_workspace_accepts_root_and_explicit_directory_construction(self) -> None:
-        root_workspace = WorkspaceData(self.root)
-        explicit_workspace = WorkspaceData(self.images_dir, self.annotations_dir)
-
-        self.assertEqual(root_workspace.images(), explicit_workspace.images())
 
     def write_annotation(self, stem: str, document: dict[str, object]) -> Path:
         path = self.annotations_dir / f'{stem}.json'
@@ -357,6 +352,26 @@ class PlatformDataTest(unittest.TestCase):
         workspace.save_detection((FrameResult(sample_id='a', boxes=()),))
 
         self.assertEqual({'marker': 'old', 'shapes': []}, json.loads(annotation_path.read_text(encoding='utf-8')))
+
+    def test_later_save_failure_removes_new_annotations_and_preserves_existing_bytes(self) -> None:
+        self.make_image('a.jpg')
+        self.make_image('b.jpg')
+        annotation = self.write_annotation('b', {'marker': 'old', 'shapes': []})
+        original = annotation.read_bytes()
+        fingerprint = self.workspace.detection_fingerprint()
+        real_replace = os.replace
+
+        def fail_second(source, destination):
+            if Path(destination) == annotation:
+                raise OSError('disk full')
+            return real_replace(source, destination)
+
+        with patch('xxtrain.workspace_data.store.os.replace', side_effect=fail_second):
+            with self.assertRaises(OSError):
+                self.workspace.save_detection((FrameResult('a', ()), FrameResult('b', ())))
+        self.assertFalse((self.annotations_dir / 'a.json').exists())
+        self.assertEqual(original, annotation.read_bytes())
+        self.assertEqual(fingerprint, self.workspace.detection_fingerprint())
 
 
 if __name__ == '__main__':

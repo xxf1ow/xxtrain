@@ -10,9 +10,8 @@ class WorkspaceConfig:
     workspace_id: str
     display_name: str
     owner_user_id: int
-    images_dir: Path
-    annotations_dir: Path
-    state_path: Path
+    workspace_dir: Path
+    runtime_dir: Path
     cvat_internal_url: str
 
 
@@ -28,19 +27,11 @@ def load_config(path: Path) -> WorkspaceConfig:
     if not isinstance(payload, dict):
         raise ValueError('Workspace configuration must be a JSON object')
 
-    expected = {
-        'workspace_id',
-        'display_name',
-        'owner_user_id',
-        'images_dir',
-        'annotations_dir',
-        'state_path',
-        'cvat_internal_url',
-    }
+    expected = {'workspace_id', 'display_name', 'owner_user_id', 'workspace_dir', 'runtime_dir', 'cvat_internal_url'}
     if set(payload) != expected:
         raise ValueError('Workspace configuration fields do not match the required schema')
 
-    strings = ('workspace_id', 'display_name', 'images_dir', 'annotations_dir', 'state_path', 'cvat_internal_url')
+    strings = ('workspace_id', 'display_name', 'workspace_dir', 'runtime_dir', 'cvat_internal_url')
     if any(not isinstance(payload[field], str) or not payload[field] for field in strings):
         raise ValueError('Workspace configuration string fields must be non-empty')
     owner_user_id = payload['owner_user_id']
@@ -54,8 +45,7 @@ def load_config(path: Path) -> WorkspaceConfig:
         workspace_id=payload['workspace_id'],
         display_name=payload['display_name'],
         owner_user_id=owner_user_id,
-        images_dir=resolve('images_dir'),
-        annotations_dir=resolve('annotations_dir'),
-        state_path=resolve('state_path'),
+        workspace_dir=resolve('workspace_dir'),
+        runtime_dir=resolve('runtime_dir'),
         cvat_internal_url=payload['cvat_internal_url'],
     )
