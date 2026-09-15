@@ -57,6 +57,8 @@ class FrameResult:
 
 @dataclass(frozen=True)
 class JobRef:
+    """CVAT task, job, and workspace sample identifiers for a disposable runtime entry."""
+
     task_id: int
     job_id: int
     sample_ids: tuple[str, ...]

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 from hashlib import sha256
 from pathlib import Path
@@ -177,6 +178,46 @@ class WorkspaceData:
             allow_nan=False,
         ).encode('utf-8')
         return sha256(payload).hexdigest()
+
+    def materialize_detection_source(self, root: Path) -> Path:
+        """Copy completed detection samples into a disposable LabelMe source tree."""
+        source_root = Path(root) / 'src'
+        group_root = source_root / 'workspace'
+        images_dir = group_root / 'imgs'
+        annotations_dir = group_root / 'anns_seg'
+        images_dir.mkdir(parents=True)
+        annotations_dir.mkdir()
+        (source_root / 'labels.txt').write_text('Point\n', encoding='utf-8')
+
+        for image_path in self._image_paths():
+            annotation_path = self._annotation_path(image_path.stem)
+            document = self._read_document(annotation_path)
+            if not detection_complete(document):
+                continue
+            with Image.open(image_path) as image:
+                width, height = image.size
+            boxes = _detection_boxes(document)
+            annotation = {
+                'version': '5.0.0',
+                'flags': {},
+                'shapes': [
+                    {
+                        'label': box.geometry.label,
+                        'points': [[box.geometry.x1, box.geometry.y1], [box.geometry.x2, box.geometry.y2]],
+                        'shape_type': 'rectangle',
+                    }
+                    for box in boxes
+                ],
+                'imagePath': f'../imgs/{image_path.name}',
+                'imageData': None,
+                'imageHeight': height,
+                'imageWidth': width,
+            }
+            shutil.copy2(image_path, images_dir / image_path.name)
+            (annotations_dir / annotation_path.name).write_text(
+                json.dumps(annotation, ensure_ascii=False, allow_nan=False), encoding='utf-8'
+            )
+        return Path(root)
 
     def save_detection(self, results: tuple[FrameResult, ...]) -> None:
         """Replace rectangles after exact-set validation and encoding, using one atomic replacement per JSON.

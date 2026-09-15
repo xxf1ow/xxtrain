@@ -8,6 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from xxtrain.data import Bbox
+from xxtrain.platform.cache import build_detection_cache
 from xxtrain.platform.contracts import DetectionBox, DetectionSummary, FrameResult, PlatformAccessError, UploadResult
 from xxtrain.workspace_data import WorkspaceData
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, perceptual_hash
@@ -46,6 +47,23 @@ class PlatformDataTest(unittest.TestCase):
 
     def accept_image(self, name: str) -> None:
         self.workspace.admit((self.stage_image(name),))
+
+    def accept_boxed_and_negative_workspace(self) -> None:
+        boxed = self.stage_image('boxed.jpg')
+        negative = self.staging_dir / 'negative.jpg'
+        with Image.new('RGB', (64, 48), 'white') as image:
+            for x in range(64):
+                for y in range(48):
+                    value = (x * 19 + y * 31) % 256
+                    image.putpixel((x, y), (value, value, value))
+            image.save(negative)
+        self.workspace.admit((boxed, negative))
+        boxed_sample, negative_sample = self.workspace.images()
+        self.write_annotation(
+            boxed_sample.sample_id,
+            {'shapes': [{'label': 'tl', 'shape_type': 'rectangle', 'points': [[1, 2], [30, 40]]}]},
+        )
+        self.write_annotation(negative_sample.sample_id, {'flags': {'xxtrain_detection_negative': True}, 'shapes': []})
 
     def image_names(self) -> list[str]:
         return sorted(path.name for path in self.images_dir.iterdir())
@@ -129,6 +147,29 @@ class PlatformDataTest(unittest.TestCase):
             sample_id, {'shapes': [{'label': 'Point', 'shape_type': 'rectangle', 'points': [[1, 2], [3, 4]]}]}
         )
         self.assertEqual(DetectionSummary(1, 1, 1), self.workspace.detection_summary())
+
+    def test_detection_cache_keeps_explicit_negative_background_images(self) -> None:
+        self.accept_boxed_and_negative_workspace()
+        self.make_image('incomplete.jpg')
+
+        report = build_detection_cache(self.workspace, self.root / 'runtime' / 'cache' / 'fingerprint')
+
+        output = self.root / 'runtime' / 'cache' / 'fingerprint' / 'detect'
+        self.assertEqual(2, report.train_image_count + report.val_image_count)
+        self.assertTrue(output.is_dir())
+        labels = sorted((output / 'workspace').glob('*.txt'))
+        self.assertEqual(2, len(labels))
+        self.assertEqual(1, sum(bool(path.read_text(encoding='utf-8')) for path in labels))
+        self.assertIn('0: Point', (output / 'dataset.yaml').read_text(encoding='utf-8'))
+
+    def test_detection_cache_does_not_publish_an_incomplete_workspace(self) -> None:
+        destination = self.root / 'runtime' / 'cache' / 'fingerprint'
+
+        with self.assertRaisesRegex(ValueError, 'no output samples'):
+            build_detection_cache(self.workspace, destination)
+
+        self.assertFalse(destination.exists())
+        self.assertFalse(destination.with_name('.fingerprint.building').exists())
 
     def test_detection_fingerprint_ignores_non_detection_labelme_content(self) -> None:
         self.accept_image('annotated.jpg')

@@ -12,6 +12,7 @@ from xxtrain.data import Bbox
 from xxtrain.integrations.cvat import PreparationState
 from xxtrain.platform.config import WorkspaceConfig, load_config
 from xxtrain.platform.contracts import DetectionBox, FrameResult, JobRef, PlatformAccessError, PlatformError
+from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.state import StateStore
 from xxtrain.workspace_data import WorkspaceData
@@ -126,6 +127,26 @@ class PlatformConfigAndStateTest(unittest.TestCase):
         state_path.write_text('[]', encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'object'):
             state.load()
+
+    def test_runtime_job_map_is_atomic_and_keyed_by_target_and_fingerprint(self) -> None:
+        cache = RuntimeCache(self.root / 'runtime')
+        ref = JobRef(41, 73, ('a',))
+
+        cache.remember_job('detect', 'a' * 64, ref)
+
+        self.assertEqual(ref, RuntimeCache(self.root / 'runtime').job_for('detect', 'a' * 64))
+        self.assertIsNone(cache.job_for('detect', 'b' * 64))
+        self.assertFalse(cache.has_detection_cache('a' * 64))
+        (self.root / 'runtime' / 'cache' / ('a' * 64) / 'detect').mkdir(parents=True)
+        self.assertTrue(cache.has_detection_cache('a' * 64))
+
+    def test_runtime_job_map_rejects_a_non_job_mapping_shape(self) -> None:
+        runtime = self.root / 'runtime'
+        runtime.mkdir()
+        (runtime / 'jobs.json').write_text('{"detect": {"fingerprint": []}}', encoding='utf-8')
+
+        with self.assertRaisesRegex(ValueError, 'Runtime job map'):
+            RuntimeCache(runtime).job_for('detect', 'fingerprint')
 
 
 class AnnotationServiceTest(unittest.TestCase):
