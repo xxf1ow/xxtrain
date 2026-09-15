@@ -38,6 +38,44 @@ if _LIVE_REQUESTED and all(_LIVE_VALUES.values()):
 else:
     _PLAYWRIGHT_IMPORT_ERROR = None
 
+_PRESERVED_ROOT_FIELDS = {
+    'version': '5.4.1',
+    'flags': {'fixture': 'task-6', 'preserve': True},
+    'description': 'synthetic mixed annotation',
+    'imagePath': '../images/point-a.jpg',
+    'imageData': None,
+    'imageHeight': 600,
+    'imageWidth': 800,
+    'custom': {'preserve': ['root', 'value']},
+}
+_PRESERVED_NON_RECTANGLES = [
+    {
+        'label': 'wire',
+        'points': [[40.0, 40.0], [90.0, 70.0]],
+        'group_id': None,
+        'description': 'preserve-line',
+        'shape_type': 'line',
+        'flags': {'preserve': True},
+    },
+    {
+        'label': 'mask',
+        'points': [[500.0, 100.0], [620.0, 130.0], [560.0, 250.0]],
+        'group_id': 23,
+        'description': 'preserve-polygon',
+        'shape_type': 'polygon',
+        'flags': {'preserve': True},
+    },
+]
+
+
+def assert_preserved_mixed_annotation(test: unittest.TestCase, document: dict[str, object]) -> None:
+    for field, expected_value in _PRESERVED_ROOT_FIELDS.items():
+        test.assertIn(field, document)
+        test.assertEqual(expected_value, document[field])
+    test.assertEqual(
+        _PRESERVED_NON_RECTANGLES, [shape for shape in document['shapes'] if shape['shape_type'] != 'rectangle']
+    )
+
 
 class PlatformBrowserTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -324,6 +362,20 @@ class PlatformFixtureTest(unittest.TestCase):
             self.assertEqual({'reviewed': True}, annotation['shapes'][0]['flags'])
             self.assertEqual('classification-metadata', annotation['shapes'][0]['description'])
 
+    def test_preservation_assertion_rejects_missing_root_or_nonrectangle_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
+            annotation = json.loads(Path(receipt['annotation_path']).read_text(encoding='utf-8'))
+
+            annotation.pop('description')
+            with self.assertRaises(AssertionError):
+                assert_preserved_mixed_annotation(self, annotation)
+
+            annotation = json.loads(Path(receipt['annotation_path']).read_text(encoding='utf-8'))
+            annotation['shapes'][1].pop('flags')
+            with self.assertRaises(AssertionError):
+                assert_preserved_mixed_annotation(self, annotation)
+
 
 @unittest.skipUnless(_LIVE_REQUESTED, 'real browser acceptance environment is not configured')
 class PlatformLiveBrowserTest(unittest.TestCase):
@@ -480,9 +532,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.screenshot(path=self.artifact_dir / '04-first-save.png', full_page=True)
 
         document = self._saved_document()
-        self.assertEqual({'fixture': 'task-6', 'preserve': True}, document['flags'])
-        non_rectangles = [shape for shape in document['shapes'] if shape['shape_type'] != 'rectangle']
-        self.assertEqual(['line', 'polygon'], [shape['shape_type'] for shape in non_rectangles])
+        assert_preserved_mixed_annotation(self, document)
         rectangles = [shape for shape in document['shapes'] if shape['shape_type'] == 'rectangle']
         self.assertEqual({'Point', 'tl'}, {shape['label'] for shape in rectangles})
         classified = next(shape for shape in rectangles if shape['label'] == 'tl')
@@ -523,9 +573,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         expect(page.locator('#status-value')).to_have_text('已保存')
         page.screenshot(path=self.artifact_dir / '06-empty-detection-save.png', full_page=True)
         final_document = self._saved_document()
+        assert_preserved_mixed_annotation(self, final_document)
         self.assertEqual([], [shape for shape in final_document['shapes'] if shape['shape_type'] == 'rectangle'])
-        self.assertEqual(['line', 'polygon'], [shape['shape_type'] for shape in final_document['shapes']])
-        self.assertEqual({'fixture': 'task-6', 'preserve': True}, final_document['flags'])
         self._assert_immutable_inputs()
 
 
