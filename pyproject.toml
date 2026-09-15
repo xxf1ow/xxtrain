@@ -18,12 +18,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["PyYAML>=6.0.3", "pycocotools>=2.0.11", "ruff>=0.15.22"]
+platform = ["fastapi>=0.116.1", "httpx>=0.28.1", "uvicorn>=0.35.0"]
+platform-test = ["playwright>=1.62.0"]
 
 [project.scripts]
 xxtrain = "xxtrain.cli:main"
+xxtrain-platform = "xxtrain.platform.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"xxtrain.platform" = ["web/*.html", "web/*.css", "web/*.js"]
+"xxtrain.integrations.cvat" = ["ui/*.js"]
 
 # https://beta.ruff.rs/docs/settings/
 [tool.ruff]

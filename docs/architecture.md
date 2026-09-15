@@ -2,9 +2,9 @@
 
 ## Scope
 
-xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。仓库尚未实现用户平台、SQLite 元数据、CVAT/ClearML 连接器、工作区或训练快照。
+xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、CVAT 矩形标注转换、CVAT HTTP 适配、可恢复的检测标注业务流程，以及供现场人员使用的检测标注入口；仓库尚未实现完整自助训练平台、SQLite 元数据、ClearML 服务连接或训练快照。
 
-项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后只有一个命令入口 `xxtrain`，由 `xxtrain.cli` 分派 `train`、`export` 和 `review`。
+项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测标注入口。
 
 ## Runtime flow
 
@@ -25,6 +25,12 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.data`](subsystems/annotation-data.md) 拥有不可变标注、几何、标签目录、格式 I/O 和数据集产物辅助函数；
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、模型配置、训练、ONNX 导出和预测检查；
+- `xxtrain.platform.contracts` 定义平台组件共享的数据类型、状态和错误，包根不导入服务或页面实现；`xxtrain.platform.config` 从严格字段的 JSON 对象加载单个预置工作区并相对配置文件解析路径，`xxtrain.platform.state` 以单文件原子替换保存流程私有状态，`xxtrain.platform.service.AnnotationService` 串行协调数据存储与 CVAT 的开始、继续和取回保存；
+- `xxtrain.platform.app` 提供同源页面与窄 HTTP 接口；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；
+- `xxtrain.workspace_data` 读取预置平铺图片及同 stem LabelMe 文件，只替换检测矩形并保留其他标注和未知字段，以逐文件原子替换保存结果；
+- `xxtrain.business_tasks` 定义 Point 的五种框标签和检测、分类、分割目标开放状态；
+- `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换矩形，按 CVAT 标签定义解析真实 ID，并拒绝无法无损映射的标注类型；
+- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建、准备、分配和读取 CVAT 标注任务；浏览器会话与服务令牌隔离，准备进度由调用方通过不依赖 HTTPX 的公开检查点持久化；同版本 CVAT UI 加载的返回插件只负责保存、完成状态确认和返回平台，不写平台文件；
 - `xxtrain.cli` 只把命令参数传给训练包 API，不重新实现数据或训练逻辑。
 
 三个子系统页面完整描述各自契约；本文只维护它们之间的运行关系和所有权边界。
@@ -43,4 +49,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-内部自助训练平台仍处于提案阶段，计划在现有训练核心之外增加权威数据与用户流程控制层。其边界、路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有，未实现内容不属于当前架构。
+内部自助训练平台仍处于提案阶段；当前实现到达预置 Point 现场的登录、检测编辑和平台文件保存闭环，上传、现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现。平台边界、路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有，未实现内容不属于当前架构。

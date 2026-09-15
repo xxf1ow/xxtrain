@@ -15,11 +15,18 @@ uv sync --extra dev
 
 安装后使用 `xxtrain` 命令，不从 checkout 直接运行已删除的平铺脚本。本文及测试指南中的直接 `python`、`ruff` 和 `xxtrain` 命令都假定该环境已经激活。
 
+开发 Point 检测标注入口时同时安装 `platform` 可选依赖：
+
+```powershell
+uv sync --extra dev --extra platform
+```
+
 ## Repository layout
 
 ```text
 src/xxtrain/       # 安装包源码
 test/              # unittest 测试与受控 fixtures
+deploy/platform/   # Point 入口的 CVAT UI 镜像、同源代理和示例配置
 data/              # 本地 Scenario 和数据，默认被 Git 忽略
 docs/              # 项目权威文档与 Agent Notes
 .superpowers/      # 本地规格、计划和工作记录，始终被 Git 忽略
@@ -36,6 +43,25 @@ docs/              # 项目权威文档与 Agent Notes
 ## Dependency changes
 
 直接构建、运行和开发依赖在 `pyproject.toml` 中声明最低版本，完整解析结果由 `uv.lock` 固定。修改依赖声明后运行 `uv lock` 重新生成锁文件，并在提交前运行 `uv lock --check`；环境安装使用 `uv sync --locked --extra dev`，避免在验证时隐式改写锁文件。
+
+## Point detection portal
+
+`deploy/platform/workspace.example.json` 展示完整配置字段；复制后只修改现场 ID、名称、所属 CVAT 用户 ID、三个本地路径和 CVAT 内部源地址。配置文件不得保存 CVAT 服务令牌。图片目录只读，标注目录和状态文件父目录必须可写。
+
+在 PowerShell 中通过环境变量提供服务令牌，并把后端绑定到 loopback 或专用内网地址。进程固定使用一个 worker；示例端口 8000 是代理内网端口，不直接发布：
+
+```powershell
+$env:XXTRAIN_CVAT_SERVICE_TOKEN = '<service-token>'
+xxtrain-platform --config '<workspace.json>' --host 127.0.0.1 --port 8000
+```
+
+正式 CVAT UI 镜像固定使用 2.51.0，并在构建时把导航隐藏样式和返回插件插入 `index.html`。基础 HTML 缺少唯一的 `head` 插入点时构建失败：
+
+```powershell
+docker build --file deploy/platform/cvat-ui.Dockerfile --tag xxtrain-cvat-ui:2.51.0 .
+```
+
+`deploy/platform/nginx.conf` 是唯一对浏览器开放的同源代理配置。部署编排需在同一私有网络提供 `xxtrain_platform:8000`、`cvat_server:8080` 和 `xxtrain_cvat_ui:8000`，把选定的外部端口映射到代理的 8080，而不发布后端或专用 CVAT UI。代理保留带端口的 Host，向 CVAT 响应添加隔离头，并为最长 120 秒的任务准备留出 130 秒读写超时。启动或恢复远程 CVAT 属于单独的受控验收步骤。
 
 ## Scenario files
 

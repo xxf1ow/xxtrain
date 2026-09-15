@@ -36,6 +36,28 @@ python -m unittest discover -s test -t . -p 'test_*.py' -v
 
 测试从 `test/` 作为包导入当前 `src/xxtrain` 安装，不使用兼容适配层代替真实公开入口。
 
+Point 检测入口的 HTTP 与离线页面检查使用 `platform` 可选依赖：
+
+```powershell
+uv run --locked --extra platform python -m unittest test.test_platform_http -v
+uv run --locked --extra platform python -m unittest test.test_platform_browser -v
+```
+
+HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，其中一个成功路径组合真实 `AnnotationService`、`WorkspaceData`、`StateStore` 和 `CvatClient`，只在 CVAT 网络边界使用受控响应。离线页面测试通过包内 HTTP 资源检查布局，并在 Node.js 可用时执行页面返回同步和 CVAT 返回插件；缺少 Node.js 时这两项脚本检查明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收，不由离线测试替代。
+
+真实验收显式安装 `platform-test` 并提供全部三个环境变量；未配置时浏览器测试在启动浏览器或访问网络前跳过。只可使用独立生成的临时 fixture，并在验收后停用临时服务：
+
+```powershell
+uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
+```
+
+修改平台 package-data 或入口后构建 wheel，并检查 wheel 包含三个页面资源、CVAT 返回插件及 `xxtrain-platform` console script。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
+
+```powershell
+uv build --wheel --out-dir .superpowers/task-5-dist
+docker build --file deploy/platform/cvat-ui.Dockerfile --tag xxtrain-cvat-ui:2.51.0 .
+```
+
 ## Static checks
 
 ```powershell
