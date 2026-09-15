@@ -1439,9 +1439,13 @@ dev = [
     { name = "pyyaml" },
     { name = "ruff" },
 ]
+platform = [
+    { name = "httpx" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", marker = "extra == 'platform'", specifier = ">=0.28.1" },
     { name = "numpy", specifier = ">=2.5.1" },
     { name = "opencv-python", specifier = ">=5.0.0.93" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -1453,4 +1457,4 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.70.0" },
     { name = "ultralytics", specifier = ">=8.4.110" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "platform"]
