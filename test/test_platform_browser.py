@@ -647,7 +647,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
 
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.locator('#annotated-image-count')).to_have_text('2')
+        expect(page.locator('#annotated-image-count')).to_have_text('1')
         expect(page).to_have_url(re.compile(r'/platform/$'))
         page.screenshot(path=self.artifact_dir / '04-first-save.png', full_page=True)
 
@@ -692,12 +692,11 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.screenshot(path=self.artifact_dir / '05-platform-sync-failure.png', full_page=True)
 
         page.reload(wait_until='domcontentloaded')
-        expect(page.locator('#annotated-image-count')).to_have_text('2')
+        expect(page.locator('#annotated-image-count')).to_have_text('0')
         expect(page).to_have_url(re.compile(r'/platform/$'))
         page.screenshot(path=self.artifact_dir / '06-empty-detection-save.png', full_page=True)
         final_records = self._saved_detection_records()
-        self.assertEqual({'negative'}, {record.kind for record in final_records})
-        self.assertTrue(all(record.geometry is None for record in final_records))
+        self.assertEqual((), final_records)
         self.assertTrue({classified.id, added.id}.isdisjoint(record.id for record in final_records))
         self._assert_immutable_inputs()
 

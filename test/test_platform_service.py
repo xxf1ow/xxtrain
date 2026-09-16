@@ -212,6 +212,17 @@ class AnnotationServiceTest(unittest.TestCase):
         with self.assertRaisesRegex(PlatformError, 'all images annotated'):
             self.service.generate_detection_cache(17)
 
+    def test_sync_keeps_fifty_boxed_plus_one_incomplete_image_ineligible(self):
+        self.create_workspace(boxed=50, incomplete=1)
+        self.service.begin_detection(17)
+
+        view = self.service.sync_detection(17)
+
+        self.assertEqual((51, 50, 50), (view.image_count, view.annotated_image_count, view.boxed_image_count))
+        self.assertFalse(view.can_generate_detection_cache)
+        with self.assertRaisesRegex(PlatformError, 'all images annotated'):
+            self.service.generate_detection_cache(17)
+
     def test_cache_generation_publishes_registered_database_samples(self):
         self.create_workspace(boxed=50, negatives=1)
         view = self.service.generate_detection_cache(17)

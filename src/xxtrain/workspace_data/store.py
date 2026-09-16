@@ -187,18 +187,9 @@ class WorkspaceData:
         bindings: list[CvatBinding] = []
         for result in results:
             if not result.boxes:
-                annotation_id = current_negative.get(result.sample_id, None)
-                incoming.append(
-                    AnnotationRecord(
-                        annotation_id.id if annotation_id is not None else uuid4(),
-                        result.sample_id,
-                        'detect',
-                        None,
-                        'negative',
-                        None,
-                        None,
-                    )
-                )
+                negative = current_negative.get(result.sample_id)
+                if negative is not None:
+                    incoming.append(negative)
                 continue
             for box in result.boxes:
                 object_id = box.cvat_id

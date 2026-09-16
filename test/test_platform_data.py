@@ -286,6 +286,41 @@ class PlatformDataTest(unittest.TestCase):
         self.assertIn(second_label.id, records)
         self.assertEqual(sync.fingerprint, self.workspace.detection_fingerprint())
 
+    def test_prepare_sync_keeps_an_unchanged_empty_frame_incomplete(self) -> None:
+        image = self.accept_image()
+        ref = JobRef(7, 8, (image.sample_id,))
+
+        sync = self.workspace.prepare_detection_sync(ref, (FrameResult(image.sample_id, ()),))
+        self.workspace.commit_detection_sync(ref, sync)
+
+        self.assertEqual((), self.repository().annotations(step_key='detect'))
+        self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
+
+    def test_prepare_sync_leaves_a_frame_incomplete_after_its_last_box_is_removed(self) -> None:
+        image = self.accept_image()
+        record = self.box_record(image.sample_id)
+        self.repository().save_annotations((record,))
+        ref = JobRef(7, 8, (image.sample_id,))
+        self.workspace.bind_job(PreparedJob(ref, (CvatBinding(image.sample_id, 'shape', 101, record.id),)))
+
+        sync = self.workspace.prepare_detection_sync(ref, (FrameResult(image.sample_id, ()),))
+        self.workspace.commit_detection_sync(ref, sync)
+
+        self.assertEqual((), self.repository().annotations(step_key='detect'))
+        self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
+
+    def test_prepare_sync_preserves_an_existing_explicit_negative_on_an_empty_frame(self) -> None:
+        image = self.accept_image()
+        negative = AnnotationRecord(uuid4(), image.sample_id, 'detect', None, 'negative', None, None)
+        self.repository().save_annotations((negative,))
+        ref = JobRef(7, 8, (image.sample_id,))
+
+        sync = self.workspace.prepare_detection_sync(ref, (FrameResult(image.sample_id, ()),))
+        self.workspace.commit_detection_sync(ref, sync)
+
+        self.assertEqual((negative,), self.repository().annotations(step_key='detect'))
+        self.assertEqual(DetectionSummary(1, 1, 0), self.workspace.detection_summary())
+
     def test_new_server_identity_gets_a_new_uuid_even_with_a_copied_token(self) -> None:
         image = self.accept_image()
         previous = self.box_record(image.sample_id)
