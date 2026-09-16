@@ -1,10 +1,35 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID
 
 from xxtrain.data import Bbox
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
+
+
+@dataclass(frozen=True)
+class ImageRecord:
+    """Durable identity, location, dimensions, and unsigned 64-bit pHash for an image."""
+
+    id: str
+    relative_path: str
+    width: int
+    height: int
+    perceptual_hash: int
+
+
+@dataclass(frozen=True)
+class AnnotationRecord:
+    """Durable task-owned annotation with an optional parent and JSON geometry."""
+
+    id: UUID
+    image_id: str
+    step_key: str
+    parent_id: UUID | None
+    kind: str
+    label: str | None
+    geometry: JsonValue
 
 
 @dataclass(frozen=True)

@@ -5,8 +5,39 @@ from xxtrain.pipeline.processors import EncodeDetection, FilterLabels, ReadImage
 from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
 
+from .definition import StepDefinition, TaskDefinition
+
 POINT_BOX_LABELS = ('Point', 'tl', 'tc', 'cl', 'cc')
 MODEL_TARGETS = (('detect', True), ('classify', False), ('segment', False))
+
+
+def point_task_definition() -> TaskDefinition:
+    """Return the Point annotation steps and their parent and dependency rules."""
+    return TaskDefinition(
+        (
+            StepDefinition(
+                key='detect',
+                kinds=frozenset({'rectangle', 'negative'}),
+                labels=frozenset(POINT_BOX_LABELS),
+                parent_steps=frozenset(),
+                depends_on=frozenset(),
+            ),
+            StepDefinition(
+                key='classify',
+                kinds=frozenset({'classification'}),
+                labels=frozenset({'tl', 'tc', 'cl', 'cc'}),
+                parent_steps=frozenset({'detect'}),
+                depends_on=frozenset({'detect'}),
+            ),
+            StepDefinition(
+                key='segment',
+                kinds=frozenset({'polygon'}),
+                labels=frozenset(),
+                parent_steps=frozenset({'detect'}),
+                depends_on=frozenset({'classify'}),
+            ),
+        )
+    )
 
 
 def point_detection_recipe() -> DatasetRecipe:
