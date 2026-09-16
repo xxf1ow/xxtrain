@@ -57,7 +57,7 @@ uv run --locked --extra platform python -m unittest test.test_platform_data test
 uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
 ```
 
-当前 SQLite 版本的真实 CVAT 身份验收仍未完成。离线 mock、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代初始化、普通更新、复制、全量 PUT、旧 Job 拒收、重启恢复与 50 张可读缓存的同版本现场证据。
+同版本真实验收覆盖初始化映射、无修改回收、移动、改类、新增、删除、复制、全量 PUT、事务回滚重试、旧 Job 拒收、重启恢复与至少 50 张图片的可读缓存。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。当前运行证据、范围和未覆盖项记录在 [SQLite 标注存储 Agent Note](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md#live-acceptance-status)；离线 mock、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
 
 修改平台 package-data 或入口后构建 wheel，并检查 wheel 包含三个页面资源、CVAT 返回插件及 `xxtrain-platform` console script。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 

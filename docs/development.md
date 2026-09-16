@@ -48,7 +48,7 @@ docs/              # 项目权威文档与 Agent Notes
 
 `deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。预先创建可写的 `workspace_dir/images`；服务在工作区根目录初始化 `annotations.db`。`runtime_dir` 独立于工作区，保存可丢弃的 Job 映射与检测缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
 
-真实部署验收必须从当前 checkout 运行 `python -m test.platform_fixture <authorized-parent> --owner-user-id <cvat-user-id> --receipt .superpowers/platform-acceptance/fixture.json` 新建独立工作区。receipt 的 marker 必须匹配当前测试，并记录 `database_path`、每张图片的 `sample_id` 和初始标注 UUID；旧 receipt、旧数据库和旧运行目录不能复用于当前验收。fixture 与截图只保存在忽略的 `.superpowers/` 或授权验收目录，不进入 Git。
+重复真实部署验收时，必须从当前 checkout 运行 `python -m test.platform_fixture <authorized-parent> --owner-user-id <cvat-user-id> --receipt .superpowers/platform-acceptance/fixture.json` 新建独立工作区。receipt 的 marker 必须匹配当前测试，并记录 `database_path`、每张图片的 `sample_id` 和初始标注 UUID；旧 receipt、旧数据库和旧运行目录不能复用于当前验收。原生身份操作使用正式 `CvatClient`、`AnnotationService` 和 repository，并在每次同步后从独立数据库回读断言；fixture、凭据、日志和截图只保存在忽略的 `.superpowers/` 或授权验收目录，不进入 Git。
 
 在 PowerShell 中通过环境变量提供服务令牌，并把后端绑定到 loopback 或专用内网地址。进程固定使用一个 worker；示例端口 8000 是代理内网端口，不直接发布：
 
