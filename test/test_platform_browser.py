@@ -150,7 +150,10 @@ globalThis.document = {{
 let assigned = null;
 let replaced = null;
 globalThis.location = {{ search: {json.dumps('?returned=1' if returned else '')}, assign(url) {{ assigned = url; }} }};
-globalThis.history = {{ replaceState(_state, _unused, url) {{ replaced = url; }} }};
+globalThis.history = {{ replaceState(_state, _unused, url) {{
+  replaced = url;
+  location.search = new URL(url, 'http://testserver').search;
+}} }};
 const workspace = {{
   workspace_id: 'line-3', name: '三号现场', image_count: 10, annotated_image_count: 7, boxed_image_count: 7,
   can_generate_detection_cache: {json.dumps(ready)}, detection_cache_ready: false,
@@ -287,13 +290,48 @@ await get('cache-action').listeners.click();
         self.assertTrue(result['after']['error'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
-    def test_failed_return_sync_keeps_counts_and_return_marker_for_refresh(self) -> None:
-        result = self.run_page(returned=True, sync_failure=True)
+    def test_failed_return_sync_blocks_workspace_actions_until_refresh(self) -> None:
+        result = self.run_page(
+            """
+get('image-files').files = [new File(['first'], 'a.jpg')];
+get('image-files').listeners.change();
+await get('primary-action').listeners.click();
+await get('upload-form').listeners.submit({preventDefault() {}});
+await get('cache-action').listeners.click();
+""",
+            returned=True,
+            ready=True,
+            sync_failure=True,
+        )
         self.assertEqual('10', result['after']['images'])
         self.assertEqual('7', result['after']['annotated'])
         self.assertIn('刷新页面', result['after']['error'])
         self.assertIsNone(result['replaced'])
-        self.assertFalse(result['after']['disabled'][0])
+        self.assertEqual([True, True, True, True, False, False], result['after']['disabled'])
+        self.assertEqual(
+            ['/platform/api/session', '/platform/api/workspace', '/platform/api/detection/sync'],
+            [call['url'] for call in result['calls']],
+        )
+        self.assertIsNone(result['assigned'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_successful_return_sync_retry_restores_derived_controls(self) -> None:
+        result = self.run_page(
+            """
+failure = false;
+await loaded();
+get('image-files').files = [new File(['first'], 'a.jpg')];
+get('image-files').listeners.change();
+""",
+            returned=True,
+            ready=True,
+            sync_failure=True,
+        )
+        self.assertEqual([True, True, True, True, False, False], result['before']['disabled'])
+        self.assertEqual([False] * 6, result['after']['disabled'])
+        self.assertEqual('50', result['after']['annotated'])
+        self.assertEqual('/platform/', result['replaced'])
+        self.assertEqual('', result['after']['error'])
 
     def test_deployment_example_uses_the_exact_workspace_schema_without_credentials(self) -> None:
         path = Path(__file__).parents[1] / 'deploy' / 'platform' / 'workspace.example.json'

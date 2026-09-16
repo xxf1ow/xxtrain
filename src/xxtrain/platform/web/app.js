@@ -70,12 +70,17 @@
     element.hidden = true;
   }
 
+  function returnedAnnotationsPending() {
+    return new URLSearchParams(location.search).get('returned') === '1';
+  }
+
   function setBusy(value, message = '') {
     busy = value;
-    elements.primaryAction.disabled = value || !workspace || workspace.image_count === 0;
-    elements.imageFiles.disabled = value;
-    elements.uploadButton.disabled = value || elements.imageFiles.files.length === 0;
-    elements.cacheAction.disabled = value || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready;
+    const blocked = value || returnedAnnotationsPending();
+    elements.primaryAction.disabled = blocked || !workspace || workspace.image_count === 0;
+    elements.imageFiles.disabled = blocked;
+    elements.uploadButton.disabled = blocked || elements.imageFiles.files.length === 0;
+    elements.cacheAction.disabled = blocked || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready;
     elements.loginButton.disabled = value;
     elements.logoutButton.disabled = value;
     elements.workspaceMessage.textContent = message;
@@ -134,7 +139,7 @@
     const session = await request('/session');
     elements.sessionUser.textContent = `用户 ${session.user_id}`;
     renderWorkspace(await request('/workspace'));
-    if (new URLSearchParams(location.search).get('returned') === '1') await syncAnnotations();
+    if (returnedAnnotationsPending()) await syncAnnotations();
   }
 
   elements.loginForm.addEventListener('submit', async (event) => {
@@ -154,7 +159,7 @@
   });
 
   elements.primaryAction.addEventListener('click', async () => {
-    if (busy || !workspace || workspace.image_count === 0) return;
+    if (busy || returnedAnnotationsPending() || !workspace || workspace.image_count === 0) return;
     clearError(elements.workspaceError);
     setBusy(true, '正在准备标注任务…');
     try {
@@ -170,7 +175,7 @@
 
   elements.uploadForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (busy || elements.imageFiles.files.length === 0) return;
+    if (busy || returnedAnnotationsPending() || elements.imageFiles.files.length === 0) return;
     const files = new FormData();
     for (const file of elements.imageFiles.files) files.append('images', file);
     clearError(elements.workspaceError);
@@ -190,7 +195,7 @@
   });
 
   elements.cacheAction.addEventListener('click', async () => {
-    if (busy || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready) return;
+    if (busy || returnedAnnotationsPending() || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready) return;
     clearError(elements.workspaceError);
     setBusy(true, '正在生成训练缓存…');
     try {
