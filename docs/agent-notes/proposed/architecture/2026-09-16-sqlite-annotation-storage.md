@@ -14,7 +14,7 @@ Point 检测闭环已经交付，但后续分类、分割及检测串联需要�
 
 ## Implementation progress
 
-三表 schema、图片及标注记录类型、短连接 SQLite repository 和 Point 步骤定义已经实现。repository 在一个事务内按写入后的完整记录集合校验步骤、标签、几何、父关联、同图关系、循环及负样本冲突；64 位 pHash 以八字节 BLOB 保存。对象级差异规划按稳定 UUID 区分无变化、修改、新增和删除，按目标锚点清除依赖步骤及其对象子树，并在没有现存下游记录时仍报告失效步骤。CVAT 映射按 Job、对象类型和服务端 ID 保存，绑定校验样本范围与同图关系；标注删除、更新、新增和映射写入在同一事务内提交，重复绑定幂等且改绑被拒绝。现行 `WorkspaceData`、HTTP 流程和 LabelMe 权威路径尚未切换。
+三表 schema、图片及标注记录类型、短连接 SQLite repository 和 Point 步骤定义已经实现。repository 在一个事务内按写入后的完整记录集合校验步骤、标签、几何、父关联、同图关系、循环及负样本冲突；64 位 pHash 以八字节 BLOB 保存。对象级差异规划按稳定 UUID 区分无变化、修改、新增和删除，按目标锚点清除依赖步骤及其对象子树，并在没有现存下游记录时仍报告失效步骤。CVAT 映射按 Job、对象类型和服务端 ID 保存，绑定校验样本范围与同图关系；标注删除、更新、新增和映射写入在同一事务内提交，重复绑定幂等且改绑被拒绝。CVAT codec 可在初始化载荷的保留附加字段中携带临时 UUID 令牌，按令牌和帧校验响应并生成绑定；常规回收只公开原生 CVAT shape ID，并从业务附加字段中移除该令牌。现行 `prepare_task`、`WorkspaceData`、HTTP 流程和 LabelMe 权威路径尚未切换。
 
 ## Storage and ownership
 
