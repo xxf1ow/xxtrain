@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class AnnotationService:
-    """Coordinate one workspace using file-derived views and disposable CVAT/cache mappings.
+    """Coordinate one SQLite-backed workspace and its disposable CVAT/cache mappings.
 
     All writes share one nonblocking process-local lock. Concurrent writes raise ``PlatformError``;
     other users receive ``PlatformAccessError`` before workspace access.
@@ -32,7 +32,7 @@ class AnnotationService:
         self.lock = threading.Lock()
 
     def view(self, user_id: int) -> WorkspaceView:
-        """Derive counts and cache readiness from current files; malformed inputs remain visible."""
+        """Derive counts and cache readiness from current registered annotation facts."""
         self._require_owner(user_id)
         summary = self.data.detection_summary()
         fingerprint = self.data.detection_fingerprint()
@@ -60,7 +60,8 @@ class AnnotationService:
     def begin_detection(self, user_id: int) -> str:
         """Return an unfinished current-input Job path, preparing a fresh task on a miss.
 
-        Only successful preparation publishes a JobRef. CVAT failures surface as ``PlatformError``.
+        The runtime publishes a JobRef only after preparation and durable object binding both succeed. CVAT failures
+        surface as ``PlatformError``.
         """
         with self._write(user_id):
             fingerprint = self.data.detection_fingerprint()
@@ -71,25 +72,23 @@ class AnnotationService:
             if not images:
                 raise PlatformError('Upload images before starting detection annotation')
             task_id = self.cvat.create_task(self.config.display_name, POINT_BOX_LABELS)
-            ref = self.cvat.prepare_task(task_id, images, user_id)
-            self.runtime.remember_job('detect', fingerprint, ref)
-            return self.cvat.job_path(ref)
+            prepared = self.cvat.prepare_task(task_id, images, user_id)
+            self.data.bind_job(prepared)
+            self.runtime.remember_job('detect', fingerprint, prepared.ref)
+            return self.cvat.job_path(prepared.ref)
 
     def sync_detection(self, user_id: int) -> WorkspaceView:
-        """Overwrite detection fields from the current-fingerprint Job and return file-derived counts.
-
-        A missing Job or failed fetch/save raises ``PlatformError``; failed writes restore prior annotations.
-        The Job is associated with the predicted resulting fingerprint before saving, so a mapping failure leaves
-        annotations unchanged and successful saves remain repeatable.
-        """
+        """Invalidate dependent Jobs, publish the result fingerprint, then commit one database transaction."""
         with self._write(user_id):
             ref = self.runtime.job_for('detect', self.data.detection_fingerprint())
             if ref is None:
                 raise PlatformError('Annotation job is not ready for the current input')
             try:
                 results = self.cvat.fetch_detection(ref)
-                self.runtime.remember_job('detect', self.data.detection_fingerprint(results), ref)
-                self.data.save_detection(results)
+                sync = self.data.prepare_detection_sync(ref, results)
+                self.runtime.forget_targets(sync.changes.invalidated_steps)
+                self.runtime.remember_job('detect', sync.fingerprint, ref)
+                self.data.commit_detection_sync(ref, sync)
             except (OSError, ValueError, PlatformError) as error:
                 raise PlatformError('无法取回或保存标注，请重试。') from error
             return self.view(user_id)

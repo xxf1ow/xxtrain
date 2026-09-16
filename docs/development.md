@@ -46,7 +46,7 @@ docs/              # 项目权威文档与 Agent Notes
 
 ## Point detection portal
 
-`deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。预先创建 `workspace_dir/images` 和 `workspace_dir/annotations`，两者必须可写；`runtime_dir` 独立于工作区，保存可丢弃的 Job 映射与检测缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
+`deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。预先创建可写的 `workspace_dir/images`；服务在工作区根目录初始化 `annotations.db`。`runtime_dir` 独立于工作区，保存可丢弃的 Job 映射与检测缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
 
 在 PowerShell 中通过环境变量提供服务令牌，并把后端绑定到 loopback 或专用内网地址。进程固定使用一个 worker；示例端口 8000 是代理内网端口，不直接发布：
 

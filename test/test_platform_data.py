@@ -1,19 +1,31 @@
 import json
-import os
+import shutil
 import tempfile
 import unittest
 from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID, uuid4
 
 from PIL import Image
 
+from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.data import Bbox
 from xxtrain.platform.cache import build_detection_cache
-from xxtrain.platform.contracts import DetectionBox, DetectionSummary, FrameResult, PlatformAccessError, UploadResult
+from xxtrain.platform.contracts import (
+    AnnotationRecord,
+    CvatBinding,
+    DetectionBox,
+    DetectionSummary,
+    FrameResult,
+    JobRef,
+    PlatformAccessError,
+    PreparedJob,
+    UploadResult,
+)
 from xxtrain.workspace_data import WorkspaceData
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, perceptual_hash
-from xxtrain.workspace_data.labelme import merge_detection
+from xxtrain.workspace_data.repository import AnnotationRepository
 
 
 class PlatformDataTest(unittest.TestCase):
@@ -22,69 +34,55 @@ class PlatformDataTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.images_dir = self.root / 'images'
-        self.annotations_dir = self.root / 'annotations'
         self.staging_dir = self.root / 'staging'
         self.images_dir.mkdir()
-        self.annotations_dir.mkdir()
         self.staging_dir.mkdir()
         self.workspace = WorkspaceData(self.root)
 
-    def make_image(self, name: str = 'a.jpg', *, size: tuple[int, int] = (64, 48)) -> Path:
-        path = self.images_dir / name
-        Image.new('RGB', size, 'white').save(path)
-        return path
+    def repository(self) -> AnnotationRepository:
+        return AnnotationRepository(self.root / 'annotations.db', point_task_definition())
 
-    def stage_image(self, name: str, *, color: str = 'white') -> Path:
+    def stage_image(self, name: str, *, seed: int = 0, solid: str | None = None) -> Path:
         path = self.staging_dir / name
-        Image.new('RGB', (64, 48), color).save(path)
+        with Image.new('RGB', (64, 48), solid or 'white') as image:
+            if solid is None:
+                for x in range(64):
+                    for y in range(48):
+                        value = (x * (17 + seed) + y * (29 + seed * 2) + seed * 41) % 256
+                        image.putpixel((x, y), (value, (value + seed * 23) % 256, 255 - value))
+            image.save(path)
         return path
 
-    def stage_images(self, *names: str) -> tuple[Path, ...]:
-        first = self.stage_image(names[0])
-        exact_copy = self.staging_dir / names[1]
-        exact_copy.write_bytes(first.read_bytes())
-        near_copy = self.stage_image(names[2], color='gray')
-        return first, exact_copy, near_copy
+    def accept_image(self, name: str = 'a.png', *, seed: int = 0):
+        result = self.workspace.admit((self.stage_image(name, seed=seed),))
+        self.assertEqual(1, result.accepted_count)
+        return self.workspace.images()[-1]
 
-    def accept_image(self, name: str) -> None:
-        self.workspace.admit((self.stage_image(name),))
-
-    def accept_boxed_and_negative_workspace(self) -> None:
-        boxed = self.stage_image('boxed.jpg')
-        negative = self.staging_dir / 'negative.jpg'
-        with Image.new('RGB', (64, 48), 'white') as image:
-            for x in range(64):
-                for y in range(48):
-                    value = (x * 19 + y * 31) % 256
-                    image.putpixel((x, y), (value, value, value))
-            image.save(negative)
-        self.workspace.admit((boxed, negative))
-        boxed_sample, negative_sample = self.workspace.images()
-        self.write_annotation(
-            boxed_sample.sample_id,
-            {'shapes': [{'label': 'tl', 'shape_type': 'rectangle', 'points': [[1, 2], [30, 40]]}]},
+    @staticmethod
+    def box_record(image_id: str, annotation_id: UUID | None = None, *, x1: float = 1, label: str = 'tl'):
+        return AnnotationRecord(
+            annotation_id or uuid4(), image_id, 'detect', None, 'rectangle', label, [[x1, 2], [30, 40]]
         )
-        self.write_annotation(negative_sample.sample_id, {'flags': {'xxtrain_detection_negative': True}, 'shapes': []})
 
-    def image_names(self) -> list[str]:
-        return sorted(path.name for path in self.images_dir.iterdir())
+    @staticmethod
+    def classification_record(image_id: str, parent_id: UUID, *, label: str = 'tl'):
+        return AnnotationRecord(uuid4(), image_id, 'classify', parent_id, 'classification', label, None)
 
-    def write_annotation(self, stem: str, document: dict[str, object]) -> Path:
-        path = self.annotations_dir / f'{stem}.json'
-        path.write_text(json.dumps(document), encoding='utf-8')
-        return path
+    def test_constructor_initializes_database_without_a_labelme_directory(self) -> None:
+        self.assertTrue((self.root / 'annotations.db').is_file())
+        self.assertFalse((self.root / 'annotations').exists())
 
     def test_admit_renames_by_sha_and_deduplicates_in_deterministic_order(self) -> None:
-        first, exact_copy, near_copy = self.stage_images('first.jpg', 'copy.jpg', 'near.jpg')
+        first = self.stage_image('first.jpg', solid='white')
+        exact_copy = self.staging_dir / 'copy.jpg'
+        exact_copy.write_bytes(first.read_bytes())
+        near_copy = self.stage_image('near.jpg', solid='gray')
         expected_name = f'{min(sha256(path.read_bytes()).hexdigest() for path in (first, near_copy))}.jpg'
 
         result = self.workspace.admit((near_copy, exact_copy, first))
 
-        self.assertEqual(3, result.received_count)
-        self.assertEqual(1, result.accepted_count)
-        self.assertEqual(1, result.exact_duplicate_count)
-        self.assertEqual(1, result.similar_duplicate_count)
-        self.assertEqual([expected_name], self.image_names())
+        self.assertEqual(UploadResult(3, 1, 1, 1), result)
+        self.assertEqual([expected_name], sorted(path.name for path in self.images_dir.iterdir()))
         self.assertFalse(any(path.exists() for path in (first, exact_copy, near_copy)))
 
     def test_admit_rejects_undecodable_and_unsupported_staged_files(self) -> None:
@@ -93,32 +91,175 @@ class PlatformDataTest(unittest.TestCase):
         unsupported = self.staging_dir / 'unsupported.gif'
         unsupported.write_text('not an image', encoding='utf-8')
 
-        result = self.workspace.admit((invalid_image, unsupported))
-
-        self.assertEqual(UploadResult(2, 0, 0, 0), result)
-        self.assertEqual([], self.image_names())
+        self.assertEqual(UploadResult(2, 0, 0, 0), self.workspace.admit((invalid_image, unsupported)))
+        self.assertEqual((), self.workspace.images())
         self.assertFalse(invalid_image.exists())
         self.assertFalse(unsupported.exists())
 
-    def test_admit_preserves_existing_images_over_similar_batch_candidates(self) -> None:
-        existing = self.make_image('existing.jpg')
-        candidate = self.stage_image('candidate.jpg', color='gray')
-        existing_bytes = existing.read_bytes()
+    def test_admit_uses_registered_hashes_and_leaves_unregistered_files_out_of_queries(self) -> None:
+        accepted = self.accept_image('existing.png', seed=3)
+        duplicate = self.staging_dir / 'duplicate.png'
+        shutil.copy2(accepted.image_path, duplicate)
+        Image.new('RGB', (12, 12)).save(self.images_dir / 'orphan.png')
 
-        result = self.workspace.admit((candidate,))
+        result = self.workspace.admit((duplicate,))
 
-        self.assertEqual(UploadResult(1, 0, 0, 1), result)
-        self.assertEqual(existing_bytes, existing.read_bytes())
-        self.assertFalse(candidate.exists())
+        self.assertEqual(UploadResult(1, 0, 1, 0), result)
+        self.assertEqual((accepted,), self.workspace.images())
 
-    def test_images_reenumerate_the_workspace_after_admission(self) -> None:
-        self.assertEqual((), self.workspace.images())
+    def test_summary_reads_registered_facts_without_decoding_images(self) -> None:
+        self.accept_image('a.png')
+        Image.new('RGB', (12, 12)).save(self.images_dir / 'orphan.png')
 
-        self.accept_image('late.PNG')
+        with patch('xxtrain.workspace_data.store.Image.open', side_effect=AssertionError('unexpected decode')):
+            self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
 
-        image = self.workspace.images()[0]
-        self.assertTrue(image.image_path.name.endswith('.png'))
-        self.assertEqual(image.image_path.stem, image.sample_id)
+    def test_images_use_database_dimensions_and_preserve_annotation_uuid(self) -> None:
+        image = self.accept_image()
+        record = self.box_record(image.sample_id)
+        self.repository().save_annotations((record,))
+
+        with patch('xxtrain.workspace_data.store.Image.open', side_effect=AssertionError('unexpected decode')):
+            restored = self.workspace.images()[0]
+
+        self.assertEqual((64, 48), (restored.width, restored.height))
+        self.assertEqual(record.id, restored.boxes[0].geometry.id)
+        self.assertEqual((1.0, 2.0, 30.0, 40.0), restored.boxes[0].geometry.bbox)
+
+    def test_summary_counts_complete_images_and_not_box_rows(self) -> None:
+        boxed = self.accept_image('boxed.png', seed=1)
+        negative = self.accept_image('negative.png', seed=7)
+        first = self.box_record(boxed.sample_id)
+        second = self.box_record(boxed.sample_id, x1=3, label='tc')
+        no_object = AnnotationRecord(uuid4(), negative.sample_id, 'detect', None, 'negative', None, None)
+        self.repository().save_annotations((first, second, no_object))
+
+        self.assertEqual(DetectionSummary(2, 2, 1), self.workspace.detection_summary())
+
+    def test_fingerprint_uses_business_content_not_uuid_mapping_or_display_extra(self) -> None:
+        image = self.accept_image()
+        original = self.box_record(image.sample_id)
+        repository = self.repository()
+        repository.save_annotations((original,))
+        before = self.workspace.detection_fingerprint()
+        ref = JobRef(7, 8, (image.sample_id,))
+        repository.bind_job(PreparedJob(ref, (CvatBinding(image.sample_id, 'shape', 91, original.id),)))
+        self.assertEqual(before, self.workspace.detection_fingerprint())
+
+        replacement = self.box_record(image.sample_id)
+        repository.save_annotations((replacement,), delete_ids=frozenset({original.id}))
+        self.assertEqual(before, self.workspace.detection_fingerprint())
+
+        changed = self.box_record(image.sample_id, replacement.id, x1=4)
+        repository.save_annotations((changed,))
+        self.assertNotEqual(before, self.workspace.detection_fingerprint())
+
+    def test_detection_cache_projects_boxes_and_explicit_negative_from_database(self) -> None:
+        boxed = self.accept_image('boxed.png', seed=2)
+        negative = self.accept_image('negative.png', seed=9)
+        self.repository().save_annotations(
+            (
+                self.box_record(boxed.sample_id, label='tc'),
+                AnnotationRecord(uuid4(), negative.sample_id, 'detect', None, 'negative', None, None),
+            )
+        )
+
+        report = build_detection_cache(self.workspace, self.root / 'runtime' / 'cache' / 'fingerprint')
+
+        output = self.root / 'runtime' / 'cache' / 'fingerprint' / 'detect'
+        self.assertEqual(2, report.train_image_count + report.val_image_count)
+        labels = sorted((output / 'workspace').glob('*.txt'))
+        self.assertEqual(2, len(labels))
+        self.assertEqual(1, sum(bool(path.read_text(encoding='utf-8')) for path in labels))
+        source_documents = [
+            json.loads(path.read_text(encoding='utf-8')) for path in (output.parent / 'src').rglob('*.json')
+        ]
+        self.assertEqual({'tc'}, {shape['label'] for doc in source_documents for shape in doc['shapes']})
+
+    def test_prepare_sync_preserves_known_geometry_ids_and_unrelated_downstream_labels(self) -> None:
+        image = self.accept_image()
+        first = self.box_record(image.sample_id, x1=1)
+        second = self.box_record(image.sample_id, x1=10, label='tc')
+        first_label = self.classification_record(image.sample_id, first.id)
+        second_label = self.classification_record(image.sample_id, second.id, label='tc')
+        repository = self.repository()
+        repository.save_annotations((first, second, first_label, second_label))
+        ref = JobRef(7, 8, (image.sample_id,))
+        self.workspace.bind_job(
+            PreparedJob(
+                ref,
+                (
+                    CvatBinding(image.sample_id, 'shape', 101, first.id),
+                    CvatBinding(image.sample_id, 'shape', 102, second.id),
+                ),
+            )
+        )
+        results = (
+            FrameResult(
+                image.sample_id,
+                (
+                    DetectionBox(Bbox(label='tl', x1=4, y1=2, x2=30, y2=40), cvat_id=101),
+                    DetectionBox(Bbox(label='tc', x1=10, y1=2, x2=30, y2=40), cvat_id=102),
+                ),
+            ),
+        )
+
+        sync = self.workspace.prepare_detection_sync(ref, results)
+
+        self.assertEqual(frozenset({'classify', 'segment'}), sync.changes.invalidated_steps)
+        self.assertIn(first_label.id, sync.changes.delete_ids)
+        self.assertNotIn(second_label.id, sync.changes.delete_ids)
+        self.workspace.commit_detection_sync(ref, sync)
+        records = {record.id: record for record in repository.annotations()}
+        self.assertEqual([[4.0, 2.0], [30.0, 40.0]], records[first.id].geometry)
+        self.assertIn(second.id, records)
+        self.assertIn(second_label.id, records)
+        self.assertEqual(sync.fingerprint, self.workspace.detection_fingerprint())
+
+    def test_new_server_identity_gets_a_new_uuid_even_with_a_copied_token(self) -> None:
+        image = self.accept_image()
+        previous = self.box_record(image.sample_id)
+        self.repository().save_annotations((previous,))
+        ref = JobRef(7, 8, (image.sample_id,))
+        self.workspace.bind_job(PreparedJob(ref, (CvatBinding(image.sample_id, 'shape', 101, previous.id),)))
+        copied = DetectionBox(
+            Bbox(label='tl', x1=1, y1=2, x2=30, y2=40), extra={'xxtrain_annotation_id': str(previous.id)}, cvat_id=202
+        )
+
+        sync = self.workspace.prepare_detection_sync(ref, (FrameResult(image.sample_id, (copied,)),))
+
+        self.assertNotEqual(previous.id, sync.bindings[0].annotation_id)
+        self.assertIn(previous.id, sync.changes.delete_ids)
+
+    def test_prepare_sync_rejects_missing_duplicate_and_wrong_frame_server_ids(self) -> None:
+        first_image = self.accept_image('first.png', seed=1)
+        second_image = self.accept_image('second.png', seed=11)
+        record = self.box_record(first_image.sample_id)
+        self.repository().save_annotations((record,))
+        ref = JobRef(7, 8, (first_image.sample_id, second_image.sample_id))
+        self.workspace.bind_job(PreparedJob(ref, (CvatBinding(first_image.sample_id, 'shape', 101, record.id),)))
+        missing = DetectionBox(Bbox(label='tl', x1=1, y1=2, x2=3, y2=4))
+        duplicate = DetectionBox(Bbox(label='tl', x1=2, y1=2, x2=3, y2=4), cvat_id=202)
+
+        with self.assertRaisesRegex(ValueError, 'ID'):
+            self.workspace.prepare_detection_sync(
+                ref, (FrameResult(first_image.sample_id, (missing,)), FrameResult(second_image.sample_id, ()))
+            )
+        with self.assertRaisesRegex(ValueError, 'unique'):
+            self.workspace.prepare_detection_sync(
+                ref,
+                (FrameResult(first_image.sample_id, (duplicate,)), FrameResult(second_image.sample_id, (duplicate,))),
+            )
+        with self.assertRaisesRegex(ValueError, 'frame'):
+            self.workspace.prepare_detection_sync(
+                ref,
+                (
+                    FrameResult(first_image.sample_id, ()),
+                    FrameResult(
+                        second_image.sample_id, (DetectionBox(Bbox(label='tl', x1=1, y1=2, x2=3, y2=4), cvat_id=101),)
+                    ),
+                ),
+            )
 
     def test_perceptual_hash_uses_the_inclusive_similarity_boundary(self) -> None:
         image = self.stage_image('hash.png')
@@ -127,269 +268,10 @@ class PlatformDataTest(unittest.TestCase):
         self.assertEqual(SIMILARITY_DISTANCE, hamming_distance(0, 0b11))
         self.assertGreater(hamming_distance(0, 0b111), SIMILARITY_DISTANCE)
 
-    def test_negative_flag_and_boxes_are_the_only_annotated_detection_forms(self) -> None:
-        self.accept_image('empty.jpg')
-        sample_id = self.workspace.images()[0].sample_id
-
-        self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
-        self.write_annotation(sample_id, {'flags': {'xxtrain_detection_negative': True}, 'shapes': []})
-        self.assertEqual(DetectionSummary(1, 1, 0), self.workspace.detection_summary())
-        self.write_annotation(
-            sample_id, {'flags': {'xxtrain_detection_negative': True}, 'shapes': [{'shape_type': 'line'}]}
-        )
-        self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
-        self.write_annotation(
-            sample_id, {'shapes': [{'label': 'Point', 'shape_type': 'rectangle', 'points': [[1, 2], [3, 4]]}]}
-        )
-        self.assertEqual(DetectionSummary(1, 1, 1), self.workspace.detection_summary())
-
-    def test_detection_cache_keeps_explicit_negative_background_images(self) -> None:
-        self.accept_boxed_and_negative_workspace()
-        self.make_image('incomplete.jpg')
-
-        report = build_detection_cache(self.workspace, self.root / 'runtime' / 'cache' / 'fingerprint')
-
-        output = self.root / 'runtime' / 'cache' / 'fingerprint' / 'detect'
-        self.assertEqual(2, report.train_image_count + report.val_image_count)
-        self.assertTrue(output.is_dir())
-        labels = sorted((output / 'workspace').glob('*.txt'))
-        self.assertEqual(2, len(labels))
-        self.assertEqual(1, sum(bool(path.read_text(encoding='utf-8')) for path in labels))
-        self.assertIn('0: Point', (output / 'dataset.yaml').read_text(encoding='utf-8'))
-
-    def test_detection_cache_does_not_publish_an_incomplete_workspace(self) -> None:
-        destination = self.root / 'runtime' / 'cache' / 'fingerprint'
-
-        with self.assertRaisesRegex(ValueError, 'no output samples'):
-            build_detection_cache(self.workspace, destination)
-
-        self.assertFalse(destination.exists())
-        self.assertFalse(destination.with_name('.fingerprint.building').exists())
-
-    def test_detection_fingerprint_ignores_non_detection_labelme_content(self) -> None:
-        self.accept_image('annotated.jpg')
-        sample_id = self.workspace.images()[0].sample_id
-        detection = {'label': 'Point', 'shape_type': 'rectangle', 'points': [[1, 2], [3, 4]]}
-        self.write_annotation(
-            sample_id, {'version': '5.0.0', 'model': {'name': 'first'}, 'shapes': [detection], 'imageData': 'first'}
-        )
-        original = self.workspace.detection_fingerprint()
-        self.write_annotation(
-            sample_id,
-            {
-                'version': '99.0.0',
-                'model': {'name': 'other'},
-                'shapes': [{'label': 'ignored', 'shape_type': 'line', 'points': [[0, 0], [1, 1]]}, detection],
-                'imageData': 'other',
-            },
-        )
-
-        self.assertEqual(original, self.workspace.detection_fingerprint())
-
-    def test_detection_edit_preserves_other_annotations(self) -> None:
-        polygon = {'label': '1', 'shape_type': 'line', 'points': [[1, 2], [3, 4]], 'flags': {'keep': True}}
-        source = {'imagePath': '../images/a.jpg', 'custom': 'keep', 'shapes': [polygon]}
-        box = DetectionBox(
-            Bbox(label='tl', x1=1.25, y1=2, x2=30, y2=40),
-            {'description': 'keep', 'label': 'wrong', 'points': [], 'shape_type': 'polygon'},
-        )
-
-        result = merge_detection(source, (box,))
-
-        self.assertEqual(result['shapes'][0], polygon)
-        self.assertEqual(result['shapes'][1]['label'], 'tl')
-        self.assertEqual(result['shapes'][1]['points'][0], [1.25, 2.0])
-        self.assertEqual(result['shapes'][1]['description'], 'keep')
-        self.assertEqual(result['custom'], 'keep')
-        self.assertEqual(source['shapes'], [polygon])
-
-    def test_images_and_save_support_an_empty_annotation(self) -> None:
-        image_path = self.make_image(size=(37, 23))
-        original_image = image_path.read_bytes()
-        workspace = WorkspaceData(self.root)
-
-        images = workspace.images()
-
-        self.assertEqual(1, len(images))
-        self.assertEqual('a', images[0].sample_id)
-        self.assertEqual(image_path, images[0].image_path)
-        self.assertEqual((37, 23), (images[0].width, images[0].height))
-        self.assertEqual((), images[0].boxes)
-
-        workspace.save_detection((FrameResult(sample_id='a', boxes=()),))
-
-        self.assertEqual(
-            {
-                'version': '5.0.0',
-                'flags': {},
-                'shapes': [],
-                'imagePath': '../images/a.jpg',
-                'imageData': None,
-                'imageHeight': 23,
-                'imageWidth': 37,
-            },
-            json.loads((self.annotations_dir / 'a.json').read_text(encoding='utf-8')),
-        )
-        self.assertEqual(original_image, image_path.read_bytes())
-
-    def test_existing_rectangle_label_fractional_geometry_and_metadata_round_trip(self) -> None:
-        self.make_image()
-        source = {
-            'version': '5.4.1',
-            'shapes': [
-                {
-                    'label': 'tl',
-                    'shape_type': 'rectangle',
-                    'points': [[1.25, 2], [30, 40]],
-                    'group_id': 7,
-                    'flags': {'reviewed': True},
-                    'description': 'keep',
-                }
-            ],
-            'imagePath': '../images/a.jpg',
-            'imageHeight': 48,
-            'imageWidth': 64,
-        }
-        self.write_annotation('a', source)
-        workspace = WorkspaceData(self.root)
-
-        image = workspace.images()[0]
-
-        self.assertEqual('tl', image.boxes[0].geometry.label)
-        self.assertEqual((1.25, 2.0, 30.0, 40.0), image.boxes[0].geometry.bbox)
-        self.assertEqual({'group_id': 7, 'flags': {'reviewed': True}, 'description': 'keep'}, image.boxes[0].extra)
-
-        workspace.save_detection((FrameResult(sample_id='a', boxes=image.boxes),))
-
-        saved_shape = json.loads((self.annotations_dir / 'a.json').read_text(encoding='utf-8'))['shapes'][0]
-        self.assertEqual('tl', saved_shape['label'])
-        self.assertEqual([[1.25, 2.0], [30.0, 40.0]], saved_shape['points'])
-        self.assertEqual('rectangle', saved_shape['shape_type'])
-        self.assertEqual(7, saved_shape['group_id'])
-        self.assertEqual({'reviewed': True}, saved_shape['flags'])
-        self.assertEqual('keep', saved_shape['description'])
-
-    def test_deleting_all_rectangles_preserves_lines_polygons_and_root_fields(self) -> None:
-        line = {'label': 'line', 'shape_type': 'line', 'points': [[1, 2], [3, 4]]}
-        polygon = {'label': 'mask', 'shape_type': 'polygon', 'points': [[1, 2], [3, 4], [5, 2]]}
-        source = {'custom': {'keep': True}, 'shapes': [line, {'label': 'tl', 'shape_type': 'rectangle'}, polygon]}
-
-        result = merge_detection(source, ())
-
-        self.assertEqual([line, polygon], result['shapes'])
-        self.assertEqual({'keep': True}, result['custom'])
-
-    def test_images_reject_invalid_rectangle_geometry(self) -> None:
-        self.make_image()
-        self.write_annotation(
-            'a', {'shapes': [{'label': 'Point', 'shape_type': 'rectangle', 'points': [[1, 2], [1, 4]]}]}
-        )
-
-        with self.assertRaisesRegex(ValueError, 'Bbox'):
-            WorkspaceData(self.root).images()
-
-    def test_save_requires_each_image_exactly_once(self) -> None:
-        self.make_image('a.jpg')
-        self.make_image('b.png')
-        workspace = WorkspaceData(self.root)
-        valid_box = DetectionBox(Bbox(label='Point', x1=1, y1=2, x2=3, y2=4))
-
-        invalid_results = (
-            (FrameResult(sample_id='a', boxes=(valid_box,)),),
-            (FrameResult(sample_id='a', boxes=()), FrameResult(sample_id='a', boxes=())),
-            (FrameResult(sample_id='a', boxes=()), FrameResult(sample_id='unknown', boxes=())),
-        )
-        for results in invalid_results:
-            with self.subTest(results=results), self.assertRaises(ValueError):
-                workspace.save_detection(results)
-
-        self.assertEqual([], list(self.annotations_dir.iterdir()))
-
-    def test_workspace_rejects_duplicate_stems_and_missing_directories(self) -> None:
-        self.make_image('same.jpg')
-        self.make_image('same.png')
-
-        with self.assertRaisesRegex(ValueError, 'Duplicate image stem'):
-            WorkspaceData(self.root).images()
-        with self.assertRaises(PlatformAccessError):
-            WorkspaceData(self.root / 'missing-images')
-        incomplete = self.root / 'incomplete'
-        (incomplete / 'images').mkdir(parents=True)
-        with self.assertRaises(PlatformAccessError):
-            WorkspaceData(incomplete)
-
-    def test_all_documents_are_encoded_before_any_file_is_replaced(self) -> None:
-        self.make_image('a.jpg')
-        self.make_image('b.jpg')
-        a_path = self.write_annotation('a', {'marker': 'old-a', 'shapes': []})
-        b_path = self.write_annotation('b', {'marker': 'old-b', 'shapes': []})
-        old_a = a_path.read_bytes()
-        old_b = b_path.read_bytes()
-        workspace = WorkspaceData(self.root)
-        invalid_box = DetectionBox(Bbox(label='Point', x1=1, y1=2, x2=3, y2=4), {'confidence': float('nan')})
-
-        with self.assertRaises(ValueError):
-            workspace.save_detection(
-                (FrameResult(sample_id='a', boxes=()), FrameResult(sample_id='b', boxes=(invalid_box,)))
-            )
-
-        self.assertEqual(old_a, a_path.read_bytes())
-        self.assertEqual(old_b, b_path.read_bytes())
-
-    def test_replace_failure_does_not_truncate_old_json_and_cleans_temporary_file(self) -> None:
-        self.make_image()
-        annotation_path = self.write_annotation('a', {'marker': 'old', 'shapes': []})
-        old_content = annotation_path.read_bytes()
-        workspace = WorkspaceData(self.root)
-
-        with patch('xxtrain.workspace_data.store.os.replace', side_effect=OSError('replace failed')):
-            with self.assertRaisesRegex(OSError, 'replace failed'):
-                workspace.save_detection((FrameResult(sample_id='a', boxes=()),))
-
-        self.assertEqual(old_content, annotation_path.read_bytes())
-        self.assertEqual([annotation_path], list(self.annotations_dir.iterdir()))
-
-        workspace.save_detection((FrameResult(sample_id='a', boxes=()),))
-
-        self.assertEqual({'marker': 'old', 'shapes': []}, json.loads(annotation_path.read_text(encoding='utf-8')))
-
-    def test_later_save_failure_removes_new_annotations_and_preserves_existing_bytes(self) -> None:
-        self.make_image('a.jpg')
-        self.make_image('b.jpg')
-        annotation = self.write_annotation('b', {'marker': 'old', 'shapes': []})
-        original = annotation.read_bytes()
-        fingerprint = self.workspace.detection_fingerprint()
-        real_replace = os.replace
-
-        def fail_second(source, destination):
-            if Path(destination) == annotation:
-                raise OSError('disk full')
-            return real_replace(source, destination)
-
-        with patch('xxtrain.workspace_data.store.os.replace', side_effect=fail_second):
-            with self.assertRaises(OSError):
-                self.workspace.save_detection((FrameResult('a', ()), FrameResult('b', ())))
-        self.assertFalse((self.annotations_dir / 'a.json').exists())
-        self.assertEqual(original, annotation.read_bytes())
-        self.assertEqual(fingerprint, self.workspace.detection_fingerprint())
-
-    def test_result_fingerprint_predicts_saved_detection_without_writing(self) -> None:
-        self.make_image()
-        annotation = self.write_annotation('a', {'flags': {'xxtrain_detection_negative': True}, 'shapes': []})
-        for boxes in ((DetectionBox(Bbox(label='tl', x1=1, y1=2, x2=20, y2=30)),), ()):
-            with self.subTest(boxes=boxes):
-                original = annotation.read_bytes()
-                results = (FrameResult('a', boxes),)
-                fingerprint = self.workspace.detection_fingerprint(results)
-                self.assertEqual(original, annotation.read_bytes())
-                self.workspace.save_detection(results)
-                self.assertEqual(fingerprint, self.workspace.detection_fingerprint())
-
-    def test_result_fingerprint_requires_each_workspace_image_exactly_once(self) -> None:
-        self.make_image()
-        for results in ((), (FrameResult('unknown', ()),), (FrameResult('a', ()), FrameResult('a', ()))):
-            with self.subTest(results=results), self.assertRaises(ValueError):
-                self.workspace.detection_fingerprint(results)
+    def test_workspace_requires_the_images_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(PlatformAccessError):
+                WorkspaceData(Path(directory))
 
 
 if __name__ == '__main__':

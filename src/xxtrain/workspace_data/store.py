@@ -1,34 +1,45 @@
 import json
 import os
 import shutil
-import tempfile
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 from PIL import Image
 
+from xxtrain.business_tasks.point import point_task_definition
+from xxtrain.data import Bbox
 from xxtrain.platform.contracts import (
+    AnnotationRecord,
+    CvatBinding,
+    DetectionBox,
     DetectionSummary,
+    DetectionSync,
     FrameResult,
     ImageInput,
-    JsonObject,
+    ImageRecord,
+    JobRef,
     PlatformAccessError,
+    PreparedJob,
     UploadResult,
 )
+from xxtrain.workspace_data.changes import plan_changes
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, image_sha256, perceptual_hash
-from xxtrain.workspace_data.labelme import _detection_boxes, _empty_document, detection_complete, merge_detection
+from xxtrain.workspace_data.labelme import detection_document
+from xxtrain.workspace_data.repository import AnnotationRepository
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
 
 
 class WorkspaceData:
-    """Access the writable ``images`` and ``annotations`` directories beneath one workspace root."""
+    """Access registered images and authoritative SQLite annotations beneath one workspace root."""
 
     def __init__(self, workspace_dir: Path) -> None:
-        self._images_dir = Path(workspace_dir) / 'images'
-        self._annotations_dir = Path(workspace_dir) / 'annotations'
+        self._root = Path(workspace_dir)
+        self._images_dir = self._root / 'images'
         self._require_directory(self._images_dir, writable=True)
-        self._require_directory(self._annotations_dir, writable=True)
+        self._task = point_task_definition()
+        self._repository = AnnotationRepository(self._root / 'annotations.db', self._task)
 
     @staticmethod
     def _require_directory(path: Path, *, writable: bool) -> None:
@@ -38,69 +49,60 @@ class WorkspaceData:
         if not os.access(path, access):
             raise PlatformAccessError(f'Directory is not accessible: {path}')
 
-    def _image_paths(self) -> tuple[Path, ...]:
-        try:
-            images = tuple(
-                sorted(
-                    (
-                        path
-                        for path in self._images_dir.iterdir()
-                        if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
-                    ),
-                    key=lambda path: path.name,
-                )
-            )
-        except OSError as error:
-            raise PlatformAccessError(f'Cannot read image directory: {self._images_dir}') from error
-
-        stems: dict[str, Path] = {}
-        for path in images:
-            key = path.stem.casefold()
-            if key in stems:
-                raise ValueError(f'Duplicate image stem: {path.stem}')
-            stems[key] = path
-        return images
-
     def images(self) -> tuple[ImageInput, ...]:
-        """Return actual image dimensions and validated detection rectangles in filename order."""
-        result = []
-        for image_path in self._image_paths():
-            with Image.open(image_path) as image:
-                width, height = image.size
-            document = self._read_document(self._annotation_path(image_path.stem))
-            result.append(
-                ImageInput(
-                    sample_id=image_path.stem,
-                    image_path=image_path,
-                    width=width,
-                    height=height,
-                    boxes=_detection_boxes(document),
+        """Return registered image facts and detection boxes in registration order."""
+        annotations = self._repository.annotations(step_key='detect')
+        by_image: dict[str, list[DetectionBox]] = {}
+        for record in annotations:
+            if record.kind != 'rectangle':
+                continue
+            points = record.geometry
+            if not isinstance(points, list) or len(points) != 2:
+                raise ValueError('Detection rectangle geometry requires two points')
+            first, second = points
+            by_image.setdefault(record.image_id, []).append(
+                DetectionBox(
+                    Bbox(id=record.id, label=record.label, x1=first[0], y1=first[1], x2=second[0], y2=second[1])
                 )
             )
-        return tuple(result)
+        return tuple(
+            ImageInput(
+                record.id,
+                self._root / record.relative_path,
+                record.width,
+                record.height,
+                tuple(by_image.get(record.id, ())),
+            )
+            for record in self._repository.images()
+        )
 
     def admit(self, staged: tuple[Path, ...]) -> UploadResult:
         """Admit decodable staged images once, deleting every staged file before returning."""
         try:
-            existing = tuple((image_sha256(path), perceptual_hash(path)) for path in self._image_paths())
-            existing_shas = {digest for digest, _ in existing}
-            existing_hashes = tuple(image_hash for _, image_hash in existing)
+            existing = self._repository.images()
+            existing_shas = {record.id for record in existing}
+            existing_hashes = tuple(record.perceptual_hash for record in existing)
             candidates = []
-            for path in staged:
-                path = Path(path)
+            for staged_path in staged:
+                path = Path(staged_path)
                 if path.suffix.lower() not in _IMAGE_SUFFIXES:
                     continue
                 try:
-                    candidates.append((image_sha256(path), perceptual_hash(path), path))
-                except ValueError:
+                    digest = image_sha256(path)
+                    image_hash = perceptual_hash(path)
+                    with Image.open(path) as image:
+                        width, height = image.size
+                except (OSError, ValueError):
                     continue
+                candidates.append((digest, image_hash, width, height, path))
 
             accepted_count = 0
             exact_duplicate_count = 0
             similar_duplicate_count = 0
-            accepted_hashes = []
-            batch_shas = set()
-            for digest, image_hash, path in sorted(candidates, key=lambda candidate: candidate[0]):
+            accepted_hashes: list[int] = []
+            batch_shas: set[str] = set()
+            records: list[ImageRecord] = []
+            for digest, image_hash, width, height, path in sorted(candidates, key=lambda candidate: candidate[0]):
                 if digest in existing_shas or digest in batch_shas:
                     exact_duplicate_count += 1
                     continue
@@ -111,84 +113,28 @@ class WorkspaceData:
                 ):
                     similar_duplicate_count += 1
                     continue
-                os.replace(path, self._images_dir / f'{digest}{path.suffix.lower()}')
+                filename = f'{digest}{path.suffix.lower()}'
+                os.replace(path, self._images_dir / filename)
+                records.append(ImageRecord(digest, f'images/{filename}', width, height, image_hash))
                 existing_shas.add(digest)
                 accepted_hashes.append(image_hash)
                 accepted_count += 1
-
-            return UploadResult(
-                received_count=len(staged),
-                accepted_count=accepted_count,
-                exact_duplicate_count=exact_duplicate_count,
-                similar_duplicate_count=similar_duplicate_count,
-            )
+            self._repository.register_images(tuple(records))
+            return UploadResult(len(staged), accepted_count, exact_duplicate_count, similar_duplicate_count)
         finally:
             for path in staged:
                 Path(path).unlink(missing_ok=True)
 
     def detection_summary(self) -> DetectionSummary:
-        """Derive completed and boxed detection-image counts from current LabelMe files."""
-        image_count = 0
-        annotated_image_count = 0
-        boxed_image_count = 0
-        for image_path in self._image_paths():
-            image_count += 1
-            document = self._read_document(self._annotation_path(image_path.stem))
-            boxes = _detection_boxes(document)
-            if detection_complete(document):
-                annotated_image_count += 1
-            if boxes:
-                boxed_image_count += 1
-        return DetectionSummary(image_count, annotated_image_count, boxed_image_count)
+        """Return image-level detection counts aggregated from registered database facts."""
+        return self._repository.detection_summary()
 
-    def detection_fingerprint(self, results: tuple[FrameResult, ...] | None = None) -> str:
-        """Hash image bytes and canonical detection boxes or negative markers.
-
-        Optional results predict the fingerprint after saving without changing files. Results must cover every
-        workspace image exactly once or raise ``ValueError``; existing explicit negative flags remain effective.
-        """
-        images = self._image_paths()
-        by_sample = None
-        if results is not None:
-            by_sample = {result.sample_id: result for result in results}
-            if len(by_sample) != len(results) or set(by_sample) != {path.stem for path in images}:
-                raise ValueError('Detection results must cover every workspace image exactly once')
-        records = []
-        for image_path in images:
-            document = self._read_document(self._annotation_path(image_path.stem))
-            if by_sample is not None:
-                document = merge_detection(document, by_sample[image_path.stem].boxes)
-            boxes = _detection_boxes(document)
-            if boxes:
-                detection = {
-                    'boxes': sorted(
-                        (
-                            {
-                                'label': box.geometry.label,
-                                'points': [[box.geometry.x1, box.geometry.y1], [box.geometry.x2, box.geometry.y2]],
-                                'extra': box.extra,
-                            }
-                            for box in boxes
-                        ),
-                        key=lambda box: json.dumps(box, ensure_ascii=False, sort_keys=True, separators=(',', ':')),
-                    )
-                }
-            elif detection_complete(document):
-                detection = {'negative': True}
-            else:
-                detection = None
-            records.append({'sha256': image_sha256(image_path), 'detection': detection})
-        payload = json.dumps(
-            sorted(records, key=lambda record: record['sha256']),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(',', ':'),
-            allow_nan=False,
-        ).encode('utf-8')
-        return sha256(payload).hexdigest()
+    def detection_fingerprint(self) -> str:
+        """Hash registered image identities and normalized detection business content."""
+        return self._fingerprint(self._repository.annotations())
 
     def materialize_detection_source(self, root: Path) -> Path:
-        """Copy completed detection samples into a disposable LabelMe source tree."""
+        """Export completed database samples into a disposable LabelMe source tree."""
         source_root = Path(root) / 'src'
         group_root = source_root / 'workspace'
         images_dir = group_root / 'imgs'
@@ -197,104 +143,131 @@ class WorkspaceData:
         annotations_dir.mkdir()
         (source_root / 'labels.txt').write_text('Point\n', encoding='utf-8')
 
-        for image_path in self._image_paths():
-            annotation_path = self._annotation_path(image_path.stem)
-            document = self._read_document(annotation_path)
-            if not detection_complete(document):
+        annotations = self._repository.annotations(step_key='detect')
+        by_image: dict[str, list[AnnotationRecord]] = {}
+        for record in annotations:
+            by_image.setdefault(record.image_id, []).append(record)
+        for image in self._repository.images():
+            records = tuple(by_image.get(image.id, ()))
+            if not any(record.kind in {'rectangle', 'negative'} for record in records):
                 continue
-            with Image.open(image_path) as image:
-                width, height = image.size
-            boxes = _detection_boxes(document)
-            annotation = {
-                'version': '5.0.0',
-                'flags': {},
-                'shapes': [
-                    {
-                        'label': box.geometry.label,
-                        'points': [[box.geometry.x1, box.geometry.y1], [box.geometry.x2, box.geometry.y2]],
-                        'shape_type': 'rectangle',
-                    }
-                    for box in boxes
-                ],
-                'imagePath': f'../imgs/{image_path.name}',
-                'imageData': None,
-                'imageHeight': height,
-                'imageWidth': width,
-            }
+            image_path = self._root / image.relative_path
+            document = detection_document(
+                image_path=f'../imgs/{image_path.name}', width=image.width, height=image.height, annotations=records
+            )
             shutil.copy2(image_path, images_dir / image_path.name)
-            (annotations_dir / annotation_path.name).write_text(
-                json.dumps(annotation, ensure_ascii=False, allow_nan=False), encoding='utf-8'
+            (annotations_dir / f'{image.id}.json').write_text(
+                json.dumps(document, ensure_ascii=False, allow_nan=False), encoding='utf-8'
             )
         return Path(root)
 
-    def save_detection(self, results: tuple[FrameResult, ...]) -> None:
-        """Replace rectangles after exact-set validation and encoding, using one atomic replacement per JSON.
+    def bind_job(self, prepared: PreparedJob) -> None:
+        """Persist a prepared CVAT job's native-object bindings atomically."""
+        self._repository.bind_job(prepared)
 
-        On a write failure, restore replaced files to their prior bytes or absence before re-raising.
-        Rollback failures remain visible; process termination cannot guarantee a multi-file transaction.
-        """
-        images = self._image_paths()
-        expected = {path.stem for path in images}
-        received = [result.sample_id for result in results]
-        if len(received) != len(set(received)):
-            raise ValueError('Detection results contain duplicate sample IDs')
-        if set(received) != expected:
+    def prepare_detection_sync(self, ref: JobRef, results: tuple[FrameResult, ...]) -> DetectionSync:
+        """Validate exact image coverage and native CVAT identities, then plan one object-scoped update."""
+        image_ids = tuple(record.id for record in self._repository.images())
+        if len(set(ref.sample_ids)) != len(ref.sample_ids) or set(ref.sample_ids) != set(image_ids):
+            raise ValueError('Detection job must cover every current workspace image exactly once')
+        received = tuple(result.sample_id for result in results)
+        if len(set(received)) != len(received) or set(received) != set(image_ids):
             raise ValueError('Detection results must cover every workspace image exactly once')
 
-        by_sample = {result.sample_id: result for result in results}
-        encoded = []
-        previous = {}
-        for image_path in images:
-            destination = self._annotation_path(image_path.stem)
-            previous[destination] = destination.read_bytes() if destination.is_file() else None
-            document = self._read_document(destination)
-            if not destination.is_file():
-                with Image.open(image_path) as image:
-                    width, height = image.size
-                document = _empty_document(
-                    image_path=os.path.relpath(image_path, self._annotations_dir).replace('\\', '/'),
-                    width=width,
-                    height=height,
+        current = self._repository.annotations()
+        current_detection = tuple(record for record in current if record.step_key == 'detect')
+        current_negative = {record.image_id: record for record in current_detection if record.kind == 'negative'}
+        existing_bindings = self._repository.bindings(ref)
+        if any(binding.object_type != 'shape' for binding in existing_bindings):
+            raise ValueError('Detection jobs support only CVAT shape bindings')
+        by_object_id = {binding.object_id: binding for binding in existing_bindings}
+
+        object_ids: set[int] = set()
+        incoming: list[AnnotationRecord] = []
+        bindings: list[CvatBinding] = []
+        for result in results:
+            if not result.boxes:
+                annotation_id = current_negative.get(result.sample_id, None)
+                incoming.append(
+                    AnnotationRecord(
+                        annotation_id.id if annotation_id is not None else uuid4(),
+                        result.sample_id,
+                        'detect',
+                        None,
+                        'negative',
+                        None,
+                        None,
+                    )
                 )
-            merged = merge_detection(document, by_sample[image_path.stem].boxes)
-            payload = json.dumps(merged, ensure_ascii=False, allow_nan=False, indent=2).encode('utf-8')
-            encoded.append((destination, payload))
+                continue
+            for box in result.boxes:
+                object_id = box.cvat_id
+                if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0:
+                    raise ValueError('Persistent detection synchronization requires a native CVAT shape ID')
+                if object_id in object_ids:
+                    raise ValueError('CVAT shape IDs must be unique within a detection job')
+                object_ids.add(object_id)
+                existing = by_object_id.get(object_id)
+                if existing is not None and existing.sample_id != result.sample_id:
+                    raise ValueError('A known CVAT shape ID cannot move to another frame')
+                annotation_id = existing.annotation_id if existing is not None else uuid4()
+                geometry = box.geometry
+                incoming.append(
+                    AnnotationRecord(
+                        annotation_id,
+                        result.sample_id,
+                        'detect',
+                        None,
+                        'rectangle',
+                        geometry.label,
+                        [[geometry.x1, geometry.y1], [geometry.x2, geometry.y2]],
+                    )
+                )
+                bindings.append(CvatBinding(result.sample_id, 'shape', object_id, annotation_id))
 
-        replaced = []
-        try:
-            for destination, payload in encoded:
-                self._replace(destination, payload)
-                replaced.append(destination)
-        except OSError:
-            for destination in reversed(replaced):
-                original = previous[destination]
-                if original is None:
-                    destination.unlink()
-                else:
-                    self._replace(destination, original)
-            raise
+        incoming_ids = {record.id for record in incoming}
+        delete_ids = frozenset(record.id for record in current_detection if record.id not in incoming_ids)
+        changes = plan_changes(current, tuple(incoming), delete_ids, self._task)
+        final = {record.id: record for record in current}
+        for annotation_id in changes.delete_ids:
+            final.pop(annotation_id, None)
+        final.update((record.id, record) for record in changes.upserts)
+        return DetectionSync(changes, tuple(bindings), self._fingerprint(tuple(final.values())))
 
-    def _annotation_path(self, sample_id: str) -> Path:
-        return self._annotations_dir / f'{sample_id}.json'
+    def commit_detection_sync(self, ref: JobRef, sync: DetectionSync) -> None:
+        """Atomically commit a prepared detection change set and its native CVAT bindings."""
+        self._repository.apply_changes(sync.changes, ref=ref, bindings=sync.bindings)
 
-    @staticmethod
-    def _read_document(path: Path) -> JsonObject:
-        if not path.is_file():
-            return {'shapes': []}
-        with path.open(encoding='utf-8') as stream:
-            document = json.load(stream)
-        if not isinstance(document, dict):
-            raise ValueError('LabelMe document must be an object')
-        return document
-
-    @staticmethod
-    def _replace(destination: Path, payload: bytes) -> None:
-        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+    def _fingerprint(self, annotations: tuple[AnnotationRecord, ...]) -> str:
+        by_image: dict[str, list[AnnotationRecord]] = {}
+        for record in annotations:
+            if record.step_key == 'detect':
+                by_image.setdefault(record.image_id, []).append(record)
+        records = []
+        for image in self._repository.images():
+            detection_records = by_image.get(image.id, ())
+            boxes = [
+                {'label': record.label, 'points': [[float(value) for value in point] for point in record.geometry]}
+                for record in detection_records
+                if record.kind == 'rectangle'
+            ]
+            if boxes:
+                detection = {
+                    'boxes': sorted(
+                        boxes,
+                        key=lambda box: json.dumps(box, ensure_ascii=False, sort_keys=True, separators=(',', ':')),
+                    )
+                }
+            elif any(record.kind == 'negative' for record in detection_records):
+                detection = {'negative': True}
+            else:
+                detection = None
+            records.append({'sha256': image.id, 'detection': detection})
+        payload = json.dumps(
+            sorted(records, key=lambda record: record['sha256']),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+            allow_nan=False,
+        ).encode('utf-8')
+        return sha256(payload).hexdigest()

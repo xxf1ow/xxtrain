@@ -7,6 +7,7 @@ import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID
 
 try:
     import httpx
@@ -16,7 +17,16 @@ except ModuleNotFoundError as error:
 from xxtrain.business_tasks import POINT_BOX_LABELS
 from xxtrain.data import Bbox
 from xxtrain.integrations.cvat import CvatClient, PreparationState
-from xxtrain.platform.contracts import DetectionBox, FrameResult, ImageInput, JobRef, PlatformAccessError, PlatformError
+from xxtrain.platform.contracts import (
+    CvatBinding,
+    DetectionBox,
+    FrameResult,
+    ImageInput,
+    JobRef,
+    PlatformAccessError,
+    PlatformError,
+    PreparedJob,
+)
 
 LABELS = [
     {
@@ -122,15 +132,27 @@ class CvatClientTest(unittest.TestCase):
             second = root / 'camera-b.png'
             first.write_bytes(b'first-image')
             second.write_bytes(b'second-image')
+            first_annotation = UUID('11111111-1111-1111-1111-111111111111')
+            second_annotation = UUID('22222222-2222-2222-2222-222222222222')
             images = (
                 ImageInput(
                     'sample-b',
                     first,
                     100,
                     80,
-                    (DetectionBox(Bbox(label='tl', x1=1, y1=2, x2=11, y2=12), {'description': 'existing'}),),
+                    (
+                        DetectionBox(
+                            Bbox(id=first_annotation, label='tl', x1=1, y1=2, x2=11, y2=12), {'description': 'existing'}
+                        ),
+                    ),
                 ),
-                ImageInput('sample-a', second, 60, 40, ()),
+                ImageInput(
+                    'sample-a',
+                    second,
+                    60,
+                    40,
+                    (DetectionBox(Bbox(id=second_annotation, label='tc', x1=2, y1=3, x2=12, y2=13)),),
+                ),
             )
 
             def respond(request: httpx.Request) -> httpx.Response:
@@ -187,9 +209,11 @@ class CvatClientTest(unittest.TestCase):
                     payload = json.loads(request.content)
                     self.assertEqual(payload['shapes'][0]['frame'], 0)
                     self.assertEqual(payload['shapes'][0]['label_id'], 42)
-                    self.assertEqual(
-                        payload['shapes'][0]['attributes'], [{'spec_id': 72, 'value': '{"description": "existing"}'}]
-                    )
+                    extras = [json.loads(shape['attributes'][0]['value']) for shape in payload['shapes']]
+                    self.assertEqual('existing', extras[0]['description'])
+                    self.assertEqual(str(first_annotation), extras[0]['xxtrain_annotation_id'])
+                    self.assertEqual(str(second_annotation), extras[1]['xxtrain_annotation_id'])
+                    payload['shapes'] = [payload['shapes'][1] | {'id': 92}, payload['shapes'][0] | {'id': 91}]
                     return httpx.Response(200, json=payload)
                 if request.url.path == '/api/jobs/8':
                     self.assertEqual(json.loads(request.content), {'assignee': 23})
@@ -199,9 +223,16 @@ class CvatClientTest(unittest.TestCase):
             http = httpx.Client(transport=httpx.MockTransport(respond))
             client = CvatClient('http://cvat.test', 'private-token', http)
 
-            ref = client.prepare_task(7, images, 23, checkpoint=checkpoints.append)
+            prepared = client.prepare_task(7, images, 23, checkpoint=checkpoints.append)
 
-        self.assertEqual(ref, JobRef(7, 8, ('sample-b', 'sample-a')))
+        self.assertEqual(JobRef(7, 8, ('sample-b', 'sample-a')), prepared.ref)
+        self.assertEqual(
+            {
+                CvatBinding('sample-b', 'shape', 91, first_annotation),
+                CvatBinding('sample-a', 'shape', 92, second_annotation),
+            },
+            set(prepared.bindings),
+        )
         self.assertEqual(
             checkpoints,
             [
@@ -280,7 +311,7 @@ class CvatClientTest(unittest.TestCase):
                 7, images, 23, preparation=PreparationState('uploading', 'saved-rq'), checkpoint=checkpoints.append
             )
 
-        self.assertEqual(ref, JobRef(7, 8, ('a',)))
+        self.assertEqual(ref, PreparedJob(JobRef(7, 8, ('a',)), ()))
         self.assertNotIn(('POST', '/api/tasks/7/data'), requests)
         self.assertEqual(checkpoints[0], PreparationState('uploaded'))
 
@@ -289,7 +320,16 @@ class CvatClientTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / 'a.jpg'
             image_path.write_bytes(b'image')
-            images = (ImageInput('a', image_path, 10, 20, ()),)
+            annotation_id = UUID('12345678-1234-5678-1234-567812345678')
+            images = (
+                ImageInput(
+                    'a',
+                    image_path,
+                    10,
+                    20,
+                    (DetectionBox(Bbox(id=annotation_id, label='Point', x1=1, y1=2, x2=8, y2=9)),),
+                ),
+            )
 
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path))
@@ -323,6 +363,32 @@ class CvatClientTest(unittest.TestCase):
                             ]
                         ),
                     )
+                if request.url.path == '/api/labels':
+                    return httpx.Response(200, json=page(LABELS))
+                if request.url.path == '/api/jobs/8/annotations':
+                    return httpx.Response(
+                        200,
+                        json={
+                            'version': 0,
+                            'tracks': [],
+                            'tags': [],
+                            'shapes': [
+                                {
+                                    'id': 91,
+                                    'type': 'rectangle',
+                                    'frame': 0,
+                                    'label_id': 41,
+                                    'points': [1, 2, 8, 9],
+                                    'attributes': [
+                                        {
+                                            'spec_id': 71,
+                                            'value': json.dumps({'xxtrain_annotation_id': str(annotation_id)}),
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    )
                 if request.url.path == '/api/jobs/8':
                     return httpx.Response(200, json={'id': 8})
                 return httpx.Response(404)
@@ -330,10 +396,53 @@ class CvatClientTest(unittest.TestCase):
             client = CvatClient(
                 'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
             )
-            client.prepare_task(7, images, 23, preparation=PreparationState('initialized'))
+            prepared = client.prepare_task(7, images, 23, preparation=PreparationState('initialized'))
 
+        self.assertEqual(PreparedJob(JobRef(7, 8, ('a',)), (CvatBinding('a', 'shape', 91, annotation_id),)), prepared)
         self.assertNotIn(('PUT', '/api/jobs/8/annotations'), requests)
-        self.assertNotIn(('GET', '/api/labels'), requests)
+        self.assertIn(('GET', '/api/jobs/8/annotations'), requests)
+
+    def test_prepare_missing_initialization_token_does_not_assign_job(self):
+        requests = []
+        annotation_id = UUID('12345678-1234-5678-1234-567812345678')
+        images = (
+            ImageInput(
+                'a',
+                Path('unused.jpg'),
+                10,
+                20,
+                (DetectionBox(Bbox(id=annotation_id, label='Point', x1=1, y1=2, x2=8, y2=9)),),
+            ),
+        )
+        client = CvatClient(
+            'http://cvat.test',
+            'private-token',
+            httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(500))),
+        )
+
+        def request(method, path, **kwargs):
+            requests.append((method, path))
+            if path == '/api/tasks/7':
+                return httpx.Response(200, json={'id': 7, 'size': 1})
+            if path == '/api/jobs/8/annotations':
+                payload = json.loads(json.dumps(kwargs['json']))
+                payload['shapes'][0]['id'] = 91
+                payload['shapes'][0]['attributes'][0]['value'] = '{}'
+                return httpx.Response(200, json=payload)
+            if path == '/api/jobs/8':
+                return httpx.Response(200, json={'id': 8})
+            raise AssertionError(path)
+
+        with (
+            patch.object(client, '_service_request', side_effect=request),
+            patch.object(client, '_verify_frames'),
+            patch.object(client, '_wait_for_job', return_value=8),
+            patch.object(client, '_labels', return_value=LABELS),
+        ):
+            with self.assertRaisesRegex(ValueError, 'token'):
+                client.prepare_task(7, images, 23)
+
+        self.assertNotIn(('PATCH', '/api/jobs/8'), requests)
 
     def test_prepare_stops_ambiguous_initialization_without_an_http_write(self):
         requests = []

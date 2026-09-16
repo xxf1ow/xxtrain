@@ -123,6 +123,15 @@ class PreparedJob:
 
 
 @dataclass(frozen=True)
+class DetectionSync:
+    """One validated detection synchronization prepared under the workspace write lock."""
+
+    changes: AnnotationChanges
+    bindings: tuple[CvatBinding, ...]
+    fingerprint: str
+
+
+@dataclass(frozen=True)
 class WorkspaceView:
     workspace_id: str
     name: str

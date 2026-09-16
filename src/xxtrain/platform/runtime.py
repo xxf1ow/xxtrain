@@ -24,6 +24,19 @@ class RuntimeCache:
         jobs.setdefault(target, {})[fingerprint] = ref
         self._replace(self._encode_jobs(jobs))
 
+    def forget_targets(self, targets: frozenset[str]) -> None:
+        """Atomically remove every cached Job reference for the selected targets."""
+        if not targets:
+            return
+        jobs = self._load_jobs()
+        changed = False
+        for target in targets:
+            if target in jobs:
+                del jobs[target]
+                changed = True
+        if changed:
+            self._replace(self._encode_jobs(jobs))
+
     def has_detection_cache(self, fingerprint: str) -> bool:
         """Return whether a complete Point detection dataset exists for the fingerprint."""
         return (self._root / 'cache' / fingerprint / 'detect').is_dir()

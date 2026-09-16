@@ -11,6 +11,7 @@ from xxtrain.platform.contracts import (
     AnnotationChanges,
     AnnotationRecord,
     CvatBinding,
+    DetectionSummary,
     ImageRecord,
     JobRef,
     JsonValue,
@@ -126,6 +127,32 @@ class AnnotationRepository:
                 parameters,
             )
             return tuple(_annotation_from_row(row) for row in rows)
+
+    def detection_summary(self) -> DetectionSummary:
+        """Aggregate image-level detection completion and boxed-image counts."""
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT COUNT(*),
+                           COALESCE(SUM(CASE WHEN EXISTS (
+                               SELECT 1 FROM annotations
+                               WHERE annotations.image_id = images.id
+                                 AND annotations.step_key = 'detect'
+                                 AND annotations.kind IN ('rectangle', 'negative')
+                           ) THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN EXISTS (
+                               SELECT 1 FROM annotations
+                               WHERE annotations.image_id = images.id
+                                 AND annotations.step_key = 'detect'
+                                 AND annotations.kind = 'rectangle'
+                           ) THEN 1 ELSE 0 END), 0)
+                    FROM images
+                    """
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise PlatformError('Annotation storage operation failed') from error
+        return DetectionSummary(int(row[0]), int(row[1]), int(row[2]))
 
     def save_annotations(
         self, records: tuple[AnnotationRecord, ...], *, delete_ids: frozenset[UUID] = frozenset()
