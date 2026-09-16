@@ -21,7 +21,13 @@ class ImageRecord:
 
 @dataclass(frozen=True)
 class AnnotationRecord:
-    """Durable task-owned annotation with an optional parent and JSON geometry."""
+    """Durable task-owned annotation with kind-specific content and parent rules.
+
+    Negative records use null labels and geometry. Classification records use an allowed label and null
+    geometry. Shape records use an allowed label and kind-specific JSON points. Task steps decide whether a
+    parent is forbidden or required; every parent must be an annotation from an allowed step on the same
+    image. ``AnnotationRepository`` raises ``ValueError`` when a record violates these rules.
+    """
 
     id: UUID
     image_id: str
@@ -30,6 +36,25 @@ class AnnotationRecord:
     kind: str
     label: str | None
     geometry: JsonValue
+
+
+@dataclass(frozen=True)
+class AnnotationChanges:
+    """One transient set of annotation upserts, deletions, and invalidated task steps."""
+
+    upserts: tuple[AnnotationRecord, ...]
+    delete_ids: frozenset[UUID]
+    invalidated_steps: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CvatBinding:
+    """Bind one CVAT object identity to an annotation within a job sample."""
+
+    sample_id: str
+    object_type: str
+    object_id: int
+    annotation_id: UUID
 
 
 @dataclass(frozen=True)
@@ -85,6 +110,14 @@ class JobRef:
     task_id: int
     job_id: int
     sample_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PreparedJob:
+    """A disposable CVAT job reference and its platform annotation bindings."""
+
+    ref: JobRef
+    bindings: tuple[CvatBinding, ...]
 
 
 @dataclass(frozen=True)

@@ -2,12 +2,21 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
 from xxtrain.business_tasks.definition import StepDefinition, TaskDefinition
 from xxtrain.business_tasks.point import POINT_BOX_LABELS, point_task_definition
-from xxtrain.platform.contracts import AnnotationRecord, ImageRecord
+from xxtrain.platform.contracts import (
+    AnnotationChanges,
+    AnnotationRecord,
+    CvatBinding,
+    ImageRecord,
+    JobRef,
+    PlatformError,
+    PreparedJob,
+)
 from xxtrain.workspace_data.repository import AnnotationRepository
 
 
@@ -174,6 +183,11 @@ class PlatformSqliteTest(unittest.TestCase):
             with self.subTest(kind=kind, geometry=geometry), self.assertRaises(ValueError):
                 repo.save_annotations((record,))
 
+        existing = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])
+        repo.save_annotations((existing,))
+        with self.assertRaises(ValueError):
+            repo.save_annotations((replace(existing, geometry=[[True, 2], [30, 40]]),))
+
     def test_negative_requires_null_label_and_geometry_and_conflicts_with_boxes(self) -> None:
         repo, image = self.make_repo()
         invalid_negatives = (
@@ -201,6 +215,145 @@ class PlatformSqliteTest(unittest.TestCase):
             repo.save_annotations((valid, invalid), delete_ids=frozenset({existing.id}))
 
         self.assertEqual((existing,), repo.annotations())
+
+    def test_save_annotations_applies_object_scoped_downstream_deletion(self) -> None:
+        repo, image = self.make_repo()
+        first = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[0, 0], [20, 20]])
+        second = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[30, 0], [50, 20]])
+        category = AnnotationRecord(uuid4(), image.id, 'classify', first.id, 'classification', 'good', None)
+        first_mask = AnnotationRecord(
+            uuid4(), image.id, 'segment', first.id, 'polygon', 'mask', [[1, 1], [10, 1], [10, 10]]
+        )
+        second_mask = replace(first_mask, id=uuid4(), parent_id=second.id)
+        repo.save_annotations((first, second, category, first_mask, second_mask))
+
+        repo.save_annotations((replace(category, label='good'),))
+        self.assertEqual(
+            {first.id, second.id, category.id, first_mask.id, second_mask.id}, {item.id for item in repo.annotations()}
+        )
+
+        changed_task = TaskDefinition(
+            (
+                self.make_task().step('detect'),
+                replace(self.make_task().step('classify'), labels=frozenset({'good', 'bad'})),
+                self.make_task().step('segment'),
+            )
+        )
+        changed_repo = AnnotationRepository(self.root / 'annotations.db', changed_task)
+        changed_repo.save_annotations((replace(category, label='bad'),))
+
+        self.assertEqual(
+            {first.id, second.id, category.id, second_mask.id}, {item.id for item in changed_repo.annotations()}
+        )
+
+    def test_job_bindings_are_idempotent_and_survive_reopen(self) -> None:
+        task = self.make_task()
+        path = self.root / 'annotations.db'
+        repo, image = self.make_repo(task)
+        box = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])
+        repo.save_annotations((box,))
+        ref = JobRef(10, 20, (image.id,))
+        binding = CvatBinding(image.id, 'shape', 30, box.id)
+        prepared = PreparedJob(ref, (binding,))
+
+        repo.bind_job(prepared)
+        repo.bind_job(prepared)
+
+        self.assertEqual((binding,), repo.bindings(ref))
+        self.assertEqual((binding,), AnnotationRepository(path, task).bindings(ref))
+
+    def test_job_bindings_reject_scope_and_identity_conflicts(self) -> None:
+        repo, image = self.make_repo()
+        other = ImageRecord('b' * 64, 'b.png', 100, 80, 0)
+        repo.register_images((other,))
+        first = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])
+        second = AnnotationRecord(uuid4(), other.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])
+        repo.save_annotations((first, second))
+        ref = JobRef(10, 20, (image.id,))
+        invalid_groups = (
+            (CvatBinding(other.id, 'shape', 1, second.id),),
+            (CvatBinding(image.id, 'shape', 1, second.id),),
+            (CvatBinding(image.id, 'shape', 1, first.id), CvatBinding(image.id, 'shape', 1, first.id)),
+            (CvatBinding(image.id, 'shape', 1, first.id), CvatBinding(image.id, 'tag', 2, first.id)),
+        )
+
+        for bindings in invalid_groups:
+            with self.subTest(bindings=bindings), self.assertRaises(ValueError):
+                repo.bind_job(PreparedJob(ref, bindings))
+
+        unknown_ref = JobRef(10, 21, ('c' * 64,))
+        with self.assertRaises(ValueError):
+            repo.bind_job(PreparedJob(unknown_ref, ()))
+        with self.assertRaises(ValueError):
+            repo.bindings(unknown_ref)
+
+        original = CvatBinding(image.id, 'shape', 1, first.id)
+        repo.bind_job(PreparedJob(ref, (original,)))
+        with self.assertRaises(ValueError):
+            repo.bind_job(PreparedJob(ref, (CvatBinding(image.id, 'shape', 1, uuid4()),)))
+        with self.assertRaises(ValueError):
+            repo.bind_job(PreparedJob(ref, (CvatBinding(image.id, 'shape', 2, first.id),)))
+        self.assertEqual((original,), repo.bindings(ref))
+
+    def test_apply_changes_rolls_back_annotations_and_bindings_after_sqlite_failure(self) -> None:
+        repo, image = self.make_repo()
+        existing = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])
+        repo.save_annotations((existing,))
+        ref = JobRef(10, 20, (image.id,))
+        original_binding = CvatBinding(image.id, 'shape', 1, existing.id)
+        repo.bind_job(PreparedJob(ref, (original_binding,)))
+        new = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[2, 3], [40, 50]])
+        changes = AnnotationChanges((replace(existing, geometry=[[3, 4], [31, 41]]), new), frozenset(), frozenset())
+        failing_binding = CvatBinding(image.id, 'shape', 999, new.id)
+        before_annotations = repo.annotations()
+        before_bindings = repo.bindings(ref)
+        db_path = self.root / 'annotations.db'
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.execute(
+                """CREATE TRIGGER reject_test_binding BEFORE INSERT ON cvat_annotation_map
+                WHEN NEW.object_id = 999
+                BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END"""
+            )
+
+        with self.assertRaises(PlatformError) as raised:
+            repo.apply_changes(changes, ref=ref, bindings=(failing_binding,))
+
+        self.assertIsInstance(raised.exception.__cause__, sqlite3.Error)
+        self.assertNotIn('injected binding failure', str(raised.exception))
+        self.assertNotIn(str(db_path), str(raised.exception))
+        self.assertEqual(before_annotations, repo.annotations())
+        self.assertEqual(before_bindings, repo.bindings(ref))
+
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.execute('DROP TRIGGER reject_test_binding')
+        repo.apply_changes(changes, ref=ref, bindings=(failing_binding,))
+
+        self.assertEqual({existing.id, new.id}, {item.id for item in repo.annotations()})
+        self.assertEqual({original_binding, failing_binding}, set(repo.bindings(ref)))
+
+    def test_deleting_annotation_removes_its_job_binding(self) -> None:
+        repo, image = self.make_repo()
+        box = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])
+        repo.save_annotations((box,))
+        ref = JobRef(10, 20, (image.id,))
+        repo.bind_job(PreparedJob(ref, (CvatBinding(image.id, 'shape', 1, box.id),)))
+
+        repo.apply_changes(AnnotationChanges((), frozenset({box.id}), frozenset()))
+
+        self.assertEqual((), repo.annotations())
+        self.assertEqual((), repo.bindings(ref))
+
+    def test_sqlite_read_failure_is_sanitized_for_platform_callers(self) -> None:
+        repo, _ = self.make_repo()
+        db_path = self.root / 'annotations.db'
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.execute('DROP TABLE annotations')
+
+        with self.assertRaises(PlatformError) as raised:
+            repo.annotations()
+
+        self.assertIsInstance(raised.exception.__cause__, sqlite3.Error)
+        self.assertEqual('Annotation storage operation failed', str(raised.exception))
 
 
 if __name__ == '__main__':

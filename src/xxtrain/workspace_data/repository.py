@@ -7,7 +7,18 @@ from uuid import UUID
 
 from xxtrain.business_tasks.definition import TaskDefinition
 from xxtrain.data import Bbox, Polygon, Polyline
-from xxtrain.platform.contracts import AnnotationRecord, ImageRecord, JsonValue
+from xxtrain.platform.contracts import (
+    AnnotationChanges,
+    AnnotationRecord,
+    CvatBinding,
+    ImageRecord,
+    JobRef,
+    JsonValue,
+    PlatformError,
+    PreparedJob,
+)
+
+from .changes import plan_changes
 
 _SCHEMA_VERSION = 1
 _SCHEMA = """
@@ -42,7 +53,12 @@ PRAGMA user_version=1;
 
 
 class AnnotationRepository:
-    """Store validated image and annotation records through short SQLite connections."""
+    """Store validated image, annotation, and CVAT identity records through short SQLite connections.
+
+    Caller-supplied records that violate content, parent, identity, or job-scope rules raise ``ValueError``.
+    SQLite operational failures raise ``PlatformError`` without exposing SQL or database paths and retain the
+    original ``sqlite3.Error`` as their exception cause.
+    """
 
     def __init__(self, path: Path, task: TaskDefinition):
         self._path = path
@@ -114,67 +130,144 @@ class AnnotationRepository:
     def save_annotations(
         self, records: tuple[AnnotationRecord, ...], *, delete_ids: frozenset[UUID] = frozenset()
     ) -> None:
-        """Validate and atomically apply record upserts and deletions against the final set."""
-        if len({record.id for record in records}) != len(records):
-            raise ValueError('Annotation save contains duplicate ids')
-        if any(not isinstance(annotation_id, UUID) for annotation_id in delete_ids):
-            raise ValueError('Deleted annotation ids must be UUIDs')
-        record_ids = {record.id for record in records}
-        if record_ids & delete_ids:
-            raise ValueError('An annotation cannot be saved and deleted together')
+        """Plan dependent deletion, then validate and atomically apply the resulting final record set.
 
-        with self._connection() as connection:
-            connection.execute('BEGIN IMMEDIATE')
-            try:
-                image_ids = {row[0] for row in connection.execute('SELECT id FROM images')}
-                existing = {
-                    record.id: record
-                    for record in (
-                        _annotation_from_row(row)
-                        for row in connection.execute(
-                            'SELECT id, image_id, step_key, parent_id, kind, label, geometry FROM annotations'
-                        )
+        Invalid records, reassigned IDs, and conflicting upsert/delete requests raise ``ValueError``.
+        """
+        changes = plan_changes(self.annotations(), records, delete_ids, self._task)
+        self.apply_changes(changes)
+
+    def bindings(self, ref: JobRef) -> tuple[CvatBinding, ...]:
+        """Return current bindings for ``ref`` or raise ``ValueError`` when its sample scope is inconsistent."""
+        _validate_ref(ref)
+        try:
+            with self._connection() as connection:
+                image_ids = {str(row[0]) for row in connection.execute('SELECT id FROM images')}
+                _validate_ref_samples(ref, image_ids)
+                rows = tuple(
+                    connection.execute(
+                        """
+                        SELECT annotations.image_id, cvat_annotation_map.object_type,
+                               cvat_annotation_map.object_id, cvat_annotation_map.annotation_id
+                        FROM cvat_annotation_map
+                        JOIN annotations ON annotations.id = cvat_annotation_map.annotation_id
+                        WHERE cvat_annotation_map.job_id = ?
+                        ORDER BY cvat_annotation_map.rowid
+                        """,
+                        (ref.job_id,),
                     )
-                }
-                final_records = dict(existing)
-                for annotation_id in delete_ids:
-                    final_records.pop(annotation_id, None)
-                final_records.update((record.id, record) for record in records)
-                encoded = _validate_annotations(tuple(final_records.values()), image_ids, self._task)
+                )
+        except sqlite3.Error as error:
+            raise PlatformError('Annotation storage operation failed') from error
+        sample_ids = frozenset(ref.sample_ids)
+        if any(row[0] not in sample_ids for row in rows):
+            raise ValueError('Job bindings fall outside the referenced sample scope')
+        return tuple(CvatBinding(str(row[0]), str(row[1]), int(row[2]), UUID(str(row[3]))) for row in rows)
 
-                connection.execute('PRAGMA defer_foreign_keys=ON')
-                connection.executemany(
-                    'DELETE FROM annotations WHERE id = ?', ((str(annotation_id),) for annotation_id in delete_ids)
-                )
-                connection.executemany(
-                    """
-                    INSERT INTO annotations(id, image_id, step_key, parent_id, kind, label, geometry)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                      image_id=excluded.image_id,
-                      step_key=excluded.step_key,
-                      parent_id=excluded.parent_id,
-                      kind=excluded.kind,
-                      label=excluded.label,
-                      geometry=excluded.geometry
-                    """,
-                    (
-                        (
-                            str(record.id),
-                            record.image_id,
-                            record.step_key,
-                            str(record.parent_id) if record.parent_id is not None else None,
-                            record.kind,
-                            record.label,
-                            encoded[record.id],
+    def bind_job(self, prepared: PreparedJob) -> None:
+        """Atomically add a prepared job's bindings; exact repeated bindings are idempotent.
+
+        Unknown samples or annotations, cross-image bindings, duplicate CVAT identities, and attempts to
+        rebind either identity raise ``ValueError``.
+        """
+        self.apply_changes(
+            AnnotationChanges((), frozenset(), frozenset()), ref=prepared.ref, bindings=prepared.bindings
+        )
+
+    def apply_changes(
+        self, changes: AnnotationChanges, *, ref: JobRef | None = None, bindings: tuple[CvatBinding, ...] = ()
+    ) -> None:
+        """Atomically delete, upsert, and bind one planned change set against the final records.
+
+        Invalid records, reassigned IDs, malformed changes, and binding scope or identity conflicts raise
+        ``ValueError``. A failed SQLite statement rolls back annotations and bindings together and raises a
+        sanitized ``PlatformError`` with the original database exception chained as its cause.
+        """
+        _validate_change_shape(changes)
+        if bindings and ref is None:
+            raise ValueError('CVAT bindings require a job reference')
+        if ref is not None:
+            _validate_ref(ref)
+            _validate_binding_shape(bindings)
+
+        try:
+            with self._connection() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                try:
+                    image_ids = {row[0] for row in connection.execute('SELECT id FROM images')}
+                    if ref is not None:
+                        _validate_ref_samples(ref, image_ids)
+                    existing = {
+                        record.id: record
+                        for record in (
+                            _annotation_from_row(row)
+                            for row in connection.execute(
+                                'SELECT id, image_id, step_key, parent_id, kind, label, geometry FROM annotations'
+                            )
                         )
-                        for record in records
-                    ),
-                )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+                    }
+                    for record in changes.upserts:
+                        previous = existing.get(record.id)
+                        if previous is not None and _assignment(previous) != _assignment(record):
+                            raise ValueError('Existing annotation ids cannot change image, step, or parent assignment')
+                    final_records = dict(existing)
+                    for annotation_id in changes.delete_ids:
+                        final_records.pop(annotation_id, None)
+                    final_records.update((record.id, record) for record in changes.upserts)
+                    encoded = _validate_annotations(tuple(final_records.values()), image_ids, self._task)
+
+                    connection.execute('PRAGMA defer_foreign_keys=ON')
+                    connection.executemany(
+                        'DELETE FROM cvat_annotation_map WHERE annotation_id = ?',
+                        ((str(annotation_id),) for annotation_id in changes.delete_ids),
+                    )
+                    connection.executemany(
+                        'DELETE FROM annotations WHERE id = ?',
+                        ((str(annotation_id),) for annotation_id in _delete_order(changes.delete_ids, existing)),
+                    )
+                    connection.executemany(
+                        """
+                        INSERT INTO annotations(id, image_id, step_key, parent_id, kind, label, geometry)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                          image_id=excluded.image_id,
+                          step_key=excluded.step_key,
+                          parent_id=excluded.parent_id,
+                          kind=excluded.kind,
+                          label=excluded.label,
+                          geometry=excluded.geometry
+                        """,
+                        (
+                            (
+                                str(record.id),
+                                record.image_id,
+                                record.step_key,
+                                str(record.parent_id) if record.parent_id is not None else None,
+                                record.kind,
+                                record.label,
+                                encoded[record.id],
+                            )
+                            for record in changes.upserts
+                        ),
+                    )
+                    if ref is not None:
+                        _validate_bindings(connection, ref, bindings, final_records)
+                        connection.executemany(
+                            """
+                            INSERT OR IGNORE INTO cvat_annotation_map(job_id, object_type, object_id, annotation_id)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (
+                                (ref.job_id, binding.object_type, binding.object_id, str(binding.annotation_id))
+                                for binding in bindings
+                            ),
+                        )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        except sqlite3.Error as error:
+            raise PlatformError('Annotation storage operation failed') from error
 
     def _initialize(self) -> None:
         with self._connection() as connection:
@@ -186,12 +279,16 @@ class AnnotationRepository:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._path)
+        connection: sqlite3.Connection | None = None
         try:
+            connection = sqlite3.connect(self._path)
             connection.execute('PRAGMA foreign_keys=ON')
             yield connection
+        except sqlite3.Error as error:
+            raise PlatformError('Annotation storage operation failed') from error
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
 
 def _validate_image(record: ImageRecord) -> None:
@@ -213,6 +310,111 @@ def _validate_image(record: ImageRecord) -> None:
         or not 0 <= record.perceptual_hash < 1 << 64
     ):
         raise ValueError('Image perceptual hash must be an unsigned 64-bit integer')
+
+
+def _validate_change_shape(changes: AnnotationChanges) -> None:
+    if not isinstance(changes, AnnotationChanges):
+        raise ValueError('Annotation changes must use AnnotationChanges')
+    upsert_ids = [record.id for record in changes.upserts]
+    if len(set(upsert_ids)) != len(upsert_ids):
+        raise ValueError('Annotation changes contain duplicate upsert ids')
+    if any(not isinstance(annotation_id, UUID) for annotation_id in (*upsert_ids, *changes.delete_ids)):
+        raise ValueError('Annotation change ids must be UUIDs')
+    if set(upsert_ids) & changes.delete_ids:
+        raise ValueError('An annotation cannot be saved and deleted together')
+    if any(not isinstance(step, str) or not step for step in changes.invalidated_steps):
+        raise ValueError('Invalidated annotation steps must be non-empty strings')
+
+
+def _validate_ref(ref: JobRef) -> None:
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (ref.task_id, ref.job_id)):
+        raise ValueError('CVAT task and job ids must be non-negative integers')
+    if any(not isinstance(sample_id, str) or not sample_id for sample_id in ref.sample_ids):
+        raise ValueError('Job samples must be non-empty strings')
+    if len(set(ref.sample_ids)) != len(ref.sample_ids):
+        raise ValueError('Job sample ids must be unique')
+
+
+def _validate_ref_samples(ref: JobRef, image_ids: set[str]) -> None:
+    if not set(ref.sample_ids) <= image_ids:
+        raise ValueError('Job references an unknown sample')
+
+
+def _validate_binding_shape(bindings: tuple[CvatBinding, ...]) -> None:
+    keys: set[tuple[str, int]] = set()
+    annotation_ids: set[UUID] = set()
+    for binding in bindings:
+        if not isinstance(binding.sample_id, str) or not binding.sample_id:
+            raise ValueError('CVAT binding sample ids must be non-empty strings')
+        if not isinstance(binding.object_type, str) or not binding.object_type:
+            raise ValueError('CVAT binding object types must be non-empty strings')
+        if isinstance(binding.object_id, bool) or not isinstance(binding.object_id, int) or binding.object_id < 0:
+            raise ValueError('CVAT binding object ids must be non-negative integers')
+        if not isinstance(binding.annotation_id, UUID):
+            raise ValueError('CVAT binding annotation ids must be UUIDs')
+        key = (binding.object_type, binding.object_id)
+        if key in keys:
+            raise ValueError('A CVAT object identity can appear only once in a prepared job')
+        if binding.annotation_id in annotation_ids:
+            raise ValueError('An annotation can appear only once in a prepared job')
+        keys.add(key)
+        annotation_ids.add(binding.annotation_id)
+
+
+def _validate_bindings(
+    connection: sqlite3.Connection,
+    ref: JobRef,
+    bindings: tuple[CvatBinding, ...],
+    records: dict[UUID, AnnotationRecord],
+) -> None:
+    sample_ids = frozenset(ref.sample_ids)
+    existing_rows = tuple(
+        connection.execute(
+            'SELECT object_type, object_id, annotation_id FROM cvat_annotation_map WHERE job_id = ?', (ref.job_id,)
+        )
+    )
+    existing_by_key = {(str(row[0]), int(row[1])): UUID(str(row[2])) for row in existing_rows}
+    existing_by_annotation: dict[UUID, tuple[str, int]] = {}
+    for row in existing_rows:
+        annotation_id = UUID(str(row[2]))
+        key = (str(row[0]), int(row[1]))
+        previous = existing_by_annotation.setdefault(annotation_id, key)
+        if previous != key:
+            raise ValueError('A job annotation already has multiple CVAT bindings')
+
+    for binding in bindings:
+        if binding.sample_id not in sample_ids:
+            raise ValueError('CVAT binding references a sample outside the job')
+        record = records.get(binding.annotation_id)
+        if record is None:
+            raise ValueError('CVAT binding references an unknown annotation')
+        if record.image_id != binding.sample_id:
+            raise ValueError('CVAT binding annotation must belong to its sample image')
+        key = (binding.object_type, binding.object_id)
+        bound_annotation = existing_by_key.get(key)
+        if bound_annotation is not None and bound_annotation != binding.annotation_id:
+            raise ValueError('CVAT object identity is already bound to another annotation')
+        bound_key = existing_by_annotation.get(binding.annotation_id)
+        if bound_key is not None and bound_key != key:
+            raise ValueError('Annotation is already bound to another CVAT object in this job')
+
+
+def _assignment(record: AnnotationRecord) -> tuple[str, str, UUID | None]:
+    return record.image_id, record.step_key, record.parent_id
+
+
+def _delete_order(delete_ids: frozenset[UUID], existing: dict[UUID, AnnotationRecord]) -> tuple[UUID, ...]:
+    def depth(annotation_id: UUID) -> int:
+        result = 0
+        current = existing.get(annotation_id)
+        seen: set[UUID] = set()
+        while current is not None and current.parent_id in delete_ids and current.parent_id not in seen:
+            seen.add(current.parent_id)
+            result += 1
+            current = existing.get(current.parent_id)
+        return result
+
+    return tuple(sorted(delete_ids, key=lambda annotation_id: (depth(annotation_id), str(annotation_id)), reverse=True))
 
 
 def _annotation_from_row(row: tuple[object, ...]) -> AnnotationRecord:
