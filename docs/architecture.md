@@ -2,7 +2,7 @@
 
 ## Scope
 
-xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射、可恢复的检测标注业务流程，以及供现场人员使用的检测标注入口。完整自助训练平台、ClearML 服务连接及训练快照尚未实现。
+xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射、可恢复的检测标注业务流程，以及供现场人员使用的检测标注入口。SQLite 路径已实现并通过离线测试，真实 CVAT 对象身份往返仍是部署验收缺口；完整自助训练平台、ClearML 服务连接及训练快照尚未实现。
 
 项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测标注入口。
 

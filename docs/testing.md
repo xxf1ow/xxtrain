@@ -51,11 +51,13 @@ HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 
 uv run --locked --extra platform python -m unittest test.test_platform_data test.test_platform_service test.test_platform_http test.test_platform_cvat_client test.test_platform_browser test.test_task_transforms -v
 ```
 
-真实验收显式安装 `platform-test` 并提供全部三个环境变量；未配置时浏览器测试在启动浏览器或访问网络前跳过。只可使用独立生成的临时 fixture，并在验收后停用临时服务：
+真实验收显式安装 `platform-test` 并同时提供 `XXTRAIN_PLATFORM_URL`、`XXTRAIN_PLATFORM_TEST_USER` 和 `XXTRAIN_PLATFORM_TEST_PASSWORD`；未配置时浏览器测试在启动浏览器或访问网络前跳过。测试固定读取 `.superpowers/platform-acceptance/fixture.json`，只接受当前 marker、独立生成的临时根目录，以及根目录内的数据库、图片和基准路径。receipt 必须记录 `database_path`、图片 `sample_id` 和初始标注 UUID，测试通过正式 repository 回读保存结果。验收后停用本次启动的临时服务：
 
 ```powershell
 uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
 ```
+
+当前 SQLite 版本的真实 CVAT 身份验收仍未完成。离线 mock、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代初始化、普通更新、复制、全量 PUT、旧 Job 拒收、重启恢复与 50 张可读缓存的同版本现场证据。
 
 修改平台 package-data 或入口后构建 wheel，并检查 wheel 包含三个页面资源、CVAT 返回插件及 `xxtrain-platform` console script。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 
