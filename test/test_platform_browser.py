@@ -13,13 +13,17 @@ from importlib import resources
 from importlib.util import find_spec
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import UUID
 
 _MISSING_HTTP_DEPENDENCIES = tuple(name for name in ('fastapi', 'httpx') if find_spec(name) is None)
 if _MISSING_HTTP_DEPENDENCIES:
     raise unittest.SkipTest(f'platform extra is required: {", ".join(_MISSING_HTTP_DEPENDENCIES)}')
 else:
+    from xxtrain.business_tasks.point import point_task_definition
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig, load_config
+    from xxtrain.workspace_data import WorkspaceData
+    from xxtrain.workspace_data.repository import AnnotationRepository
 
     from .platform_fixture import FIXTURE_MARKER, create_fixture
     from .test_platform_http import AsgiTestClient, FakeCvat, FakeService
@@ -37,44 +41,6 @@ if _LIVE_REQUESTED and all(_LIVE_VALUES.values()):
         _PLAYWRIGHT_IMPORT_ERROR = None
 else:
     _PLAYWRIGHT_IMPORT_ERROR = None
-
-_PRESERVED_ROOT_FIELDS = {
-    'version': '5.4.1',
-    'flags': {'fixture': 'task-6', 'preserve': True},
-    'description': 'synthetic mixed annotation',
-    'imagePath': '../images/point-a.jpg',
-    'imageData': None,
-    'imageHeight': 600,
-    'imageWidth': 800,
-    'custom': {'preserve': ['root', 'value']},
-}
-_PRESERVED_NON_RECTANGLES = [
-    {
-        'label': 'wire',
-        'points': [[40.0, 40.0], [90.0, 70.0]],
-        'group_id': None,
-        'description': 'preserve-line',
-        'shape_type': 'line',
-        'flags': {'preserve': True},
-    },
-    {
-        'label': 'mask',
-        'points': [[500.0, 100.0], [620.0, 130.0], [560.0, 250.0]],
-        'group_id': 23,
-        'description': 'preserve-polygon',
-        'shape_type': 'polygon',
-        'flags': {'preserve': True},
-    },
-]
-
-
-def assert_preserved_mixed_annotation(test: unittest.TestCase, document: dict[str, object]) -> None:
-    for field, expected_value in _PRESERVED_ROOT_FIELDS.items():
-        test.assertIn(field, document)
-        test.assertEqual(expected_value, document[field])
-    test.assertEqual(
-        _PRESERVED_NON_RECTANGLES, [shape for shape in document['shapes'] if shape['shape_type'] != 'rectangle']
-    )
 
 
 class PlatformBrowserTest(unittest.TestCase):
@@ -497,41 +463,35 @@ await get('image-files').listeners.change();
 
 
 class PlatformFixtureTest(unittest.TestCase):
-    def test_fixture_is_isolated_and_records_immutable_input_hashes(self) -> None:
+    def test_fixture_is_isolated_and_records_sqlite_annotation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
 
             root = Path(receipt['root'])
+            self.assertIn('database_path', receipt)
+            self.assertNotIn('annotation_path', receipt)
+            database_path = Path(receipt['database_path'])
             self.assertEqual(FIXTURE_MARKER, receipt['marker'])
             self.assertEqual(root.parent, Path(parent))
             self.assertTrue(root.name.startswith('xxtrain-point-acceptance-'))
+            self.assertEqual(root / 'workspace' / 'annotations.db', database_path)
+            self.assertTrue(database_path.is_file())
+            self.assertFalse((root / 'workspace' / 'annotations').exists())
             self.assertEqual(2, len(receipt['images']))
             for immutable in [*receipt['images'], receipt['baseline']]:
                 path = Path(immutable['path'])
                 self.assertTrue(path.is_relative_to(root))
                 self.assertEqual(immutable['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
 
-            annotation = json.loads(Path(receipt['annotation_path']).read_text(encoding='utf-8'))
-            self.assertEqual({'fixture': 'task-6', 'preserve': True}, annotation['flags'])
-            self.assertEqual(['rectangle', 'line', 'polygon'], [shape['shape_type'] for shape in annotation['shapes']])
-            self.assertEqual('tl', annotation['shapes'][0]['label'])
-            self.assertEqual(11, annotation['shapes'][0]['group_id'])
-            self.assertEqual({'reviewed': True}, annotation['shapes'][0]['flags'])
-            self.assertEqual('classification-metadata', annotation['shapes'][0]['description'])
-
-    def test_preservation_assertion_rejects_missing_root_or_nonrectangle_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as parent:
-            receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
-            annotation = json.loads(Path(receipt['annotation_path']).read_text(encoding='utf-8'))
-
-            annotation.pop('description')
-            with self.assertRaises(AssertionError):
-                assert_preserved_mixed_annotation(self, annotation)
-
-            annotation = json.loads(Path(receipt['annotation_path']).read_text(encoding='utf-8'))
-            annotation['shapes'][1].pop('flags')
-            with self.assertRaises(AssertionError):
-                assert_preserved_mixed_annotation(self, annotation)
+            workspace = WorkspaceData(root / 'workspace')
+            self.assertEqual(
+                [image['sample_id'] for image in receipt['images']], [image.sample_id for image in workspace.images()]
+            )
+            records = AnnotationRepository(database_path, point_task_definition()).annotations(step_key='detect')
+            self.assertEqual(receipt['initial_annotation_ids'], [str(record.id) for record in records])
+            self.assertEqual(receipt['images'][0]['sample_id'], records[0].image_id)
+            self.assertEqual('tl', records[0].label)
+            self.assertEqual(receipt['original_rectangle_points'], records[0].geometry)
 
 
 @unittest.skipUnless(_LIVE_REQUESTED, 'real browser acceptance environment is not configured')
@@ -571,7 +531,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         root = Path(cls.receipt.get('root', '')).resolve()
         if not root.is_dir() or not root.name.startswith('xxtrain-point-acceptance-'):
             raise RuntimeError('fixture root is not a generated Task 6 temporary directory')
-        required_paths = [cls.receipt.get('annotation_path', ''), cls.receipt.get('baseline', {}).get('path', '')]
+        required_paths = [cls.receipt.get('database_path', ''), cls.receipt.get('baseline', {}).get('path', '')]
         required_paths.extend(item.get('path', '') for item in cls.receipt.get('images', []))
         if not required_paths or any(not Path(path).resolve().is_relative_to(root) for path in required_paths):
             raise RuntimeError('fixture receipt points outside its generated temporary directory')
@@ -629,8 +589,10 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             path = Path(immutable['path'])
             self.assertEqual(immutable['sha256'], hashlib.sha256(path.read_bytes()).hexdigest(), path)
 
-    def _saved_document(self) -> dict[str, object]:
-        return json.loads(Path(self.receipt['annotation_path']).read_text(encoding='utf-8'))
+    def _saved_detection_records(self):
+        return AnnotationRepository(Path(self.receipt['database_path']), point_task_definition()).annotations(
+            step_key='detect'
+        )
 
     def test_detection_annotation_round_trip(self) -> None:
         page = self._new_page()
@@ -685,19 +647,20 @@ class PlatformLiveBrowserTest(unittest.TestCase):
 
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.locator('#annotated-image-count')).to_have_text('1')
+        expect(page.locator('#annotated-image-count')).to_have_text('2')
         expect(page).to_have_url(re.compile(r'/platform/$'))
         page.screenshot(path=self.artifact_dir / '04-first-save.png', full_page=True)
 
-        document = self._saved_document()
-        assert_preserved_mixed_annotation(self, document)
-        rectangles = [shape for shape in document['shapes'] if shape['shape_type'] == 'rectangle']
-        self.assertEqual({'Point', 'tl'}, {shape['label'] for shape in rectangles})
-        classified = next(shape for shape in rectangles if shape['label'] == 'tl')
-        self.assertEqual(11, classified['group_id'])
-        self.assertEqual({'reviewed': True}, classified['flags'])
-        self.assertEqual('classification-metadata', classified['description'])
-        self.assertNotEqual(self.receipt['original_rectangle_points'], classified['points'])
+        records = self._saved_detection_records()
+        rectangles = [record for record in records if record.kind == 'rectangle']
+        self.assertEqual({'Point', 'tl'}, {record.label for record in rectangles})
+        classified = next(record for record in rectangles if record.label == 'tl')
+        initial_id = UUID(self.receipt['initial_annotation_ids'][0])
+        self.assertEqual(initial_id, classified.id)
+        self.assertEqual(self.receipt['images'][0]['sample_id'], classified.image_id)
+        self.assertNotEqual(self.receipt['original_rectangle_points'], classified.geometry)
+        added = next(record for record in rectangles if record.label == 'Point')
+        self.assertNotIn(added.id, {UUID(value) for value in self.receipt['initial_annotation_ids']})
         self._assert_immutable_inputs()
 
         with page.expect_navigation(wait_until='domcontentloaded'):
@@ -729,12 +692,13 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.screenshot(path=self.artifact_dir / '05-platform-sync-failure.png', full_page=True)
 
         page.reload(wait_until='domcontentloaded')
-        expect(page.locator('#annotated-image-count')).to_have_text('0')
+        expect(page.locator('#annotated-image-count')).to_have_text('2')
         expect(page).to_have_url(re.compile(r'/platform/$'))
         page.screenshot(path=self.artifact_dir / '06-empty-detection-save.png', full_page=True)
-        final_document = self._saved_document()
-        assert_preserved_mixed_annotation(self, final_document)
-        self.assertEqual([], [shape for shape in final_document['shapes'] if shape['shape_type'] == 'rectangle'])
+        final_records = self._saved_detection_records()
+        self.assertEqual({'negative'}, {record.kind for record in final_records})
+        self.assertTrue(all(record.geometry is None for record in final_records))
+        self.assertTrue({classified.id, added.id}.isdisjoint(record.id for record in final_records))
         self._assert_immutable_inputs()
 
 

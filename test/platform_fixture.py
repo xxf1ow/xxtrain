@@ -9,7 +9,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-FIXTURE_MARKER = 'xxtrain-task-6-synthetic-workspace-v1'
+from xxtrain.business_tasks.point import point_task_definition
+from xxtrain.platform.contracts import AnnotationRecord
+from xxtrain.workspace_data import WorkspaceData
+from xxtrain.workspace_data.repository import AnnotationRepository
+
+FIXTURE_MARKER = 'xxtrain-task-6-synthetic-sqlite-workspace-v2'
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -20,13 +25,18 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_image(path: Path, accent: str) -> None:
+def _write_image(path: Path, accent: str, *, diagonal: bool) -> None:
     image = Image.new('RGB', (800, 600), '#eef2f2')
     draw = ImageDraw.Draw(image)
-    for x in range(0, 801, 100):
-        draw.line((x, 0, x, 600), fill='#c5d2d2', width=1)
-    for y in range(0, 601, 100):
-        draw.line((0, y, 800, y), fill='#c5d2d2', width=1)
+    if diagonal:
+        for offset in range(-600, 801, 60):
+            draw.line((offset, 0, offset + 600, 600), fill='#91a8aa', width=8)
+        draw.ellipse((430, 180, 720, 470), fill='#d9e4e4', outline=accent, width=9)
+    else:
+        for x in range(0, 801, 100):
+            draw.line((x, 0, x, 600), fill='#c5d2d2', width=1)
+        for y in range(0, 601, 100):
+            draw.line((0, y, 800, y), fill='#c5d2d2', width=1)
     draw.rectangle((120, 100, 300, 260), outline=accent, width=5)
     draw.text((130, 110), 'synthetic Point acceptance', fill='#172c32')
     image.save(path, quality=95)
@@ -35,8 +45,8 @@ def _write_image(path: Path, accent: str) -> None:
 def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) -> dict[str, object]:
     """Create an isolated synthetic workspace and return its non-secret acceptance receipt.
 
-    The caller owns the generated temporary directory. The receipt records immutable input hashes and paths for the
-    browser harness; it never contains a CVAT password or service token.
+    The caller owns the generated temporary directory. The receipt records the database, sample and initial annotation
+    identities plus immutable input hashes for the browser harness; it never contains a CVAT password or service token.
     """
     parent = parent.resolve()
     parent.mkdir(parents=True, exist_ok=True)
@@ -44,58 +54,29 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
     workspace_dir = root / 'workspace'
     workspace_dir.mkdir()
     images_dir = workspace_dir / 'images'
-    annotations_dir = workspace_dir / 'annotations'
+    staging_dir = root / 'staging'
     baseline_dir = root / 'baseline'
     runtime_dir = root / 'runtime'
-    for directory in (images_dir, annotations_dir, baseline_dir, runtime_dir):
+    for directory in (images_dir, staging_dir, baseline_dir, runtime_dir):
         directory.mkdir()
 
-    first_image = images_dir / 'point-a.jpg'
-    second_image = images_dir / 'point-b.jpg'
-    _write_image(first_image, '#007d8a')
-    _write_image(second_image, '#d56a30')
+    first_image = staging_dir / 'point-a.jpg'
+    second_image = staging_dir / 'point-b.jpg'
+    _write_image(first_image, '#007d8a', diagonal=False)
+    _write_image(second_image, '#d56a30', diagonal=True)
+
+    workspace = WorkspaceData(workspace_dir)
+    admission = workspace.admit((first_image, second_image))
+    if admission.accepted_count != 2:
+        raise RuntimeError('Synthetic fixture textures must admit as two distinct images')
+    images = workspace.images()
 
     original_rectangle_points = [[120.0, 100.0], [300.0, 260.0]]
-    annotation_path = annotations_dir / 'point-a.json'
-    _write_json(
-        annotation_path,
-        {
-            'version': '5.4.1',
-            'flags': {'fixture': 'task-6', 'preserve': True},
-            'description': 'synthetic mixed annotation',
-            'shapes': [
-                {
-                    'label': 'tl',
-                    'points': original_rectangle_points,
-                    'group_id': 11,
-                    'description': 'classification-metadata',
-                    'shape_type': 'rectangle',
-                    'flags': {'reviewed': True},
-                },
-                {
-                    'label': 'wire',
-                    'points': [[40.0, 40.0], [90.0, 70.0]],
-                    'group_id': None,
-                    'description': 'preserve-line',
-                    'shape_type': 'line',
-                    'flags': {'preserve': True},
-                },
-                {
-                    'label': 'mask',
-                    'points': [[500.0, 100.0], [620.0, 130.0], [560.0, 250.0]],
-                    'group_id': 23,
-                    'description': 'preserve-polygon',
-                    'shape_type': 'polygon',
-                    'flags': {'preserve': True},
-                },
-            ],
-            'imagePath': '../images/point-a.jpg',
-            'imageData': None,
-            'imageHeight': 600,
-            'imageWidth': 800,
-            'custom': {'preserve': ['root', 'value']},
-        },
+    initial_annotation = AnnotationRecord(
+        uuid.uuid4(), images[0].sample_id, 'detect', None, 'rectangle', 'tl', original_rectangle_points
     )
+    database_path = workspace_dir / 'annotations.db'
+    AnnotationRepository(database_path, point_task_definition()).save_annotations((initial_annotation,))
 
     baseline_path = baseline_dir / 'reference.json'
     _write_json(baseline_path, {'kind': 'synthetic-baseline', 'immutable': True})
@@ -122,11 +103,12 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
         'workspace_id': workspace_id,
         'display_name': display_name,
         'config_path': str(config_path),
-        'annotation_path': str(annotation_path),
+        'database_path': str(database_path),
+        'initial_annotation_ids': [str(initial_annotation.id)],
         'original_rectangle_points': original_rectangle_points,
         'images': [
-            {'path': str(first_image), 'sha256': _sha256(first_image)},
-            {'path': str(second_image), 'sha256': _sha256(second_image)},
+            {'path': str(image.image_path), 'sha256': _sha256(image.image_path), 'sample_id': image.sample_id}
+            for image in images
         ],
         'baseline': {'path': str(baseline_path), 'sha256': _sha256(baseline_path)},
     }

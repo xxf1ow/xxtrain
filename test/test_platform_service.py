@@ -184,6 +184,34 @@ class AnnotationServiceTest(unittest.TestCase):
         )
         self.assertEqual(view, restarted.view(17))
 
+    def test_fifty_boxes_on_one_image_do_not_satisfy_the_boxed_image_gate(self):
+        (sample,) = self.create_workspace(boxed=1)
+        self.repository.save_annotations(
+            tuple(
+                AnnotationRecord(
+                    uuid4(), sample.sample_id, 'detect', None, 'rectangle', 'tl', [[index + 1, 2], [60, 40]]
+                )
+                for index in range(49)
+            )
+        )
+
+        view = self.service.view(17)
+
+        self.assertEqual((1, 1, 1), (view.image_count, view.annotated_image_count, view.boxed_image_count))
+        self.assertFalse(view.can_generate_detection_cache)
+        with self.assertRaisesRegex(PlatformError, 'at least 50 boxed images'):
+            self.service.generate_detection_cache(17)
+
+    def test_one_incomplete_image_blocks_an_otherwise_eligible_workspace(self):
+        self.create_workspace(boxed=50, incomplete=1)
+
+        view = self.service.view(17)
+
+        self.assertEqual((51, 50, 50), (view.image_count, view.annotated_image_count, view.boxed_image_count))
+        self.assertFalse(view.can_generate_detection_cache)
+        with self.assertRaisesRegex(PlatformError, 'all images annotated'):
+            self.service.generate_detection_cache(17)
+
     def test_cache_generation_publishes_registered_database_samples(self):
         self.create_workspace(boxed=50, negatives=1)
         view = self.service.generate_detection_cache(17)

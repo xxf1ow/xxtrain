@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
+import yaml
 from PIL import Image
 
 from xxtrain.business_tasks.point import point_task_definition
@@ -107,12 +108,26 @@ class PlatformDataTest(unittest.TestCase):
         self.assertEqual(UploadResult(1, 0, 1, 0), result)
         self.assertEqual((accepted,), self.workspace.images())
 
-    def test_summary_reads_registered_facts_without_decoding_images(self) -> None:
-        self.accept_image('a.png')
+    def test_repeated_summary_and_fingerprint_do_not_rescan_images_or_legacy_json(self) -> None:
+        image = self.accept_image('a.png')
+        self.repository().save_annotations((self.box_record(image.sample_id),))
         Image.new('RGB', (12, 12)).save(self.images_dir / 'orphan.png')
+        legacy = self.root / 'annotations'
+        legacy.mkdir()
+        (legacy / 'a.json').write_text('{not valid json', encoding='utf-8')
 
-        with patch('xxtrain.workspace_data.store.Image.open', side_effect=AssertionError('unexpected decode')):
-            self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
+        with (
+            patch('xxtrain.workspace_data.store.Image.open', side_effect=AssertionError('unexpected decode')),
+            patch('xxtrain.workspace_data.store.image_sha256', side_effect=AssertionError('unexpected hash')),
+            patch('xxtrain.workspace_data.store.perceptual_hash', side_effect=AssertionError('unexpected pHash')),
+            patch.object(Path, 'read_text', side_effect=AssertionError('unexpected JSON read')),
+        ):
+            first_summary = self.workspace.detection_summary()
+            first_fingerprint = self.workspace.detection_fingerprint()
+            self.assertEqual(first_summary, self.workspace.detection_summary())
+            self.assertEqual(first_fingerprint, self.workspace.detection_fingerprint())
+
+        self.assertEqual(DetectionSummary(1, 1, 1), first_summary)
 
     def test_images_use_database_dimensions_and_preserve_annotation_uuid(self) -> None:
         image = self.accept_image()
@@ -154,6 +169,41 @@ class PlatformDataTest(unittest.TestCase):
         repository.save_annotations((changed,))
         self.assertNotEqual(before, self.workspace.detection_fingerprint())
 
+    def test_detection_export_is_independent_of_database_and_cvat_ids(self) -> None:
+        image = self.accept_image()
+        record = self.box_record(image.sample_id)
+        repository = self.repository()
+        repository.save_annotations((record,))
+        ref = JobRef(7, 8, (image.sample_id,))
+        repository.bind_job(PreparedJob(ref, (CvatBinding(image.sample_id, 'shape', 91, record.id),)))
+
+        before = self.workspace.detection_fingerprint()
+        root = self.root / 'conversion'
+        self.workspace.materialize_detection_source(root)
+        document = json.loads(next((root / 'src/workspace/anns_seg').glob('*.json')).read_text())
+        self.assertNotIn('annotation_id', document)
+        self.assertTrue(all(shape['shape_type'] == 'rectangle' for shape in document['shapes']))
+        self.assertEqual(before, self.workspace.detection_fingerprint())
+
+    def test_every_point_box_label_projects_to_detection_class_zero(self) -> None:
+        image = self.accept_image()
+        labels = ('Point', 'tl', 'tc', 'cl', 'cc')
+        self.repository().save_annotations(
+            tuple(
+                AnnotationRecord(
+                    uuid4(), image.sample_id, 'detect', None, 'rectangle', label, [[index + 1, 2], [30, 40]]
+                )
+                for index, label in enumerate(labels)
+            )
+        )
+
+        build_detection_cache(self.workspace, self.root / 'runtime' / 'cache' / 'labels')
+
+        output = self.root / 'runtime' / 'cache' / 'labels' / 'detect' / 'workspace'
+        lines = [line for path in output.glob('*.txt') for line in path.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(5, len(lines))
+        self.assertEqual(['0'] * 5, [line.split()[0] for line in lines])
+
     def test_detection_cache_projects_boxes_and_explicit_negative_from_database(self) -> None:
         boxed = self.accept_image('boxed.png', seed=2)
         negative = self.accept_image('negative.png', seed=9)
@@ -164,17 +214,37 @@ class PlatformDataTest(unittest.TestCase):
             )
         )
 
-        report = build_detection_cache(self.workspace, self.root / 'runtime' / 'cache' / 'fingerprint')
+        destination = self.root / 'runtime' / 'cache' / 'fingerprint'
+        report = build_detection_cache(self.workspace, destination)
 
-        output = self.root / 'runtime' / 'cache' / 'fingerprint' / 'detect'
+        output = destination / 'detect'
         self.assertEqual(2, report.train_image_count + report.val_image_count)
         labels = sorted((output / 'workspace').glob('*.txt'))
         self.assertEqual(2, len(labels))
         self.assertEqual(1, sum(bool(path.read_text(encoding='utf-8')) for path in labels))
+        self.assertEqual('', (output / 'workspace' / f'{negative.sample_id}.txt').read_text(encoding='utf-8'))
         source_documents = [
             json.loads(path.read_text(encoding='utf-8')) for path in (output.parent / 'src').rglob('*.json')
         ]
         self.assertEqual({'tc'}, {shape['label'] for doc in source_documents for shape in doc['shapes']})
+
+        dataset = yaml.safe_load((output / 'dataset.yaml').read_text(encoding='utf-8'))
+        self.assertEqual(str(destination.absolute()), dataset['path'])
+        self.assertEqual({'detect/train.txt', 'detect/val.txt'}, {dataset['train'], dataset['val']})
+        split_paths = [destination / dataset[name] for name in ('train', 'val')]
+        self.assertTrue(all(path.is_file() for path in split_paths))
+        published_items = [Path(item) for item in (*report.train_items, *report.val_items)]
+        self.assertEqual(2, len(published_items))
+        self.assertTrue(all(item.is_file() and item.resolve().is_relative_to(destination) for item in published_items))
+        listed_items = [Path(line) for path in split_paths for line in path.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(set(published_items), set(listed_items))
+        published_images = [path for path in (output / 'workspace').iterdir() if path.suffix != '.txt']
+        self.assertEqual(2, len(published_images))
+        self.assertTrue(all(path.exists() and path.resolve().is_file() for path in published_images))
+        for path in published_images:
+            if path.is_symlink():
+                self.assertFalse(path.readlink().is_absolute())
+                self.assertTrue((path.parent / path.readlink()).resolve().is_file())
 
     def test_prepare_sync_preserves_known_geometry_ids_and_unrelated_downstream_labels(self) -> None:
         image = self.accept_image()
