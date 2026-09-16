@@ -5,7 +5,6 @@
   --line: #c8d4d5;
   --signal: #007d8a;
   --signal-dark: #005d67;
-  --saved: #287158;
   --danger: #a23a36;
   --white: #ffffff;
   color: var(--ink);
@@ -79,7 +78,6 @@ a:focus-visible {
 .utility-label,
 .product-name,
 .section-code,
-.status-label,
 .lede,
 .workspace-message,
 .action-row p,
@@ -88,8 +86,7 @@ a:focus-visible {
 }
 
 .utility-label,
-.section-code,
-.status-label {
+.section-code {
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   font-size: 0.72rem;
   letter-spacing: 0.12em;
@@ -204,7 +201,7 @@ h1 {
 
 .primary-button:disabled,
 .text-button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.55;
 }
 
@@ -244,36 +241,35 @@ h1 {
   font-weight: 700;
 }
 
-.status-strip {
+.upload-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin: 26px 0 12px;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 24px 0;
+  padding: 24px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--signal);
 }
 
-.status-lamp {
-  width: 12px;
-  height: 12px;
-  background: var(--signal);
-  border: 3px solid var(--white);
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px var(--signal);
+.upload-picker {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
 }
 
-[data-status="saved"] .status-lamp {
-  background: var(--saved);
-  box-shadow: 0 0 0 1px var(--saved);
-}
-
-[data-status="sync_failed"] .status-lamp {
-  background: var(--danger);
-  box-shadow: 0 0 0 1px var(--danger);
-}
-
-.status-value {
-  margin: 2px 0 0;
-  font-size: 1.1rem;
+.upload-picker label {
   font-weight: 700;
+}
+
+.upload-picker input {
+  max-width: 100%;
+  color: var(--slate);
+}
+
+.workspace-message:not(:empty) {
+  margin-top: 20px;
 }
 
 .shared-data-label {
@@ -370,6 +366,11 @@ h1 {
   flex: 0 0 auto;
 }
 
+.cache-row {
+  background: var(--white);
+  border-left-color: var(--signal);
+}
+
 [hidden] {
   display: none !important;
 }
@@ -389,6 +390,7 @@ h1 {
   }
 
   .workspace-heading,
+  .upload-row,
   .action-row {
     align-items: stretch;
     flex-direction: column;
@@ -396,6 +398,7 @@ h1 {
 
   .workspace-facts {
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .target-rail {

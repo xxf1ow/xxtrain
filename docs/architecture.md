@@ -26,7 +26,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、模型配置、训练、ONNX 导出和预测检查；
 - `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 从文件派生计数与缓存资格，以一个非阻塞进程锁协调上传接纳、CVAT 创建和同步、检测缓存生成；
-- `xxtrain.platform.app` 提供同源页面与窄 HTTP 接口；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；
+- `xxtrain.platform.app` 提供同源图片上传、检测标注和缓存生成页面；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；上传文件在独立运行目录暂存，页面计数和缓存按钮由服务返回的文件派生结果驱动；
 - `xxtrain.workspace_data` 以工作区的 `images/` 和 `annotations/` 为权威输入，按 SHA-256 文件名接纳去重后的图片，并从当前图片及 LabelMe 检测框或显式负样本派生检测摘要和输入指纹；保存只替换检测矩形，保留其他标注和未知字段，并以逐文件原子替换落盘；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签和检测、分类、分割目标开放状态；
 - `xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存；
@@ -50,4 +50,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-内部自助训练平台仍处于提案阶段；当前服务层支持 Point 图片接纳、检测标注同步和至少 50 张有框图片的检测缓存生成，HTTP 保留登录、开始和同步入口。上传及缓存生成页面、现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
+内部自助训练平台仍处于提案阶段；Point 页面支持批量上传、检测标注同步和至少 50 张有框图片的检测缓存生成。现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
