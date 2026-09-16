@@ -45,6 +45,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_browser -
 
 HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与文件错误脱敏，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖文件派生计数、50 张有框图片门槛、完成 Job 的替换、指纹匹配、并发写入拒绝和多文件保存失败回滚。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、计数刷新、写操作互斥、缓存按钮和同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收。
 
+运行 Point 上传和检测缓存增量的完整离线验证：
+
+```powershell
+uv run --locked --extra platform python -m unittest test.test_platform_data test.test_platform_service test.test_platform_http test.test_platform_cvat_client test.test_platform_browser test.test_task_transforms -v
+```
+
 真实验收显式安装 `platform-test` 并提供全部三个环境变量；未配置时浏览器测试在启动浏览器或访问网络前跳过。只可使用独立生成的临时 fixture，并在验收后停用临时服务：
 
 ```powershell
