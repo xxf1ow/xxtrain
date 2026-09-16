@@ -19,7 +19,7 @@ def point_detection_recipe() -> DatasetRecipe:
             (
                 ReadImageInfo(),
                 ReadAnnotations(),
-                FilterLabels(('tl', 'tc', 'cl', 'cc')),
+                FilterLabels(POINT_BOX_LABELS),
                 RelabelAnnotations('Point'),
                 EncodeDetection(),
             )

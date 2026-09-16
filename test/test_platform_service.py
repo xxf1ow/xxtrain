@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from PIL import Image
 
 from xxtrain.data import Bbox
@@ -149,6 +150,33 @@ class AnnotationServiceTest(unittest.TestCase):
         (self.annotations / '000.json').write_text('{"shapes": []}', encoding='utf-8')
         self.assertFalse(self.service.view(17).detection_cache_ready)
         self.assertFalse(self.service.view(17).can_generate_detection_cache)
+
+    def test_published_cache_resolves_dataset_splits_and_every_image(self):
+        self.create_workspace(boxed=50, negatives=1)
+        self.assertTrue(self.service.generate_detection_cache(17).detection_cache_ready)
+        cache = self.config.runtime_dir / 'cache' / self.data.detection_fingerprint()
+        self.assertFalse(cache.with_name(f'.{cache.name}.building').exists())
+        dataset = yaml.safe_load((cache / 'detect' / 'dataset.yaml').read_text(encoding='utf-8'))
+        dataset_root = Path(dataset['path'])
+        self.assertTrue(dataset_root.is_dir(), dataset_root)
+        listed_images = set()
+        for split in ('train', 'val'):
+            split_path = dataset_root / dataset[split]
+            self.assertTrue(split_path.is_file(), split_path)
+            entries = split_path.read_text(encoding='utf-8').splitlines()
+            self.assertTrue(entries)
+            for entry in entries:
+                image_path = Path(entry)
+                self.assertTrue(image_path.is_file(), image_path)
+                with Image.open(image_path) as image:
+                    self.assertEqual((64, 48), image.size)
+                self.assertTrue(image_path.with_suffix('.txt').is_file())
+                listed_images.add(image_path)
+        self.assertEqual(51, len(listed_images))
+        self.assertEqual(set((cache / 'detect' / 'workspace').glob('*.png')), listed_images)
+        for annotation in (cache / 'src' / 'workspace' / 'anns_seg').glob('*.json'):
+            document = json.loads(annotation.read_text(encoding='utf-8'))
+            self.assertTrue((annotation.parent / document['imagePath']).is_file())
 
     def test_same_input_reuses_only_an_unfinished_job(self):
         self.create_workspace(incomplete=1)
