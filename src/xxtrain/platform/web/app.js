@@ -2,14 +2,6 @@
   'use strict';
 
   const apiRoot = '/platform/api';
-  const statusNames = {
-    pending: '待标注',
-    preparing: '正在准备标注任务',
-    annotating: '标注中',
-    sync_failed: '平台保存失败',
-    saved: '已保存',
-  };
-
   const elements = {
     loginPanel: document.getElementById('login-panel'),
     loginForm: document.getElementById('login-form'),
@@ -21,9 +13,12 @@
     workspaceName: document.getElementById('workspace-name'),
     taskName: document.getElementById('task-name'),
     imageCount: document.getElementById('image-count'),
-    statusValue: document.getElementById('status-value'),
+    annotatedImageCount: document.getElementById('annotated-image-count'),
+    imageFiles: document.getElementById('image-files'),
+    cacheAction: document.getElementById('cache-action'),
     workspaceMessage: document.getElementById('workspace-message'),
     workspaceError: document.getElementById('workspace-error'),
+    uploadError: document.getElementById('upload-error'),
     primaryAction: document.getElementById('primary-action'),
     sessionTools: document.getElementById('session-tools'),
     sessionUser: document.getElementById('session-user'),
@@ -32,6 +27,14 @@
 
   let workspace = null;
   let busy = false;
+  let notificationTimer;
+
+  function notify(message) {
+    clearTimeout(notificationTimer);
+    elements.workspaceMessage.textContent = message;
+    elements.workspaceMessage.hidden = false;
+    notificationTimer = setTimeout(() => { elements.workspaceMessage.hidden = true; }, 8000);
+  }
 
   function cookie(name) {
     const prefix = `${name}=`;
@@ -74,12 +77,30 @@
     element.hidden = true;
   }
 
-  function setBusy(value, message = '') {
+  function returnedAnnotationsPending() {
+    return new URLSearchParams(location.search).get('returned') === '1';
+  }
+
+  function setBusy(value, message = '', area = 'detect') {
     busy = value;
-    elements.primaryAction.disabled = value;
+    const blocked = value || returnedAnnotationsPending();
+    elements.primaryAction.disabled = blocked || !workspace || workspace.image_count === 0;
+    elements.imageFiles.disabled = blocked;
+    elements.cacheAction.disabled = blocked || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready;
     elements.loginButton.disabled = value;
     elements.logoutButton.disabled = value;
-    if (message) elements.statusValue.textContent = message;
+    if (!value || message) {
+      for (const target of ['upload', 'detect']) {
+        const progress = document.getElementById(`${target}-progress`);
+        progress.textContent = value && target === area ? message : '';
+        progress.hidden = !progress.textContent;
+      }
+    }
+    if (value) {
+      clearTimeout(notificationTimer);
+      elements.workspaceMessage.hidden = true;
+    }
+    elements.primaryAction.textContent = value && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
   }
 
   function showLogin(message = '') {
@@ -108,18 +129,16 @@
     elements.loginPanel.hidden = true;
     elements.workspacePanel.hidden = false;
     elements.sessionTools.hidden = false;
-    elements.workspacePanel.dataset.status = next.status;
     elements.workspaceName.textContent = next.name;
     elements.taskName.textContent = next.task.name;
     elements.imageCount.textContent = String(next.image_count);
-    elements.statusValue.textContent = statusNames[next.status] || '状态未知';
-    elements.workspaceMessage.textContent = next.status === 'saved'
-      ? '现场标注已写入平台文件。检测质量仍由标注人员确认。'
-      : '检测、分类和分割共享这些图片与完整标注；当前只开放检测。';
-    if (next.error) showError(elements.workspaceError, next.error);
-    else clearError(elements.workspaceError);
-    elements.primaryAction.textContent = next.status === 'sync_failed' ? '重试保存' : (next.status === 'pending' ? '开始标注' : '继续标注');
-    elements.primaryAction.dataset.action = next.status === 'sync_failed' ? 'sync' : 'start';
+    elements.annotatedImageCount.textContent = String(next.annotated_image_count);
+    for (const target of ['detect', 'classify', 'segment']) {
+      document.getElementById(`${target}-image-total`).textContent = String(next.image_count);
+    }
+    elements.cacheAction.textContent = next.detection_cache_ready ? '训练缓存已生成' : '开始训练';
+    clearError(elements.workspaceError);
+    setBusy(busy);
     renderTargets(next.targets);
   }
 
@@ -127,14 +146,11 @@
     clearError(elements.workspaceError);
     setBusy(true, '正在保存到平台…');
     try {
-      renderWorkspace(await platformPost('/annotation/sync', {}));
+      renderWorkspace(await platformPost('/detection/sync', {}));
       history.replaceState({}, '', '/platform/');
+      notify('标注已保存到平台，图片数量已更新。');
     } catch (error) {
-      if (workspace) {
-        workspace = {...workspace, status: 'sync_failed'};
-        renderWorkspace(workspace);
-      }
-      showError(elements.workspaceError, error.message);
+      showError(elements.workspaceError, `${error.message} 刷新页面可重新同步标注。`);
     } finally {
       setBusy(false);
     }
@@ -144,11 +160,12 @@
     const session = await request('/session');
     elements.sessionUser.textContent = `用户 ${session.user_id}`;
     renderWorkspace(await request('/workspace'));
-    if (new URLSearchParams(location.search).get('returned') === '1') await syncAnnotations();
+    if (returnedAnnotationsPending()) await syncAnnotations();
   }
 
   elements.loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (busy) return;
     clearError(elements.loginError);
     setBusy(true);
     try {
@@ -163,18 +180,51 @@
   });
 
   elements.primaryAction.addEventListener('click', async () => {
-    if (busy) return;
-    if (elements.primaryAction.dataset.action === 'sync') {
-      await syncAnnotations();
-      return;
-    }
+    if (busy || returnedAnnotationsPending() || !workspace || workspace.image_count === 0) return;
     clearError(elements.workspaceError);
     setBusy(true, '正在准备标注任务…');
     try {
-      const result = await platformPost('/annotation/start', {});
+      const result = await platformPost('/detection/start', {});
       location.assign(result.annotation_url);
     } catch (error) {
       showError(elements.workspaceError, error.message);
+      setBusy(false);
+    }
+  });
+
+  elements.imageFiles.addEventListener('change', async () => {
+    if (busy || returnedAnnotationsPending() || elements.imageFiles.files.length === 0) return;
+    const files = new FormData();
+    for (const file of elements.imageFiles.files) files.append('images', file);
+    clearError(elements.workspaceError);
+    const selectedCount = elements.imageFiles.files.length;
+    clearError(elements.uploadError);
+    setBusy(true, `正在上传并去重 ${selectedCount} 张图片…`, 'upload');
+    try {
+      renderWorkspace(await request('/images', {
+        method: 'POST',
+        headers: {'X-XTrain-CSRF': cookie('xxtrain_csrf')},
+        body: files,
+      }));
+      elements.imageFiles.value = '';
+      notify(`本次选择 ${selectedCount} 张图片，上传及去重完成。现场现有 ${workspace.image_count} 张有效图片。`);
+    } catch (error) {
+      showError(elements.uploadError, error.message);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  elements.cacheAction.addEventListener('click', async () => {
+    if (busy || returnedAnnotationsPending() || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready) return;
+    clearError(elements.workspaceError);
+    setBusy(true, '正在生成训练缓存…');
+    try {
+      renderWorkspace(await platformPost('/detection/cache', {}));
+      notify('训练缓存已生成。');
+    } catch (error) {
+      showError(elements.workspaceError, error.message);
+    } finally {
       setBusy(false);
     }
   });
@@ -193,11 +243,14 @@
   });
 
   document.addEventListener('DOMContentLoaded', async () => {
+    setBusy(true, '正在读取…');
     try {
       await loadWorkspace();
     } catch (error) {
       if (error.status === 401) showLogin();
       else showLogin(error.message);
+    } finally {
+      setBusy(false);
     }
   });
 })();

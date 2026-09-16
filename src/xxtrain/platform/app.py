@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import secrets
+import shutil
 from dataclasses import asdict
 from hmac import compare_digest
 from importlib import resources
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
+from python_multipart.exceptions import MultipartParseError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from xxtrain.business_tasks import MODEL_TARGETS
 from xxtrain.integrations.cvat.client import CvatClient
@@ -159,22 +166,71 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
     def workspace(request: Request) -> dict[str, object]:
         return workspace_payload(view_for(authenticated_user(request)))
 
-    @app.post('/platform/api/annotation/start', dependencies=[Depends(write_request)])
+    def stage_uploads(user_id: int, images: list[UploadFile]) -> WorkspaceView:
+        staging = config.runtime_dir / 'staging'
+        staging.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=staging) as directory:
+            staged = []
+            for image in images:
+                suffix = Path(image.filename or '').suffix.lower()
+                if not suffix[1:].isalnum():
+                    suffix = ''
+                path = Path(directory) / f'{secrets.token_hex(16)}{suffix}'
+                with path.open('wb') as destination:
+                    shutil.copyfileobj(image.file, destination)
+                staged.append(path)
+            return service.upload(user_id, tuple(staged))
+
+    @app.post('/platform/api/images', dependencies=[Depends(write_request)])
+    async def upload_images(request: Request) -> dict[str, object]:
+        user_id = authenticated_user(request)
+        if user_id != config.owner_user_id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。')
+        try:
+            form = await request.form()
+        except (StarletteHTTPException, MultipartParseError, OSError, ValueError):
+            raise operational_error() from None
+        try:
+            try:
+                parts = form.multi_items()
+                if not parts or any(name != 'images' or not isinstance(value, UploadFile) for name, value in parts):
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, '请选择要上传的图片。')
+                view = await run_in_threadpool(stage_uploads, user_id, form.getlist('images'))
+                return workspace_payload(view)
+            finally:
+                await form.close()
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
+
+    @app.post('/platform/api/detection/start', dependencies=[Depends(write_request)])
     def start_annotation(request: Request, body: _EmptyBody) -> dict[str, str]:
         user_id = authenticated_user(request)
         try:
-            annotation_url = service.begin(user_id)
+            annotation_url = service.begin_detection(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return {'annotation_url': annotation_url}
 
-    @app.post('/platform/api/annotation/sync', dependencies=[Depends(write_request)])
+    @app.post('/platform/api/detection/sync', dependencies=[Depends(write_request)])
     def sync_annotation(request: Request, body: _EmptyBody) -> dict[str, object]:
         user_id = authenticated_user(request)
         try:
-            view = service.sync(user_id)
+            view = service.sync_detection(user_id)
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
+        return workspace_payload(view)
+
+    @app.post('/platform/api/detection/cache', dependencies=[Depends(write_request)])
+    def generate_detection_cache(request: Request, body: _EmptyBody) -> dict[str, object]:
+        user_id = authenticated_user(request)
+        try:
+            view = service.generate_detection_cache(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):

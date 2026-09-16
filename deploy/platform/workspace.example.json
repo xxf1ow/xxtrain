@@ -2,8 +2,7 @@
   "workspace_id": "point-site-01",
   "display_name": "一号现场",
   "owner_user_id": 1001,
-  "images_dir": "../../data/point/site-01/images",
-  "annotations_dir": "../../data/point/site-01/annotations",
-  "state_path": "../../data/point/site-01/state/workspace.json",
+  "workspace_dir": "../../data/workspaces/1001/point",
+  "runtime_dir": "../../data/runtime/1001/point",
   "cvat_internal_url": "http://cvat_server:8080"
 }

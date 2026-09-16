@@ -1,12 +1,10 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from xxtrain.data import Bbox
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
-type Status = Literal['pending', 'preparing', 'annotating', 'sync_failed', 'saved']
 
 
 @dataclass(frozen=True)
@@ -31,6 +29,25 @@ class ImageInput:
 
 
 @dataclass(frozen=True)
+class UploadResult:
+    """Counts outcomes from one staged-image admission attempt."""
+
+    received_count: int
+    accepted_count: int
+    exact_duplicate_count: int
+    similar_duplicate_count: int
+
+
+@dataclass(frozen=True)
+class DetectionSummary:
+    """Counts workspace images and their completed detection annotations."""
+
+    image_count: int
+    annotated_image_count: int
+    boxed_image_count: int
+
+
+@dataclass(frozen=True)
 class FrameResult:
     sample_id: str
     boxes: tuple[DetectionBox, ...]
@@ -38,6 +55,8 @@ class FrameResult:
 
 @dataclass(frozen=True)
 class JobRef:
+    """CVAT task, job, and workspace sample identifiers for a disposable runtime entry."""
+
     task_id: int
     job_id: int
     sample_ids: tuple[str, ...]
@@ -48,8 +67,10 @@ class WorkspaceView:
     workspace_id: str
     name: str
     image_count: int
-    status: Status
-    error: str | None = None
+    annotated_image_count: int
+    boxed_image_count: int
+    can_generate_detection_cache: bool
+    detection_cache_ready: bool
 
 
 class PlatformError(Exception):

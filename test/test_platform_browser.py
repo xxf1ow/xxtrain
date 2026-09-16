@@ -79,9 +79,7 @@ def assert_preserved_mixed_annotation(test: unittest.TestCase, document: dict[st
 
 class PlatformBrowserTest(unittest.TestCase):
     def setUp(self) -> None:
-        config = WorkspaceConfig(
-            'line-3', '三号现场', 17, Path('images'), Path('annotations'), Path('state.json'), 'http://cvat.test'
-        )
+        config = WorkspaceConfig('line-3', '三号现场', 17, Path('workspace'), Path('runtime'), 'http://cvat.test')
         self.service = FakeService()
         self.cvat = FakeCvat()
         self.client = AsgiTestClient(create_app(config, self.service, self.cvat))
@@ -112,13 +110,20 @@ class PlatformBrowserTest(unittest.TestCase):
         self.assertEqual(200, script.status_code)
         self.assertTrue(script.headers['content-type'].startswith('text/javascript'))
 
-    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
-    def test_returned_page_posts_sync_and_renders_the_saved_workspace(self) -> None:
+    def run_page(
+        self, actions: str = '', *, returned: bool = False, ready: bool = False, sync_failure: bool = False
+    ) -> dict[str, object]:
         script = self.client.get('/platform/app.js')
         self.assertEqual(200, script.status_code)
         harness = f"""
+(async () => {{
 const calls = [];
+const timers = new Map();
+let timerId = 0;
+globalThis.setTimeout = (callback) => {{ timers.set(++timerId, callback); return timerId; }};
+globalThis.clearTimeout = (id) => timers.delete(id);
 const elements = new Map();
+const ids = {json.dumps(re.findall(r'id="([^"]+)"', self.client.get('/platform/').text))};
 function makeElement(id) {{
   return {{
     id,
@@ -126,27 +131,36 @@ function makeElement(id) {{
     disabled: false,
     textContent: '',
     value: '',
+    files: [],
+    listeners: {{}},
     dataset: {{}},
     classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
-    addEventListener() {{}},
+    addEventListener(name, callback) {{ this.listeners[name] = callback; }},
     setAttribute() {{}},
     removeAttribute() {{}},
     reset() {{}},
   }};
 }}
+ids.forEach((id) => elements.set(id, makeElement(id)));
+let loaded;
 globalThis.document = {{
   cookie: 'xxtrain_csrf=page-token',
   getElementById(id) {{
-    if (!elements.has(id)) elements.set(id, makeElement(id));
-    return elements.get(id);
+    return elements.get(id) || null;
   }},
   querySelectorAll() {{ return []; }},
-  addEventListener(name, callback) {{ if (name === 'DOMContentLoaded') callback(); }},
+  addEventListener(name, callback) {{ if (name === 'DOMContentLoaded') loaded = callback; }},
 }};
-globalThis.location = {{ search: '?returned=1', assign() {{ throw new Error('return flow must not navigate'); }} }};
-globalThis.history = {{ replaceState() {{}} }};
+let assigned = null;
+let replaced = null;
+globalThis.location = {{ search: {json.dumps('?returned=1' if returned else '')}, assign(url) {{ assigned = url; }} }};
+globalThis.history = {{ replaceState(_state, _unused, url) {{
+  replaced = url;
+  location.search = new URL(url, 'http://testserver').search;
+}} }};
 const workspace = {{
-  workspace_id: 'line-3', name: '三号现场', image_count: 2, status: 'pending', error: null,
+  workspace_id: 'line-3', name: '三号现场', image_count: 10, annotated_image_count: 7, boxed_image_count: 7,
+  can_generate_detection_cache: {json.dumps(ready)}, detection_cache_ready: false,
   task: {{id: 'point', name: 'Point'}},
   targets: [
     {{id: 'detect', name: '检测', available: true}},
@@ -154,60 +168,203 @@ const workspace = {{
     {{id: 'segment', name: '分割', available: false}},
   ],
 }};
+let release;
+let hold = false;
+let failure = {json.dumps(sync_failure)};
 globalThis.fetch = async (url, options = {{}}) => {{
+  const multipart = options.body instanceof FormData;
   calls.push({{
     url,
     method: options.method || 'GET',
-    body: options.body || null,
+    body: multipart ? Array.from(options.body.entries()).map(([key, file]) => [key, file.name]) : options.body || null,
     csrf: options.headers?.['X-XTrain-CSRF'] || null,
+    contentType: options.headers?.['Content-Type'] || null,
   }});
+  if (hold && options.method === 'POST') await new Promise((resolve) => {{ release = resolve; }});
+  if (failure && options.method === 'POST') {{
+    return {{ok: false, status: 502, json: async () => ({{detail: '平台暂时无法完成操作，请重试。'}})}};
+  }}
   const body = url.endsWith('/session')
     ? {{authenticated: true, user_id: 17}}
-    : (url.endsWith('/sync') ? {{...workspace, status: 'saved'}} : workspace);
+    : url.endsWith('/sync') ? {{...workspace, image_count: 50, annotated_image_count: 50,
+        boxed_image_count: 50, can_generate_detection_cache: true}}
+    : url.endsWith('/images') ? {{...workspace, image_count: 12}}
+    : url.endsWith('/cache') ? {{...workspace, detection_cache_ready: true}}
+    : url.endsWith('/start') ? {{annotation_url: '/tasks/41/jobs/73'}} : workspace;
   return {{ok: true, status: 200, json: async () => body}};
 }};
 eval({json.dumps(script.text)});
-setTimeout(() => {{
-  process.stdout.write(JSON.stringify({{
-    calls,
-    status: elements.get('status-value')?.textContent,
-    action: elements.get('primary-action')?.textContent,
-    disabled: elements.get('primary-action')?.disabled,
-  }}));
-}}, 25);
+await loaded();
+const get = (id) => elements.get(id);
+const snapshot = () => ({{
+  images: get('image-count')?.textContent,
+  annotated: get('annotated-image-count')?.textContent,
+  totals: ['detect', 'classify', 'segment'].map((target) => get(`${{target}}-image-total`)?.textContent),
+  cacheDisabled: get('cache-action')?.disabled,
+  cacheText: get('cache-action')?.textContent,
+  error: get('workspace-error')?.textContent,
+  uploadProgress: get('upload-progress')?.textContent,
+  uploadProgressHidden: get('upload-progress')?.hidden,
+  notification: get('workspace-message')?.textContent,
+  notificationHidden: get('workspace-message')?.hidden,
+  disabled: ['primary-action', 'image-files', 'cache-action', 'logout-button', 'login-button']
+    .map((id) => get(id)?.disabled),
+}});
+const before = snapshot();
+{actions}
+process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned, replaced}}));
+}})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
 """
         completed = subprocess.run(
             ['node', '-e', harness], text=True, encoding='utf-8', capture_output=True, check=False
         )
 
         self.assertEqual(0, completed.returncode, completed.stderr)
-        result = json.loads(completed.stdout)
-        self.assertEqual(
-            [
-                {'url': '/platform/api/session', 'method': 'GET', 'body': None, 'csrf': None},
-                {'url': '/platform/api/workspace', 'method': 'GET', 'body': None, 'csrf': None},
-                {'url': '/platform/api/annotation/sync', 'method': 'POST', 'body': '{}', 'csrf': 'page-token'},
-            ],
-            result['calls'],
+        return json.loads(completed.stdout)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_page_shows_derived_counts_and_disables_ineligible_cache(self) -> None:
+        result = self.run_page()
+        self.assertEqual('10', result['after']['images'])
+        self.assertEqual('7', result['after']['annotated'])
+        self.assertTrue(result['after']['cacheDisabled'])
+        self.assertEqual(['10', '10', '10'], result['after']['totals'])
+        self.assertFalse(result['after']['disabled'][1])
+        page = self.client.get('/platform/').text
+        self.assertNotIn('data-image-thumbnail', page)
+        self.assertNotIn('id="status-value"', page)
+        self.assertIn('type="file"', page)
+        self.assertIn('multiple', page)
+        self.assertNotIn('id="upload-button"', page)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_returned_page_syncs_counts_and_enables_cache(self) -> None:
+        result = self.run_page(returned=True)
+        self.assertEqual('/platform/api/detection/sync', result['calls'][-1]['url'])
+        self.assertEqual('{}', result['calls'][-1]['body'])
+        self.assertEqual('page-token', result['calls'][-1]['csrf'])
+        self.assertEqual('50', result['after']['annotated'])
+        self.assertFalse(result['after']['cacheDisabled'])
+        self.assertEqual('/platform/', result['replaced'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_selecting_images_uploads_them_without_a_second_action(self) -> None:
+        result = self.run_page("""
+get('image-files').files = [new File(['first'], 'a.jpg'), new File(['second'], 'b.png')];
+const upload = get('image-files').listeners.change();
+await upload;
+""")
+        self.assertEqual(3, len(result['calls']))
+        self.assertEqual('/platform/api/images', result['calls'][-1]['url'])
+        self.assertEqual([['images', 'a.jpg'], ['images', 'b.png']], result['calls'][-1]['body'])
+        self.assertEqual('page-token', result['calls'][-1]['csrf'])
+        self.assertIsNone(result['calls'][-1]['contentType'])
+        self.assertEqual('12', result['after']['images'])
+        self.assertEqual(['12', '12', '12'], result['after']['totals'])
+        self.assertEqual('7', result['after']['annotated'])
+        self.assertFalse(result['after']['disabled'][0])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_upload_progress_stays_visible_until_completion_then_notification_expires(self) -> None:
+        result = self.run_page("""
+get('image-files').files = [new File(['first'], 'a.jpg')];
+hold = true;
+const upload = get('image-files').listeners.change();
+before.uploading = snapshot();
+release();
+await upload;
+before.completed = snapshot();
+for (const callback of timers.values()) callback();
+""")
+        self.assertFalse(result['before']['uploading']['uploadProgressHidden'])
+        self.assertIn('1 张', result['before']['uploading']['uploadProgress'])
+        self.assertEqual([True] * 5, result['before']['uploading']['disabled'])
+        self.assertTrue(result['before']['completed']['uploadProgressHidden'])
+        self.assertFalse(result['before']['completed']['notificationHidden'])
+        self.assertIn('12 张有效图片', result['before']['completed']['notification'])
+        self.assertTrue(result['after']['notificationHidden'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_cache_action_renders_generated_result_and_blocks_repeated_click(self) -> None:
+        result = self.run_page(
+            """
+await get('cache-action').listeners.click();
+await get('cache-action').listeners.click();
+""",
+            ready=True,
         )
-        self.assertEqual('已保存', result['status'])
-        self.assertEqual('继续标注', result['action'])
-        self.assertFalse(result['disabled'])
+        self.assertFalse(result['before']['cacheDisabled'])
+        self.assertTrue(result['after']['cacheDisabled'])
+        self.assertEqual('训练缓存已生成', result['after']['cacheText'])
+        self.assertEqual('/platform/api/detection/cache', result['calls'][-1]['url'])
+        self.assertEqual('{}', result['calls'][-1]['body'])
+        self.assertEqual(3, len(result['calls']))
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_start_navigates_to_the_server_annotation_url(self) -> None:
+        result = self.run_page("await get('primary-action').listeners.click();")
+        self.assertEqual('/platform/api/detection/start', result['calls'][-1]['url'])
+        self.assertEqual('/tasks/41/jobs/73', result['assigned'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_failed_cache_keeps_counts_and_reenables_controls(self) -> None:
+        result = self.run_page("failure = true; await get('cache-action').listeners.click();", ready=True)
+        self.assertEqual('10', result['after']['images'])
+        self.assertEqual('7', result['after']['annotated'])
+        self.assertFalse(result['after']['cacheDisabled'])
+        self.assertFalse(result['after']['disabled'][0])
+        self.assertTrue(result['after']['error'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_failed_return_sync_blocks_workspace_actions_until_refresh(self) -> None:
+        result = self.run_page(
+            """
+get('image-files').files = [new File(['first'], 'a.jpg')];
+await get('image-files').listeners.change();
+await get('primary-action').listeners.click();
+await get('image-files').listeners.change();
+await get('cache-action').listeners.click();
+""",
+            returned=True,
+            ready=True,
+            sync_failure=True,
+        )
+        self.assertEqual('10', result['after']['images'])
+        self.assertEqual('7', result['after']['annotated'])
+        self.assertIn('刷新页面', result['after']['error'])
+        self.assertIsNone(result['replaced'])
+        self.assertEqual([True, True, True, False, False], result['after']['disabled'])
+        self.assertEqual(
+            ['/platform/api/session', '/platform/api/workspace', '/platform/api/detection/sync'],
+            [call['url'] for call in result['calls']],
+        )
+        self.assertIsNone(result['assigned'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_successful_return_sync_retry_restores_derived_controls(self) -> None:
+        result = self.run_page(
+            """
+failure = false;
+await loaded();
+get('image-files').files = [new File(['first'], 'a.jpg')];
+await get('image-files').listeners.change();
+""",
+            returned=True,
+            ready=True,
+            sync_failure=True,
+        )
+        self.assertEqual([True, True, True, False, False], result['before']['disabled'])
+        self.assertEqual([False] * 5, result['after']['disabled'])
+        self.assertEqual('7', result['after']['annotated'])
+        self.assertEqual('/platform/', result['replaced'])
+        self.assertEqual('', result['after']['error'])
 
     def test_deployment_example_uses_the_exact_workspace_schema_without_credentials(self) -> None:
         path = Path(__file__).parents[1] / 'deploy' / 'platform' / 'workspace.example.json'
         payload = json.loads(path.read_text(encoding='utf-8'))
 
         self.assertEqual(
-            {
-                'workspace_id',
-                'display_name',
-                'owner_user_id',
-                'images_dir',
-                'annotations_dir',
-                'state_path',
-                'cvat_internal_url',
-            },
+            {'workspace_id', 'display_name', 'owner_user_id', 'workspace_dir', 'runtime_dir', 'cvat_internal_url'},
             set(payload),
         )
         config = load_config(path)
@@ -478,13 +635,13 @@ class PlatformLiveBrowserTest(unittest.TestCase):
     def test_detection_annotation_round_trip(self) -> None:
         page = self._new_page()
         self._login(page)
-        status = page.locator('#status-value').text_content()
-        self.assertIn(status, {'待标注', '正在准备标注任务', '标注中', '已保存'})
+        expect(page.locator('#image-count')).to_have_text('2')
+        expect(page.locator('#annotated-image-count')).to_have_text('1')
+        expect(page.locator('#cache-action')).to_be_disabled()
         page.screenshot(path=self.artifact_dir / '01-platform-ready.png', full_page=True)
 
         with page.expect_navigation(wait_until='domcontentloaded'):
-            action = '开始标注' if status == '待标注' else '继续标注'
-            page.get_by_role('button', name=action, exact=True).click()
+            page.get_by_role('button', name='检测标注', exact=True).click()
         first_job_url = page.url
         self.assertRegex(first_job_url, r'/tasks/\d+/jobs/\d+/?$')
         expect(page.locator('.cvat-header')).to_be_hidden()
@@ -528,7 +685,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
 
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.locator('#status-value')).to_have_text('已保存')
+        expect(page.locator('#annotated-image-count')).to_have_text('1')
+        expect(page).to_have_url(re.compile(r'/platform/$'))
         page.screenshot(path=self.artifact_dir / '04-first-save.png', full_page=True)
 
         document = self._saved_document()
@@ -543,12 +701,13 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self._assert_immutable_inputs()
 
         with page.expect_navigation(wait_until='domcontentloaded'):
-            page.get_by_role('button', name='继续标注', exact=True).click()
-        self.assertEqual(first_job_url.rstrip('/'), page.url.rstrip('/'))
+            page.get_by_role('button', name='检测标注', exact=True).click()
+        second_job_url = page.url
+        self.assertNotEqual(first_job_url.rstrip('/'), second_job_url.rstrip('/'))
         expect(page.locator('.cvat-header')).to_be_hidden()
         expect(page.locator('.cvat-canvas-container')).to_be_visible()
         page.reload(wait_until='domcontentloaded')
-        self.assertEqual(first_job_url.rstrip('/'), page.url.rstrip('/'))
+        self.assertEqual(second_job_url.rstrip('/'), page.url.rstrip('/'))
         expect(page.locator('.cvat-header')).to_be_hidden()
         expect(page.locator('.cvat-canvas-container')).to_be_visible()
 
@@ -562,15 +721,16 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             page.keyboard.press('Delete')
             expect(shapes).to_have_count(remaining)
 
-        page.route('**/platform/api/annotation/sync', lambda route: route.abort('connectionfailed'), times=1)
+        page.route('**/platform/api/detection/sync', lambda route: route.abort('connectionfailed'), times=1)
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.locator('#status-value')).to_have_text('平台保存失败')
-        expect(page.get_by_role('button', name='重试保存', exact=True)).to_be_enabled()
+        expect(page.locator('#workspace-error')).to_contain_text('刷新页面')
+        expect(page.locator('#annotated-image-count')).to_have_text('1')
         page.screenshot(path=self.artifact_dir / '05-platform-sync-failure.png', full_page=True)
 
-        page.get_by_role('button', name='重试保存', exact=True).click()
-        expect(page.locator('#status-value')).to_have_text('已保存')
+        page.reload(wait_until='domcontentloaded')
+        expect(page.locator('#annotated-image-count')).to_have_text('0')
+        expect(page).to_have_url(re.compile(r'/platform/$'))
         page.screenshot(path=self.artifact_dir / '06-empty-detection-save.png', full_page=True)
         final_document = self._saved_document()
         assert_preserved_mixed_annotation(self, final_document)

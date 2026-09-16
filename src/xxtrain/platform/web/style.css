@@ -5,7 +5,6 @@
   --line: #c8d4d5;
   --signal: #007d8a;
   --signal-dark: #005d67;
-  --saved: #287158;
   --danger: #a23a36;
   --white: #ffffff;
   color: var(--ink);
@@ -79,7 +78,6 @@ a:focus-visible {
 .utility-label,
 .product-name,
 .section-code,
-.status-label,
 .lede,
 .workspace-message,
 .action-row p,
@@ -88,8 +86,7 @@ a:focus-visible {
 }
 
 .utility-label,
-.section-code,
-.status-label {
+.section-code {
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   font-size: 0.72rem;
   letter-spacing: 0.12em;
@@ -204,7 +201,7 @@ h1 {
 
 .primary-button:disabled,
 .text-button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.55;
 }
 
@@ -244,36 +241,103 @@ h1 {
   font-weight: 700;
 }
 
-.status-strip {
+.upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 24px 0;
+  padding: 24px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--signal);
+}
+
+.task-context {
+  margin: 0 0 12px;
+  color: var(--slate);
+  font-size: 0.95rem;
+}
+
+.task-context span {
+  margin-inline: 8px;
+}
+
+.upload-picker {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.upload-picker label {
+  font-weight: 700;
+}
+
+.upload-picker input {
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
+.upload-picker:focus-within label {
+  outline: 3px solid #f0a63a;
+  outline-offset: 3px;
+}
+
+.upload-picker:has(input:disabled) label {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.operation-progress {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin: 26px 0 12px;
+  gap: 12px;
+  flex-basis: 100%;
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--signal-dark);
+  background: #e0f2f3;
+  border-left: 4px solid var(--signal);
+  font-weight: 650;
 }
 
-.status-lamp {
-  width: 12px;
-  height: 12px;
-  background: var(--signal);
-  border: 3px solid var(--white);
+.operation-error {
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+}
+
+.operation-progress::before {
+  content: "";
+  flex: 0 0 18px;
+  height: 18px;
+  border: 2px solid #9ccbd0;
+  border-top-color: var(--signal-dark);
   border-radius: 50%;
-  box-shadow: 0 0 0 1px var(--signal);
+  animation: progress-spin 900ms linear infinite;
 }
 
-[data-status="saved"] .status-lamp {
-  background: var(--saved);
-  box-shadow: 0 0 0 1px var(--saved);
+@keyframes progress-spin {
+  to { transform: rotate(360deg); }
 }
 
-[data-status="sync_failed"] .status-lamp {
-  background: var(--danger);
-  box-shadow: 0 0 0 1px var(--danger);
-}
-
-.status-value {
-  margin: 2px 0 0;
-  font-size: 1.1rem;
-  font-weight: 700;
+.toast-message {
+  position: fixed;
+  z-index: 20;
+  right: 24px;
+  bottom: 24px;
+  max-width: min(460px, calc(100vw - 32px));
+  margin: 0;
+  padding: 18px 22px;
+  background: var(--ink);
+  color: var(--white);
+  border-left: 4px solid #58c2ba;
+  border-radius: 4px;
+  box-shadow: 0 8px 28px #142a3533;
+  line-height: 1.6;
 }
 
 .shared-data-label {
@@ -302,25 +366,24 @@ h1 {
 
 .target-rail {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   margin-top: 20px;
 }
 
 .target {
   display: grid;
-  grid-template-columns: 34px 1fr;
-  gap: 13px;
-  min-height: 164px;
-  padding: 22px;
+  grid-template-columns: 40px minmax(160px, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 24px;
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid var(--line);
-  opacity: 0.66;
 }
 
 .target-active {
   background: var(--white);
-  border-top: 4px solid var(--signal);
+  border-left: 4px solid var(--signal);
   opacity: 1;
 }
 
@@ -337,12 +400,9 @@ h1 {
 }
 
 .availability {
-  grid-column: 2;
-  align-self: end;
-  width: fit-content;
-  padding-top: 8px;
+  display: inline-block;
+  margin-left: 12px;
   color: var(--slate);
-  border-top: 1px solid var(--line);
   font-size: 0.78rem;
   font-weight: 700;
 }
@@ -351,23 +411,19 @@ h1 {
   color: var(--signal-dark);
 }
 
-.action-row {
+.target-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  margin-top: 24px;
-  padding: 24px;
-  background: #e4eceb;
-  border-left: 4px solid var(--ink);
+  gap: 16px;
 }
 
-.action-row p {
-  max-width: 680px;
+.target-actions .primary-button {
+  min-width: 120px;
 }
 
-.action-row .primary-button {
-  flex: 0 0 auto;
+.target-help {
+  grid-column: 2 / -1;
+  font-size: 0.85rem;
 }
 
 [hidden] {
@@ -389,6 +445,7 @@ h1 {
   }
 
   .workspace-heading,
+  .upload-row,
   .action-row {
     align-items: stretch;
     flex-direction: column;
@@ -396,6 +453,7 @@ h1 {
 
   .workspace-facts {
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .target-rail {
@@ -403,11 +461,30 @@ h1 {
   }
 
   .target {
-    min-height: 130px;
+    grid-template-columns: 32px minmax(0, 1fr);
+    padding: 18px;
+  }
+
+  .target-actions {
+    grid-column: 1 / -1;
+    gap: 10px;
+  }
+
+  .target-actions .primary-button {
+    flex: 1;
+    min-width: 0;
+    padding-inline: 10px;
+  }
+
+  .target-help {
+    grid-column: 1 / -1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .operation-progress::before {
+    animation: none;
+  }
   *,
   *::before,
   *::after {

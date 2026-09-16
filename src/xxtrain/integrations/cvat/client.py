@@ -80,8 +80,8 @@ class CvatClient:
     ) -> JobRef:
         """Attach frames, initialize annotations once, assign the Job, and return its server IDs.
 
-        The complete operation, including polling, has a 120-second deadline. The workflow persists each supplied
-        checkpoint before retrying this method. Ambiguous in-flight writes raise ``PlatformError`` and require
+        The complete operation, including polling, has a 120-second deadline. Callers may supply a preparation
+        checkpoint when resuming a task. Ambiguous in-flight writes raise ``PlatformError`` and require
         administrator reconciliation; the adapter never guesses whether it is safe to repeat them.
         """
 
@@ -151,6 +151,17 @@ class CvatClient:
         response = self._service_request('GET', f'/api/jobs/{ref.job_id}/annotations')
         return decode_annotations(self._json(response), ref, labels)
 
+    def job_is_unfinished(self, ref: JobRef) -> bool:
+        """Return whether the Job state differs from completed.
+
+        Malformed states and operational failures raise ``PlatformError`` without response details.
+        """
+        path = f'/api/jobs/{ref.job_id}'
+        job = self._json(self._service_request('GET', path))
+        if not isinstance(job, dict) or not isinstance(job.get('state'), str):
+            raise PlatformError(f'CVAT {path} returned an invalid state')
+        return job['state'] != 'completed'
+
     def job_path(self, ref: JobRef) -> str:
         """Return the local same-origin CVAT UI path for a Job."""
 
@@ -174,7 +185,12 @@ class CvatClient:
         ``PlatformError``.
         """
 
-        response = self._browser_request('POST', '/api/auth/login', json={'username': username, 'password': password})
+        response = self._browser_request(
+            'POST',
+            '/api/auth/login',
+            access_error_statuses=(400, 401, 403),
+            json={'username': username, 'password': password},
+        )
         return self._session_cookies(response)
 
     def logout(self, cookie: str, csrf: str) -> tuple[str, ...]:
@@ -321,14 +337,23 @@ class CvatClient:
         )
 
     def _browser_request(
-        self, method: str, target: str, *, cookie: str | None = None, csrf: str | None = None, **kwargs
+        self,
+        method: str,
+        target: str,
+        *,
+        cookie: str | None = None,
+        csrf: str | None = None,
+        access_error_statuses: tuple[int, ...] = (401, 403),
+        **kwargs,
     ) -> httpx.Response:
         headers = {'Accept': 'application/vnd.cvat+json'}
         if cookie is not None:
             headers['Cookie'] = cookie
         if csrf is not None:
             headers['X-CSRFToken'] = csrf
-        return self._request(method, target, headers=headers, access_errors=True, **kwargs)
+        return self._request(
+            method, target, headers=headers, access_errors=True, access_error_statuses=access_error_statuses, **kwargs
+        )
 
     def _request(
         self,
@@ -337,6 +362,7 @@ class CvatClient:
         *,
         headers: dict[str, str],
         access_errors: bool,
+        access_error_statuses: tuple[int, ...] = (401, 403),
         deadline: float | None = None,
         deadline_task_id: int = 0,
         **kwargs,
@@ -352,7 +378,7 @@ class CvatClient:
             response = self._http.send(request, auth=None, follow_redirects=False)
         except httpx.HTTPError:
             raise PlatformError(f'CVAT {method} {url.path} failed') from None
-        if access_errors and response.status_code in {401, 403}:
+        if access_errors and response.status_code in access_error_statuses:
             raise PlatformAccessError(f'CVAT {method} {url.path} denied access ({response.status_code})')
         if not 200 <= response.status_code < 300:
             raise PlatformError(f'CVAT {method} {url.path} failed with status {response.status_code}')

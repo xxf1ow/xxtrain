@@ -62,6 +62,15 @@ def _detection_boxes(document: JsonObject) -> tuple[DetectionBox, ...]:
     return tuple(boxes)
 
 
+def detection_complete(document: JsonObject) -> bool:
+    """Return whether a document has rectangles or an explicit detection-negative marker."""
+    return bool(_detection_boxes(document)) or (
+        document.get('shapes') == []
+        and isinstance(document.get('flags'), dict)
+        and document['flags'].get('xxtrain_detection_negative') is True
+    )
+
+
 def _empty_document(*, image_path: str, width: int, height: int) -> JsonObject:
     return {
         'version': '5.0.0',
