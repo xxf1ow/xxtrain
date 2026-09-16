@@ -14,12 +14,11 @@
     taskName: document.getElementById('task-name'),
     imageCount: document.getElementById('image-count'),
     annotatedImageCount: document.getElementById('annotated-image-count'),
-    uploadForm: document.getElementById('upload-form'),
     imageFiles: document.getElementById('image-files'),
-    uploadButton: document.getElementById('upload-button'),
     cacheAction: document.getElementById('cache-action'),
     workspaceMessage: document.getElementById('workspace-message'),
     workspaceError: document.getElementById('workspace-error'),
+    uploadError: document.getElementById('upload-error'),
     primaryAction: document.getElementById('primary-action'),
     sessionTools: document.getElementById('session-tools'),
     sessionUser: document.getElementById('session-user'),
@@ -28,6 +27,14 @@
 
   let workspace = null;
   let busy = false;
+  let notificationTimer;
+
+  function notify(message) {
+    clearTimeout(notificationTimer);
+    elements.workspaceMessage.textContent = message;
+    elements.workspaceMessage.hidden = false;
+    notificationTimer = setTimeout(() => { elements.workspaceMessage.hidden = true; }, 8000);
+  }
 
   function cookie(name) {
     const prefix = `${name}=`;
@@ -74,16 +81,26 @@
     return new URLSearchParams(location.search).get('returned') === '1';
   }
 
-  function setBusy(value, message = '') {
+  function setBusy(value, message = '', area = 'detect') {
     busy = value;
     const blocked = value || returnedAnnotationsPending();
     elements.primaryAction.disabled = blocked || !workspace || workspace.image_count === 0;
     elements.imageFiles.disabled = blocked;
-    elements.uploadButton.disabled = blocked || elements.imageFiles.files.length === 0;
     elements.cacheAction.disabled = blocked || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready;
     elements.loginButton.disabled = value;
     elements.logoutButton.disabled = value;
-    elements.workspaceMessage.textContent = message;
+    if (!value || message) {
+      for (const target of ['upload', 'detect']) {
+        const progress = document.getElementById(`${target}-progress`);
+        progress.textContent = value && target === area ? message : '';
+        progress.hidden = !progress.textContent;
+      }
+    }
+    if (value) {
+      clearTimeout(notificationTimer);
+      elements.workspaceMessage.hidden = true;
+    }
+    elements.primaryAction.textContent = value && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
   }
 
   function showLogin(message = '') {
@@ -116,7 +133,10 @@
     elements.taskName.textContent = next.task.name;
     elements.imageCount.textContent = String(next.image_count);
     elements.annotatedImageCount.textContent = String(next.annotated_image_count);
-    elements.cacheAction.textContent = next.detection_cache_ready ? '训练缓存已生成' : '生成训练缓存';
+    for (const target of ['detect', 'classify', 'segment']) {
+      document.getElementById(`${target}-image-total`).textContent = String(next.image_count);
+    }
+    elements.cacheAction.textContent = next.detection_cache_ready ? '训练缓存已生成' : '开始训练';
     clearError(elements.workspaceError);
     setBusy(busy);
     renderTargets(next.targets);
@@ -128,6 +148,7 @@
     try {
       renderWorkspace(await platformPost('/detection/sync', {}));
       history.replaceState({}, '', '/platform/');
+      notify('标注已保存到平台，图片数量已更新。');
     } catch (error) {
       showError(elements.workspaceError, `${error.message} 刷新页面可重新同步标注。`);
     } finally {
@@ -171,24 +192,24 @@
     }
   });
 
-  elements.imageFiles.addEventListener('change', () => setBusy(busy));
-
-  elements.uploadForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
+  elements.imageFiles.addEventListener('change', async () => {
     if (busy || returnedAnnotationsPending() || elements.imageFiles.files.length === 0) return;
     const files = new FormData();
     for (const file of elements.imageFiles.files) files.append('images', file);
     clearError(elements.workspaceError);
-    setBusy(true, '正在上传图片…');
+    const selectedCount = elements.imageFiles.files.length;
+    clearError(elements.uploadError);
+    setBusy(true, `正在上传并去重 ${selectedCount} 张图片…`, 'upload');
     try {
       renderWorkspace(await request('/images', {
         method: 'POST',
         headers: {'X-XTrain-CSRF': cookie('xxtrain_csrf')},
         body: files,
       }));
-      elements.uploadForm.reset();
+      elements.imageFiles.value = '';
+      notify(`本次选择 ${selectedCount} 张图片，上传及去重完成。现场现有 ${workspace.image_count} 张有效图片。`);
     } catch (error) {
-      showError(elements.workspaceError, error.message);
+      showError(elements.uploadError, error.message);
     } finally {
       setBusy(false);
     }
@@ -200,6 +221,7 @@
     setBusy(true, '正在生成训练缓存…');
     try {
       renderWorkspace(await platformPost('/detection/cache', {}));
+      notify('训练缓存已生成。');
     } catch (error) {
       showError(elements.workspaceError, error.message);
     } finally {

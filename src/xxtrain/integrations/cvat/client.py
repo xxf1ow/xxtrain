@@ -185,7 +185,12 @@ class CvatClient:
         ``PlatformError``.
         """
 
-        response = self._browser_request('POST', '/api/auth/login', json={'username': username, 'password': password})
+        response = self._browser_request(
+            'POST',
+            '/api/auth/login',
+            access_error_statuses=(400, 401, 403),
+            json={'username': username, 'password': password},
+        )
         return self._session_cookies(response)
 
     def logout(self, cookie: str, csrf: str) -> tuple[str, ...]:
@@ -332,14 +337,23 @@ class CvatClient:
         )
 
     def _browser_request(
-        self, method: str, target: str, *, cookie: str | None = None, csrf: str | None = None, **kwargs
+        self,
+        method: str,
+        target: str,
+        *,
+        cookie: str | None = None,
+        csrf: str | None = None,
+        access_error_statuses: tuple[int, ...] = (401, 403),
+        **kwargs,
     ) -> httpx.Response:
         headers = {'Accept': 'application/vnd.cvat+json'}
         if cookie is not None:
             headers['Cookie'] = cookie
         if csrf is not None:
             headers['X-CSRFToken'] = csrf
-        return self._request(method, target, headers=headers, access_errors=True, **kwargs)
+        return self._request(
+            method, target, headers=headers, access_errors=True, access_error_statuses=access_error_statuses, **kwargs
+        )
 
     def _request(
         self,
@@ -348,6 +362,7 @@ class CvatClient:
         *,
         headers: dict[str, str],
         access_errors: bool,
+        access_error_statuses: tuple[int, ...] = (401, 403),
         deadline: float | None = None,
         deadline_task_id: int = 0,
         **kwargs,
@@ -363,7 +378,7 @@ class CvatClient:
             response = self._http.send(request, auth=None, follow_redirects=False)
         except httpx.HTTPError:
             raise PlatformError(f'CVAT {method} {url.path} failed') from None
-        if access_errors and response.status_code in {401, 403}:
+        if access_errors and response.status_code in access_error_statuses:
             raise PlatformAccessError(f'CVAT {method} {url.path} denied access ({response.status_code})')
         if not 200 <= response.status_code < 300:
             raise PlatformError(f'CVAT {method} {url.path} failed with status {response.status_code}')

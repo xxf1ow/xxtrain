@@ -118,6 +118,10 @@ class PlatformBrowserTest(unittest.TestCase):
         harness = f"""
 (async () => {{
 const calls = [];
+const timers = new Map();
+let timerId = 0;
+globalThis.setTimeout = (callback) => {{ timers.set(++timerId, callback); return timerId; }};
+globalThis.clearTimeout = (id) => timers.delete(id);
 const elements = new Map();
 const ids = {json.dumps(re.findall(r'id="([^"]+)"', self.client.get('/platform/').text))};
 function makeElement(id) {{
@@ -195,10 +199,15 @@ const get = (id) => elements.get(id);
 const snapshot = () => ({{
   images: get('image-count')?.textContent,
   annotated: get('annotated-image-count')?.textContent,
+  totals: ['detect', 'classify', 'segment'].map((target) => get(`${{target}}-image-total`)?.textContent),
   cacheDisabled: get('cache-action')?.disabled,
   cacheText: get('cache-action')?.textContent,
   error: get('workspace-error')?.textContent,
-  disabled: ['primary-action', 'upload-button', 'image-files', 'cache-action', 'logout-button', 'login-button']
+  uploadProgress: get('upload-progress')?.textContent,
+  uploadProgressHidden: get('upload-progress')?.hidden,
+  notification: get('workspace-message')?.textContent,
+  notificationHidden: get('workspace-message')?.hidden,
+  disabled: ['primary-action', 'image-files', 'cache-action', 'logout-button', 'login-button']
     .map((id) => get(id)?.disabled),
 }});
 const before = snapshot();
@@ -219,12 +228,14 @@ process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned
         self.assertEqual('10', result['after']['images'])
         self.assertEqual('7', result['after']['annotated'])
         self.assertTrue(result['after']['cacheDisabled'])
-        self.assertTrue(result['after']['disabled'][1])
+        self.assertEqual(['10', '10', '10'], result['after']['totals'])
+        self.assertFalse(result['after']['disabled'][1])
         page = self.client.get('/platform/').text
         self.assertNotIn('data-image-thumbnail', page)
         self.assertNotIn('id="status-value"', page)
         self.assertIn('type="file"', page)
         self.assertIn('multiple', page)
+        self.assertNotIn('id="upload-button"', page)
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_returned_page_syncs_counts_and_enables_cache(self) -> None:
@@ -237,26 +248,41 @@ process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned
         self.assertEqual('/platform/', result['replaced'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
-    def test_upload_sends_multipart_and_blocks_writes_until_counts_refresh(self) -> None:
+    def test_selecting_images_uploads_them_without_a_second_action(self) -> None:
         result = self.run_page("""
 get('image-files').files = [new File(['first'], 'a.jpg'), new File(['second'], 'b.png')];
-get('image-files').listeners.change();
-hold = true;
-const upload = get('upload-form').listeners.submit({preventDefault() {}});
-before.busy = snapshot().disabled;
-await get('primary-action').listeners.click();
-release();
+const upload = get('image-files').listeners.change();
 await upload;
 """)
-        self.assertEqual([True] * 6, result['before']['busy'])
         self.assertEqual(3, len(result['calls']))
         self.assertEqual('/platform/api/images', result['calls'][-1]['url'])
         self.assertEqual([['images', 'a.jpg'], ['images', 'b.png']], result['calls'][-1]['body'])
         self.assertEqual('page-token', result['calls'][-1]['csrf'])
         self.assertIsNone(result['calls'][-1]['contentType'])
         self.assertEqual('12', result['after']['images'])
+        self.assertEqual(['12', '12', '12'], result['after']['totals'])
         self.assertEqual('7', result['after']['annotated'])
         self.assertFalse(result['after']['disabled'][0])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_upload_progress_stays_visible_until_completion_then_notification_expires(self) -> None:
+        result = self.run_page("""
+get('image-files').files = [new File(['first'], 'a.jpg')];
+hold = true;
+const upload = get('image-files').listeners.change();
+before.uploading = snapshot();
+release();
+await upload;
+before.completed = snapshot();
+for (const callback of timers.values()) callback();
+""")
+        self.assertFalse(result['before']['uploading']['uploadProgressHidden'])
+        self.assertIn('1 张', result['before']['uploading']['uploadProgress'])
+        self.assertEqual([True] * 5, result['before']['uploading']['disabled'])
+        self.assertTrue(result['before']['completed']['uploadProgressHidden'])
+        self.assertFalse(result['before']['completed']['notificationHidden'])
+        self.assertIn('12 张有效图片', result['before']['completed']['notification'])
+        self.assertTrue(result['after']['notificationHidden'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_cache_action_renders_generated_result_and_blocks_repeated_click(self) -> None:
@@ -294,9 +320,9 @@ await get('cache-action').listeners.click();
         result = self.run_page(
             """
 get('image-files').files = [new File(['first'], 'a.jpg')];
-get('image-files').listeners.change();
+await get('image-files').listeners.change();
 await get('primary-action').listeners.click();
-await get('upload-form').listeners.submit({preventDefault() {}});
+await get('image-files').listeners.change();
 await get('cache-action').listeners.click();
 """,
             returned=True,
@@ -307,7 +333,7 @@ await get('cache-action').listeners.click();
         self.assertEqual('7', result['after']['annotated'])
         self.assertIn('刷新页面', result['after']['error'])
         self.assertIsNone(result['replaced'])
-        self.assertEqual([True, True, True, True, False, False], result['after']['disabled'])
+        self.assertEqual([True, True, True, False, False], result['after']['disabled'])
         self.assertEqual(
             ['/platform/api/session', '/platform/api/workspace', '/platform/api/detection/sync'],
             [call['url'] for call in result['calls']],
@@ -321,15 +347,15 @@ await get('cache-action').listeners.click();
 failure = false;
 await loaded();
 get('image-files').files = [new File(['first'], 'a.jpg')];
-get('image-files').listeners.change();
+await get('image-files').listeners.change();
 """,
             returned=True,
             ready=True,
             sync_failure=True,
         )
-        self.assertEqual([True, True, True, True, False, False], result['before']['disabled'])
-        self.assertEqual([False] * 6, result['after']['disabled'])
-        self.assertEqual('50', result['after']['annotated'])
+        self.assertEqual([True, True, True, False, False], result['before']['disabled'])
+        self.assertEqual([False] * 5, result['after']['disabled'])
+        self.assertEqual('7', result['after']['annotated'])
         self.assertEqual('/platform/', result['replaced'])
         self.assertEqual('', result['after']['error'])
 

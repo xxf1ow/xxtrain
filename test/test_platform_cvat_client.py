@@ -490,6 +490,19 @@ class CvatClientTest(unittest.TestCase):
         self.assertNotIn('server-secret', str(caught.exception))
         self.assertNotIn('browser-secret', str(caught.exception))
 
+    def test_login_rejection_with_cvat_bad_request_is_an_access_error(self):
+        client = CvatClient(
+            'http://cvat.test',
+            'private-token',
+            httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(400, text='private-response'))),
+        )
+
+        with self.assertRaises(PlatformAccessError) as caught:
+            client.login('worker', 'password')
+
+        self.assertIn('/api/auth/login', str(caught.exception))
+        self.assertNotIn('private-response', str(caught.exception))
+
     def test_service_token_access_failure_is_an_operational_error(self):
         client = CvatClient(
             'http://cvat.test',

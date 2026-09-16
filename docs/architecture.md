@@ -50,4 +50,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-内部自助训练平台仍处于提案阶段；Point 页面支持批量上传、检测标注同步和至少 50 张有框图片的检测缓存生成。现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
+内部自助训练平台仍处于提案阶段；Point 页面在业务任务与现场下共享图片上传区，按检测、分类、分割顺序逐行展示各模型的图片标注进度与标注、训练入口。当前支持批量上传、检测标注同步和至少 50 张有框图片的检测缓存生成；“开始训练”仅生成缓存。现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现，对应模型入口禁用。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
