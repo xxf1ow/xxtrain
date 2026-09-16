@@ -26,7 +26,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、模型配置、训练、ONNX 导出和预测检查；
 - `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 从数据库事实派生计数与缓存资格，以一个非阻塞进程锁协调上传接纳、CVAT 创建和同步、检测缓存生成；
-- `xxtrain.platform.app` 提供同源图片上传、检测标注和缓存生成页面；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；上传文件在独立运行目录暂存，页面计数和缓存按钮由服务返回的文件派生结果驱动；
+- `xxtrain.platform.app` 提供同源图片上传、检测标注和缓存生成页面；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；上传文件在独立运行目录暂存，页面计数和缓存按钮由服务返回的数据库派生结果驱动；
 - `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；摘要、输入指纹和 CVAT 输入只读取已登记图片及数据库标注。对象级同步通过稳定 UUID 和当前 Job 的 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响的下游对象，并在同一事务内提交标注和映射。检测缓存从数据库生成可丢弃的 LabelMe 输入，不回写权威 JSON；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签、检测、分类和分割步骤规则及目标开放状态；
 - `xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存；
