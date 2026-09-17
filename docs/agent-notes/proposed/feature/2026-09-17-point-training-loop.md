@@ -10,7 +10,7 @@ Point 检测、分类和指针分割已能完成上传、标注与训练缓存�
 
 用户完成标注后，能够直接在平台启动所选模型的真实训练、查看进度并下载训练结果，无需管理员手动执行命令。平台直接提交 ClearML 任务，Agent 复用现有训练核心；不使用预建 ClearML 模板任务或自动模型 DAG。
 
-本文拥有真实训练提交、运行关联、编辑限制、任务页面和部署产物交付设计，细化[平台总体提案](2026-07-30-self-service-training-platform.md)和[部署与存储提案](2026-09-14-platform-dataset-storage.md)中未确定的训练运行规则。[Point 三模型数据准备](../../implemented/feature/2026-09-16-point-classification-segmentation.md)继续拥有标注、裁剪、门禁和缓存规则，[SQLite 标注存储](../../implemented/architecture/2026-09-16-sqlite-annotation-storage.md)继续拥有标注事实和对象关联。本文为批准的未实现设计，不替代现有功能的验收证据。
+本文拥有真实训练提交、运行关联、编辑限制、任务页面和部署产物交付设计，细化[平台总体提案](2026-07-30-self-service-training-platform.md)和[部署与存储提案](2026-09-14-platform-dataset-storage.md)中未确定的训练运行规则。[Point 三模型数据准备](../../implemented/feature/2026-09-16-point-classification-segmentation.md)继续拥有标注、裁剪、门禁和缓存规则，[SQLite 标注存储](../../implemented/architecture/2026-09-16-sqlite-annotation-storage.md)继续拥有标注事实和对象关联。业务任务已声明三种目标的训练设置、主要指标和交付内容；提交、运行关联、编辑限制、任务页面和交付仍未实现。
 
 ## Responsibilities
 

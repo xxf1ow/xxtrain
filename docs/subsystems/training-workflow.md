@@ -6,7 +6,7 @@
 
 ## Scenario contract
 
-一个 Scenario 文件必须导出 `SCENARIO: TrainingScenario`。该不可变值包含一个 `DatasetRecipe`、模型版本与规模、split、`reserve_no_label` 以及传给 `YOLO.train()` 的覆盖参数；规模只能是 `n`、`s`、`m`、`l` 或 `x`。
+一个 Scenario 文件必须导出 `SCENARIO: TrainingScenario`。该不可变值包含一个 `DatasetRecipe`、模型版本与规模、split、`reserve_no_label` 以及传给 `YOLO.train()` 的覆盖参数；模型默认值与规模集合由训练设置共用，规模只能是 `n`、`s`、`m`、`l` 或 `x`。
 
 加载器把 `train_args` 中的相对 `Path` 递归解析到 Scenario 文件目录，普通字符串保持不变。文件不存在、模块无法加载、缺少 `SCENARIO` 或导出类型错误时，加载在开始训练前失败。
 

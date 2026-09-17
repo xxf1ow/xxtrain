@@ -1,4 +1,5 @@
 from xxtrain.data import LabelCatalog
+from xxtrain.business_tasks.point import POINT_CLASSIFY_OVERRIDES
 from xxtrain.pipeline import DatasetRecipe, Pipeline
 from xxtrain.pipeline.processors import CropDetectionBoxes, FilterLabels, ReadImageInfo, ReadLabelImg
 from xxtrain.pipeline.sinks import ClassificationDatasetSink
@@ -15,5 +16,5 @@ SCENARIO = TrainingScenario(
         ),
         sink=ClassificationDatasetSink(indexed_class_directories=True),
     ),
-    train_args={'fliplr': 0.0, 'flipud': 0.0, 'degrees': 0.0, 'auto_augment': None},
+    train_args=POINT_CLASSIFY_OVERRIDES,
 )

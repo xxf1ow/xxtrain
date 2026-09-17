@@ -9,14 +9,7 @@ from xxtrain.task import TaskType
 from .exporting import copy_class_reference_images, export_model_to_onnx
 from .model import generate_model_yaml, prepare_pretrained_weights
 from .scenario import TrainingScenario, load_scenario
-
-_CLASSIFY_TRAIN_ARGS = {'epochs': 72, 'batch': 64, 'imgsz': 224, 'scale': 0.0}
-_OTHER_TRAIN_ARGS = {'epochs': 80, 'batch': 32, 'imgsz': 640}
-
-
-def standard_train_args(task_type: TaskType) -> dict[str, object]:
-    source = _CLASSIFY_TRAIN_ARGS if task_type is TaskType.CLASSIFY else _OTHER_TRAIN_ARGS
-    return dict(source)
+from .settings import standard_train_args
 
 
 def merged_train_args(scenario: TrainingScenario) -> dict[str, object]:

@@ -6,18 +6,20 @@ from pathlib import Path
 
 from xxtrain.pipeline import DatasetRecipe
 
+from .settings import DEFAULT_MODEL_SCALE, DEFAULT_MODEL_VERSION, SUPPORTED_MODEL_SCALES
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TrainingScenario:
     dataset: DatasetRecipe
-    model_version: str = 'v8'
-    model_scale: str = 'n'
+    model_version: str = DEFAULT_MODEL_VERSION
+    model_scale: str = DEFAULT_MODEL_SCALE
     split: int = 10
     reserve_no_label: bool = False
     train_args: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.model_scale not in {'n', 's', 'm', 'l', 'x'}:
+        if self.model_scale not in SUPPORTED_MODEL_SCALES:
             raise ValueError(f'Unsupported model scale: {self.model_scale}')
 
 
