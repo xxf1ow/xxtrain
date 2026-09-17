@@ -132,6 +132,62 @@ class DetectionSync:
 
 
 @dataclass(frozen=True)
+class EditAnnotation:
+    """One classification or shape annotation in edit-frame coordinates."""
+
+    id: UUID | None
+    kind: str
+    label: str
+    geometry: JsonValue
+    cvat_id: int | None = None
+
+
+@dataclass(frozen=True)
+class FrameMapping:
+    """Map an ordered edit frame to its original image and source-pixel bounds."""
+
+    frame_id: str
+    image_id: str
+    parent_id: UUID | None
+    bounds: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class EditFrame:
+    """One image frame and its annotations for a target-specific edit job."""
+
+    mapping: FrameMapping
+    image_path: Path
+    width: int
+    height: int
+    annotations: tuple[EditAnnotation, ...]
+
+
+@dataclass(frozen=True)
+class EditFrameResult:
+    """Annotations returned for one edit frame identity."""
+
+    frame_id: str
+    annotations: tuple[EditAnnotation, ...]
+
+
+@dataclass(frozen=True)
+class EditJob:
+    """A CVAT job reference plus its ordered frame-to-source mappings."""
+
+    ref: JobRef
+    frames: tuple[FrameMapping, ...]
+
+
+@dataclass(frozen=True)
+class TargetSummary:
+    """Counts target samples and samples with complete annotations."""
+
+    sample_count: int
+    annotated_sample_count: int
+
+
+@dataclass(frozen=True)
 class WorkspaceView:
     workspace_id: str
     name: str

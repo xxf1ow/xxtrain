@@ -77,6 +77,12 @@ SQLite 只保存原始标注事实及其身份、步骤和对象关系。分类�
 
 继续沿用原生 CVAT ID、稳定平台 UUID、原子标注与对象映射更新、受影响下游 Job 失效及过时回写拒绝机制。需要重建 Job 时从 SQLite 带入当前步骤仍保留的标注，不要求全部重标；不做历史标注快照、按坐标猜测身份或保存标签有效性字段。补充上传或上游修改导致条件变化时，三个步骤从当前事实重新计算，下游入口不得沿用旧计数开放。
 
+## Implementation status
+
+共享编辑契约现已定义不可变的 annotation、frame mapping、frame result、Job 和目标计数记录；`JobRef.sample_ids` 仍表示去重后的原图 ID，frame mapping 单独保存原图 ID、来源框 UUID 和实际整数边界。Point 业务规则接受空的分类或分割编辑作为未完成工作，要求分类至多一个 `tl/tc/cl/cc`，并要求每条 `1` polyline 恰好包含两个有限且不同的点。Point 分割步骤现声明 `polyline` 和标签 `1`，分类与每条 line 仍直接关联检测框；通用任务定义继续支持 polygon。
+
+离线测试覆盖不可变记录、分类数量与类型校验、line 点数、有限值和零长度校验，以及分类和原始 line 几何通过真实 SQLite repository 保存并重开后的往返。数据库 schema 保持三张表不变，`MODEL_TARGETS` 仍禁用分类和分割；裁剪、运行期 frame mapping、CVAT 交换、缓存、服务和页面仍属于未实现的提案范围。
+
 ## Alternatives considered
 
 **分类、分割各建完整流程并分两次交付。** 两者的裁剪、来源映射、任务准备和同步相同；分别建设会重复改接口。保留标注类型差异，在同阶段内依次贯通并联合验证更直接。

@@ -31,8 +31,8 @@ def point_task_definition() -> TaskDefinition:
             ),
             StepDefinition(
                 key='segment',
-                kinds=frozenset({'polygon'}),
-                labels=frozenset(),
+                kinds=frozenset({'polyline'}),
+                labels=frozenset({'1'}),
                 parent_steps=frozenset({'detect'}),
                 depends_on=frozenset({'classify'}),
             ),
