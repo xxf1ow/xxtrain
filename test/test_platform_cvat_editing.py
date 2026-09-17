@@ -107,6 +107,38 @@ class CvatEditCodecTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'frame'):
             decode_edit_bindings(payload, (first, second), job, TAG_LABELS)
 
+    def test_initial_binding_rejects_a_missing_token(self) -> None:
+        annotation_id = UUID('11111111-1111-1111-1111-111111111111')
+        edit_frame = frame(
+            '22222222-2222-2222-2222-222222222222',
+            UUID('22222222-2222-2222-2222-222222222222'),
+            (EditAnnotation(annotation_id, 'classification', 'tl', None),),
+        )
+        payload = encode_edit_annotations((edit_frame,), TAG_LABELS, mapped=True)
+        payload['tags'][0]['id'] = 101
+        payload['tags'][0]['attributes'][0]['value'] = '{}'
+        job = EditJob(JobRef(7, 8, (ORIGINAL_ID,)), (edit_frame.mapping,))
+
+        with self.assertRaisesRegex(ValueError, 'token'):
+            decode_edit_bindings(payload, (edit_frame,), job, TAG_LABELS)
+
+    def test_initial_binding_rejects_duplicate_native_ids_for_the_same_object_type(self) -> None:
+        edit_frame = frame(
+            '33333333-3333-3333-3333-333333333333',
+            UUID('33333333-3333-3333-3333-333333333333'),
+            (
+                EditAnnotation(UUID('11111111-1111-1111-1111-111111111111'), 'classification', 'tl', None),
+                EditAnnotation(UUID('22222222-2222-2222-2222-222222222222'), 'classification', 'tc', None),
+            ),
+        )
+        payload = encode_edit_annotations((edit_frame,), TAG_LABELS, mapped=True)
+        payload['tags'][0]['id'] = 101
+        payload['tags'][1]['id'] = 101
+        job = EditJob(JobRef(7, 8, (ORIGINAL_ID,)), (edit_frame.mapping,))
+
+        with self.assertRaisesRegex(ValueError, 'unique'):
+            decode_edit_bindings(payload, (edit_frame,), job, TAG_LABELS)
+
     def test_polyline_round_trip_preserves_point_order_and_allows_three_points(self) -> None:
         annotation_id = UUID('11111111-1111-1111-1111-111111111111')
         edit_frame = frame(

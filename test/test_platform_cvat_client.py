@@ -688,6 +688,41 @@ class CvatClientTest(unittest.TestCase):
         self.assertEqual(results[0].frame_id, str(parent_id))
         self.assertEqual(results[0].annotations, (EditAnnotation(None, 'polyline', '1', [[1.0, 2.0], [3.0, 4.0]], 91),))
 
+    def test_fetch_edit_decodes_classification_tags_through_the_real_client(self):
+        labels = [
+            {
+                'id': 41,
+                'name': 'tl',
+                'type': 'tag',
+                'attributes': [{'id': 71, 'name': 'xxtrain_labelme_extra', 'input_type': 'text'}],
+            }
+        ]
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/api/labels':
+                return httpx.Response(200, json=page(labels))
+            if request.url.path == '/api/jobs/8/annotations':
+                return httpx.Response(
+                    200,
+                    json={
+                        'version': 0,
+                        'tags': [{'id': 92, 'frame': 0, 'label_id': 41, 'attributes': []}],
+                        'tracks': [],
+                        'shapes': [],
+                    },
+                )
+            return httpx.Response(404)
+
+        parent_id = UUID('11111111-1111-1111-1111-111111111111')
+        mapping = FrameMapping(str(parent_id), 'a' * 64, parent_id, (10, 20, 30, 40))
+        job = EditJob(JobRef(7, 8, ('a' * 64,)), (mapping,))
+        client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
+
+        results = client.fetch_edit(job)
+
+        self.assertEqual(results[0].frame_id, str(parent_id))
+        self.assertEqual(results[0].annotations, (EditAnnotation(None, 'classification', 'tl', None, 92),))
+
     def test_job_is_unfinished_reads_state_without_exposing_response_details(self):
         for state, expected in (('new', True), ('in progress', True), ('completed', False)):
             with self.subTest(state=state):
