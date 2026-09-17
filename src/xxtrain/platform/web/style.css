@@ -312,8 +312,6 @@ h1 {
 
 .correction-link {
   justify-self: start;
-  color: var(--signal-dark);
-  font-weight: 700;
 }
 
 .operation-progress::before {

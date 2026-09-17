@@ -430,19 +430,22 @@ class AnnotationServiceTest(unittest.TestCase):
 
         self.assertEqual(1, results[0].image_count)
 
-    def test_writes_reject_concurrency_and_wrong_owner_without_side_effects(self):
+    def test_legacy_detection_and_target_writes_share_owner_and_operation_lock(self):
         operations = (
-            lambda user: self.service.upload(user, ()),
-            self.service.begin_detection,
-            self.service.sync_detection,
-            self.service.generate_detection_cache,
+            ('upload', lambda user: self.service.upload(user, ())),
+            ('legacy detection start', self.service.begin_detection),
+            ('legacy detection sync', self.service.sync_detection),
+            ('legacy detection cache', self.service.generate_detection_cache),
+            ('target start', lambda user: self.service.begin_target(user, 'classify')),
+            ('target sync', lambda user: self.service.sync_target(user, 'segment')),
+            ('target cache', lambda user: self.service.generate_target_cache(user, 'classify')),
         )
-        for operation in (*operations, self.service.view):
-            with self.assertRaises(PlatformAccessError):
+        for name, operation in (*operations, ('view', self.service.view)):
+            with self.subTest(name=name, gate='owner'), self.assertRaises(PlatformAccessError):
                 operation(99)
         with self.service.lock:
-            for operation in operations:
-                with self.assertRaisesRegex(PlatformError, 'progress'):
+            for name, operation in operations:
+                with self.subTest(name=name, gate='lock'), self.assertRaisesRegex(PlatformError, 'progress'):
                     operation(17)
         self.assertEqual(0, self.cvat.create_task_calls)
 
