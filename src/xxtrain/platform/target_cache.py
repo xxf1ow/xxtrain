@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from xxtrain.data import Bbox, ImageInfo, LabelCatalog, Polyline
+from xxtrain.data.formats import decode_segment
 from xxtrain.pipeline import Context, ConversionConfig, ConversionReport, ImageRef, Sample
 from xxtrain.pipeline.core import ClassifyOutput, CropOutput
 from xxtrain.pipeline.processors import EncodePointSegment
@@ -115,6 +116,13 @@ def _write_segments(frames: tuple[EditFrame, ...], context: Context, sink: YoloD
         try:
             output = encoder.transform(crop, context)
         except AssertionError as error:
+            raise ValueError(
+                f'Segment frame {frame.mapping.frame_id!r} generates a triangle outside crop bounds'
+            ) from error
+        try:
+            for line in output.lines:
+                decode_segment(line, sample.image.require_info(), context.config.labels)
+        except ValueError as error:
             raise ValueError(
                 f'Segment frame {frame.mapping.frame_id!r} generates a triangle outside crop bounds'
             ) from error

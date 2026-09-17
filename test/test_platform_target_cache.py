@@ -17,6 +17,7 @@ from xxtrain.pipeline.core import (
     ConversionConfig,
     ConversionReport,
     CropOutput,
+    EncodeOutput,
     ImageRef,
     Sample,
 )
@@ -274,6 +275,17 @@ class PlatformTargetCacheTest(unittest.TestCase):
         destination = self.root / 'invalid-segment'
         with self.assertRaisesRegex(ValueError, 'outside crop bounds'):
             build_target_cache(self.data, 'segment', self.runtime_root, destination)
+        self.assertFalse(destination.exists())
+
+    def test_rejects_invalid_normalized_encoder_output_without_assertions(self) -> None:
+        destination = self.root / 'invalid-encoded-segment'
+
+        def invalid_output(_encoder, item, _context):
+            return EncodeOutput(sample=item.sample, lines=('0 -0.100000 0.200000 0.300000 0.400000 0.500000 0.600000',))
+
+        with patch.object(EncodePointSegment, 'transform', invalid_output):
+            with self.assertRaisesRegex(ValueError, 'outside crop bounds'):
+                build_target_cache(self.data, 'segment', self.runtime_root, destination)
         self.assertFalse(destination.exists())
 
     @staticmethod
