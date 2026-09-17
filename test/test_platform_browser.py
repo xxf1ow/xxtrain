@@ -24,6 +24,7 @@ else:
     from xxtrain.business_tasks.point import point_task_definition
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig, load_config
+    from xxtrain.platform.contracts import EditJob, JobRef
     from xxtrain.platform.runtime import RuntimeCache
     from xxtrain.workspace_data import WorkspaceData
     from xxtrain.workspace_data.repository import AnnotationRepository
@@ -44,6 +45,12 @@ if _LIVE_REQUESTED and all(_LIVE_VALUES.values()):
         _PLAYWRIGHT_IMPORT_ERROR = None
 else:
     _PLAYWRIGHT_IMPORT_ERROR = None
+
+
+def _acceptance_job(runtime: RuntimeCache, data: WorkspaceData, target: str) -> JobRef | EditJob | None:
+    if target == 'detect':
+        return runtime.job_for(target, data.detection_fingerprint())
+    return runtime.edit_job_for(target, data.target_fingerprint(target))
 
 
 class PlatformBrowserTest(unittest.TestCase):
@@ -556,6 +563,27 @@ await operation;
 
 
 class PlatformFixtureTest(unittest.TestCase):
+    def test_live_job_lookup_distinguishes_detection_from_edit_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
+            data = WorkspaceData(Path(receipt['root']) / 'workspace')
+            runtime = RuntimeCache(Path(receipt['runtime_dir']))
+            detection = JobRef(101, 201, tuple(image.sample_id for image in data.images()))
+            runtime.remember_job('detect', data.detection_fingerprint(), detection)
+            frames = data.target_frames('classify', Path(receipt['runtime_dir']))
+            mappings = tuple(frame.mapping for frame in frames)
+            classification = EditJob(
+                JobRef(102, 202, tuple(dict.fromkeys(mapping.image_id for mapping in mappings))), mappings
+            )
+            runtime.remember_edit_job('classify', data.target_fingerprint('classify'), classification)
+
+            try:
+                detected = _acceptance_job(runtime, data, 'detect')
+            except ValueError as error:
+                self.fail(f'detection acceptance lookup used the edit-target fingerprint: {error}')
+            self.assertEqual(detection, detected)
+            self.assertEqual(classification, _acceptance_job(runtime, data, 'classify'))
+
     def test_fixture_is_isolated_and_records_sqlite_annotation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
@@ -808,16 +836,16 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(51, len(detection['shapes']))
         native_detection_ids = {shape['id'] for shape in detection['shapes']}
         self.assertEqual(51, len(native_detection_ids))
-        detect_job = runtime.edit_job_for('detect', data.target_fingerprint('detect'))
+        detect_job = _acceptance_job(runtime, data, 'detect')
         self.assertIsNotNone(detect_job)
         assert detect_job is not None
-        detect_bindings_before = repository.bindings(detect_job.ref)
+        detect_bindings_before = repository.bindings(detect_job)
         self.assertEqual(native_detection_ids, {binding.object_id for binding in detect_bindings_before})
         self._complete_with_plugin(page)
         self.assertEqual(
             initial_ids['detect'], [str(record.id) for record in repository.annotations(step_key='detect')]
         )
-        self.assertEqual(detect_bindings_before, repository.bindings(detect_job.ref))
+        self.assertEqual(detect_bindings_before, repository.bindings(detect_job))
 
         self._open_target(page, 'classify')
         task_id, _ = self._job_identity(page)
@@ -832,7 +860,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(51, len(classification['tags']))
         native_tag_ids = {tag['id'] for tag in classification['tags']}
         self.assertEqual(51, len(native_tag_ids))
-        classify_job = runtime.edit_job_for('classify', data.target_fingerprint('classify'))
+        classify_job = _acceptance_job(runtime, data, 'classify')
         self.assertIsNotNone(classify_job)
         assert classify_job is not None
         classifications_before = repository.annotations(step_key='classify')
@@ -892,7 +920,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(52, len(segmentation['shapes']))
         existing_shape_ids = {shape['id'] for shape in segmentation['shapes']}
         self.assertEqual(52, len(existing_shape_ids))
-        segment_job = runtime.edit_job_for('segment', data.target_fingerprint('segment'))
+        segment_job = _acceptance_job(runtime, data, 'segment')
         self.assertIsNotNone(segment_job)
         assert segment_job is not None
         segment_records_before = repository.annotations(step_key='segment')

@@ -452,25 +452,24 @@ class PointWorkflowTest(unittest.TestCase):
             for record in before_class_change
             if record.parent_id == parent.id and record.step_key == 'classify'
         )
+        parent_class_binding = CvatBinding(parent.image_id, 'tag', 20_000, parent_class_id)
+        self.assertIn(parent_class_binding, class_bindings_before)
         self.service.sync_target(17, 'classify')
         after_class_change = self.repository.annotations()
         changed_class = next(record for record in after_class_change if record.id == parent_class_id)
-        self.assertEqual('cc', changed_class.label)
-        self.assertEqual(parent_class_id, changed_class.id)
+        self.assertEqual(
+            AnnotationRecord(parent_class_id, parent.image_id, 'classify', parent.id, 'classification', 'cc', None),
+            changed_class,
+        )
         unaffected = tuple(record for record in before_class_change if record.parent_id != parent.id)
         self.assertEqual(unaffected, tuple(record for record in after_class_change if record.parent_id != parent.id))
         self.assertFalse(
             any(record.step_key == 'segment' and record.parent_id == parent.id for record in after_class_change)
         )
         current_classify_job = self._runtime_job('classify')
-        self.assertEqual(
-            tuple(binding for binding in class_bindings_before if binding.annotation_id != parent_class_id),
-            tuple(
-                binding
-                for binding in self.repository.bindings(current_classify_job.ref)
-                if binding.annotation_id != parent_class_id
-            ),
-        )
+        class_bindings_after = self.repository.bindings(current_classify_job.ref)
+        self.assertEqual(class_bindings_before, class_bindings_after)
+        self.assertIn(parent_class_binding, class_bindings_after)
         self.assertEqual(
             sibling_records_before,
             tuple(record for record in after_class_change if record.id == sibling.id or record.parent_id == sibling.id),
@@ -482,13 +481,19 @@ class PointWorkflowTest(unittest.TestCase):
         before_parent_change = self.repository.annotations()
         detect_job = self._runtime_job('detect')
         detect_bindings_before = self.repository.bindings(detect_job)
+        parent_detect_binding = CvatBinding(parent.image_id, 'shape', 10_000, parent.id)
+        self.assertIn(parent_detect_binding, detect_bindings_before)
         self.service.sync_target(17, 'detect')
         after_parent_change = self.repository.annotations()
         changed_parent = next(
             record for record in after_parent_change if record.step_key == 'detect' and record.id == parent.id
         )
-        self.assertEqual(parent.id, changed_parent.id)
-        self.assertEqual([[42.0, 31.0], [279.0, 209.0]], changed_parent.geometry)
+        self.assertEqual(
+            AnnotationRecord(
+                parent.id, parent.image_id, 'detect', None, 'rectangle', 'tl', [[42.0, 31.0], [279.0, 209.0]]
+            ),
+            changed_parent,
+        )
         unaffected_parent_records = tuple(
             record for record in before_parent_change if record.id != parent.id and record.parent_id != parent.id
         )
@@ -497,14 +502,9 @@ class PointWorkflowTest(unittest.TestCase):
             tuple(record for record in after_parent_change if record.id != parent.id and record.parent_id != parent.id),
         )
         current_detect_job = self._runtime_job('detect')
-        self.assertEqual(
-            tuple(binding for binding in detect_bindings_before if binding.annotation_id != parent.id),
-            tuple(
-                binding
-                for binding in self.repository.bindings(current_detect_job)
-                if binding.annotation_id != parent.id
-            ),
-        )
+        detect_bindings_after = self.repository.bindings(current_detect_job)
+        self.assertEqual(detect_bindings_before, detect_bindings_after)
+        self.assertIn(parent_detect_binding, detect_bindings_after)
         self.assertEqual((sibling,), tuple(record for record in after_parent_change if record.id == sibling.id))
         with self.assertRaisesRegex(PlatformError, 'not ready'):
             self.service.sync_target(17, 'classify')
@@ -542,14 +542,37 @@ class PointWorkflowTest(unittest.TestCase):
         )
         retried = restarted.sync_target(17, 'classify')
         self.assertEqual(51, self._targets(retried)['classify'].annotated_sample_count)
+        after_retry = self.repository.annotations()
+        new_parent_classes = tuple(
+            record for record in after_retry if record.parent_id == parent.id and record.step_key == 'classify'
+        )
+        self.assertEqual(1, len(new_parent_classes))
+        new_parent_class = new_parent_classes[0]
+        self.assertNotIn(new_parent_class.id, {record.id for record in before_failure})
         self.assertEqual(
-            tuple(record for record in before_failure if record.id != parent.id and record.parent_id != parent.id),
-            tuple(
-                record
-                for record in self.repository.annotations()
-                if record.id != parent.id and record.parent_id != parent.id
+            AnnotationRecord(new_parent_class.id, parent.image_id, 'classify', parent.id, 'classification', 'tl', None),
+            new_parent_class,
+        )
+        self.assertEqual(
+            sorted((*before_failure, new_parent_class), key=lambda record: str(record.id)),
+            sorted(after_retry, key=lambda record: str(record.id)),
+        )
+        new_parent_binding = CvatBinding(parent.image_id, 'tag', 21_000, new_parent_class.id)
+        bindings_after_retry = self.repository.bindings(new_classify_job.ref)
+        self.assertEqual(
+            sorted(
+                (*bindings_before_failure, new_parent_binding),
+                key=lambda binding: (binding.object_type, binding.object_id, str(binding.annotation_id)),
+            ),
+            sorted(
+                bindings_after_retry,
+                key=lambda binding: (binding.object_type, binding.object_id, str(binding.annotation_id)),
             ),
         )
+        repeated = restarted.sync_target(17, 'classify')
+        self.assertEqual(51, self._targets(repeated)['classify'].annotated_sample_count)
+        self.assertEqual(after_retry, self.repository.annotations())
+        self.assertEqual(bindings_after_retry, self.repository.bindings(new_classify_job.ref))
 
     def _runtime_job(self, target: str):
         runtime = RuntimeCache(self.config.runtime_dir)
