@@ -49,7 +49,7 @@ class AnnotationChanges:
 
 @dataclass(frozen=True)
 class CvatBinding:
-    """Bind one CVAT object identity to an annotation within a job sample."""
+    """Bind one CVAT object identity to an annotation under its original image ID."""
 
     sample_id: str
     object_type: str
@@ -107,7 +107,7 @@ class FrameResult:
 
 @dataclass(frozen=True)
 class JobRef:
-    """CVAT task, job, and workspace sample identifiers for a disposable runtime entry."""
+    """CVAT task and job IDs plus ordered unique original image IDs for a disposable runtime entry."""
 
     task_id: int
     job_id: int
@@ -144,7 +144,12 @@ class EditAnnotation:
 
 @dataclass(frozen=True)
 class FrameMapping:
-    """Map an ordered edit frame to its original image and source-pixel bounds."""
+    """Map an ordered edit frame to its original image and integer source-pixel bounds.
+
+    ``frame_id`` is the original image SHA for a full-image frame and the parent annotation UUID string for
+    a crop. ``image_id`` is always the original image SHA. Full-image bounds are ``(0, 0, width, height)``;
+    crop bounds are the actual clamped pixel rectangle. ``parent_id`` is null only for full-image frames.
+    """
 
     frame_id: str
     image_id: str
@@ -173,7 +178,7 @@ class EditFrameResult:
 
 @dataclass(frozen=True)
 class EditJob:
-    """A CVAT job reference plus its ordered frame-to-source mappings."""
+    """A CVAT job reference plus frame-to-source mappings in exact CVAT frame order."""
 
     ref: JobRef
     frames: tuple[FrameMapping, ...]

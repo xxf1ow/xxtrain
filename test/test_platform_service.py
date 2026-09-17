@@ -17,6 +17,8 @@ from xxtrain.platform.contracts import (
     AnnotationRecord,
     CvatBinding,
     DetectionBox,
+    EditJob,
+    FrameMapping,
     FrameResult,
     JobRef,
     PlatformAccessError,
@@ -109,7 +111,68 @@ class PlatformConfigTest(unittest.TestCase):
             cache.remember_job('detect', 'a' * 64, ref)
             self.assertEqual(ref, RuntimeCache(Path(directory)).job_for('detect', 'a' * 64))
             self.assertIsNone(cache.job_for('detect', 'b' * 64))
+            self.assertIsNone(cache.edit_job_for('detect', 'a' * 64))
             self.assertFalse(cache.has_detection_cache('a' * 64))
+
+    def test_runtime_edit_job_map_round_trips_repeated_original_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent_a = uuid4()
+            parent_b = uuid4()
+            parent_c = uuid4()
+            ref = JobRef(41, 73, ('original-a', 'original-b'))
+            job = EditJob(
+                ref,
+                (
+                    FrameMapping(str(parent_a), 'original-a', parent_a, (0, 1, 6, 8)),
+                    FrameMapping(str(parent_b), 'original-a', parent_b, (2, 3, 9, 10)),
+                    FrameMapping(str(parent_c), 'original-b', parent_c, (1, 2, 7, 9)),
+                ),
+            )
+
+            RuntimeCache(root).remember_edit_job('segment', 'fingerprint', job)
+
+            restarted = RuntimeCache(root)
+            self.assertEqual(job, restarted.edit_job_for('segment', 'fingerprint'))
+            self.assertEqual(ref, restarted.job_for('segment', 'fingerprint'))
+            entry = json.loads((root / 'jobs.json').read_text(encoding='utf-8'))['segment']['fingerprint']
+            self.assertEqual({'task_id', 'job_id', 'sample_ids', 'frames'}, set(entry))
+
+    def test_runtime_edit_job_map_rejects_invalid_source_mappings(self):
+        parent = uuid4()
+        valid_frame = {
+            'frame_id': str(parent),
+            'image_id': 'original-a',
+            'parent_id': str(parent),
+            'bounds': [0, 1, 6, 8],
+        }
+        invalid_frames = {
+            'duplicate frame IDs': [valid_frame, valid_frame],
+            'unknown original': [valid_frame | {'image_id': 'missing'}],
+            'malformed bounds': [valid_frame | {'bounds': [0, 1, 0, 8]}],
+            'malformed parent': [valid_frame | {'parent_id': 'not-a-uuid'}],
+        }
+        for name, frames in invalid_frames.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                payload = {
+                    'segment': {
+                        'fingerprint': {'task_id': 41, 'job_id': 73, 'sample_ids': ['original-a'], 'frames': frames}
+                    }
+                }
+                (Path(directory) / 'jobs.json').write_text(json.dumps(payload), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'Runtime edit job map'):
+                    RuntimeCache(Path(directory)).edit_job_for('segment', 'fingerprint')
+
+    def test_runtime_rejects_nonunique_original_job_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = uuid4()
+            job = EditJob(
+                JobRef(41, 73, ('original-a', 'original-a')),
+                (FrameMapping(str(parent), 'original-a', parent, (0, 1, 6, 8)),),
+            )
+
+            with self.assertRaisesRegex(ValueError, 'unique original image IDs'):
+                RuntimeCache(Path(directory)).remember_edit_job('segment', 'fingerprint', job)
 
     def test_runtime_forgets_every_fingerprint_for_only_the_invalidated_targets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -117,8 +180,16 @@ class PlatformConfigTest(unittest.TestCase):
             detect = JobRef(1, 2, ('a',))
             cache.remember_job('detect', 'input', detect)
             cache.remember_job('classify', 'old', JobRef(3, 4, ('a',)))
-            cache.remember_job('classify', 'new', JobRef(5, 6, ('a',)))
-            cache.remember_job('segment', 'input', JobRef(7, 8, ('a',)))
+            classify_parent = uuid4()
+            classify = EditJob(
+                JobRef(5, 6, ('a',)), (FrameMapping(str(classify_parent), 'a', classify_parent, (0, 0, 4, 5)),)
+            )
+            segment_parent = uuid4()
+            segment = EditJob(
+                JobRef(7, 8, ('a',)), (FrameMapping(str(segment_parent), 'a', segment_parent, (0, 0, 4, 5)),)
+            )
+            cache.remember_edit_job('classify', 'new', classify)
+            cache.remember_edit_job('segment', 'input', segment)
 
             cache.forget_targets(frozenset({'classify', 'segment'}))
 
@@ -127,6 +198,8 @@ class PlatformConfigTest(unittest.TestCase):
             self.assertIsNone(restarted.job_for('classify', 'old'))
             self.assertIsNone(restarted.job_for('classify', 'new'))
             self.assertIsNone(restarted.job_for('segment', 'input'))
+            self.assertIsNone(restarted.edit_job_for('classify', 'new'))
+            self.assertIsNone(restarted.edit_job_for('segment', 'input'))
 
     def test_runtime_job_map_rejects_a_non_job_mapping_shape(self):
         with tempfile.TemporaryDirectory() as directory:
