@@ -18,6 +18,10 @@ def standard_train_args(task_type: TaskType) -> dict[str, object]:
     return dict(source)
 
 
+def training_arguments(settings: 'TrainingSettings') -> dict[str, object]:
+    return standard_train_args(settings.task_type) | dict(settings.train_args)
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingSettings:
     task_type: TaskType

@@ -40,9 +40,13 @@
 
 训练完成后，工作流把 Scenario 文件复制到 Ultralytics run 目录以保留运行配置；存在 best checkpoint 时从它导出，否则从当前模型导出并报告缺失。Ultralytics YOLO 是唯一后端，不为假设中的第二框架维护抽象。
 
+`train_prepared()` 直接消费已发布的数据集目录。它在独立 `run_dir` 中生成模型 YAML、split 列表、标签副本和图片链接，使 Ultralytics 的 cache、run、checkpoint 和 ONNX 写入都不触及发布树。每次运行仍只从共用默认权重缓存初始化，不使用历史训练 checkpoint。训练回调以从 1 开始的已完成 epoch 上报进度；best checkpoint 存在时，导出和验证指标均来自该 checkpoint。
+
 ## Export and review
 
 `xxtrain export` 从已有 checkpoint 独立导出带时间戳的 ONNX。分类模型同时从生成数据集的每个训练类别复制一张参考图片；类别目录没有可用图片时导出失败。
+
+`build_delivery()` 将单模型交付复制为 `model.onnx`。分类交付生成 ZIP，其中只有 `model.onnx`、按模型输出索引排序的 `labels.txt` 和 `references/<output_index>_<label>.<ext>`；索引目录名还原为业务标签，任何输出类别缺少参考图都使交付失败。
 
 `xxtrain review` 是预测结果检查，不调用 `model.val()`。Detect、segment、pose 和 OBB 把预测可视化交给 Ultralytics 保存；分类默认从图片父目录推断真实类别并整理错分，`--unlabeled` 则把无标签图片按预测类别分目录保存。无标签模式只支持分类模型。
 
@@ -52,4 +56,4 @@
 
 ## Failures and limitations
 
-当前工作流不会自动识别源数据变化，不提供独立的指标重算入口，也不管理训练队列、远程状态或历史输入快照。训练、导出和 review 直接使用本地 Scenario 与 checkpoint；自助平台提案中的 ClearML 和不可变快照尚未实现。
+当前工作流不会自动识别源数据变化，也不管理训练队列、远程状态或历史输入快照。Scenario 入口仍直接使用本地数据与 checkpoint；已准备数据集入口不转换标注，但 ClearML 提交、远程状态和任务产物传输尚未实现。

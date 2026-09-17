@@ -8,6 +8,7 @@ from ultralytics.models import YOLO
 from xxtrain.task import TaskType
 
 from .scenario import TrainingScenario
+from .settings import TrainingSettings
 
 _TASK_SUFFIXES = {
     TaskType.CLASSIFY: '-cls',
@@ -19,25 +20,39 @@ _TASK_SUFFIXES = {
 
 
 def model_name(scenario: TrainingScenario) -> str:
-    suffix = _TASK_SUFFIXES[scenario.dataset.task_type]
-    return f'yolo{scenario.model_version}{scenario.model_scale}{suffix}'
+    return configured_model_name(
+        TrainingSettings(scenario.dataset.task_type, scenario.model_version, scenario.model_scale)
+    )
+
+
+def configured_model_name(settings: TrainingSettings) -> str:
+    suffix = _TASK_SUFFIXES[settings.task_type]
+    return f'yolo{settings.model_version}{settings.model_scale}{suffix}'
 
 
 def generate_model_yaml(scenario: TrainingScenario, root: Path) -> tuple[str, Path]:
-    name = model_name(scenario)
+    settings = TrainingSettings(scenario.dataset.task_type, scenario.model_version, scenario.model_scale)
+    name = configured_model_name(settings)
     target_path = root / scenario.dataset.name / f'{name}.yaml'
+    dataset_yaml_path = root / scenario.dataset.name / 'dataset.yaml'
+    return generate_configured_model_yaml(settings, dataset_yaml_path, target_path)
+
+
+def generate_configured_model_yaml(
+    settings: TrainingSettings, dataset_yaml_path: Path, target_path: Path
+) -> tuple[str, Path]:
+    name = configured_model_name(settings)
     try:
         yaml_handler = YAML()
         yaml_handler.preserve_quotes = True
 
-        suffix = _TASK_SUFFIXES[scenario.dataset.task_type]
-        template_name = f'yolo{scenario.model_version}{suffix}.yaml'
+        suffix = _TASK_SUFFIXES[settings.task_type]
+        template_name = f'yolo{settings.model_version}{suffix}.yaml'
         package_path = Path(ultralytics.__file__).resolve().parent
-        source_path = package_path / 'cfg' / 'models' / scenario.model_version / template_name
+        source_path = package_path / 'cfg' / 'models' / settings.model_version / template_name
         if not source_path.is_file():
             raise FileNotFoundError(f'❌ Template model configuration file not found: {source_path}')
 
-        dataset_yaml_path = root / scenario.dataset.name / 'dataset.yaml'
         with dataset_yaml_path.open(encoding='utf-8') as stream:
             dataset = yaml_handler.load(stream)
         with source_path.open(encoding='utf-8') as stream:
@@ -48,11 +63,12 @@ def generate_model_yaml(scenario: TrainingScenario, root: Path) -> tuple[str, Pa
             raise ValueError(f'❌ No classes found in dataset.yaml: {dataset_yaml_path}')
         model['nc'] = num_classes
 
-        if scenario.dataset.task_type is TaskType.POSE:
+        if settings.task_type is TaskType.POSE:
             if 'kpt_shape' not in dataset:
                 raise KeyError("❌ 'kpt_shape' missing in dataset.yaml for pose task")
             model['kpt_shape'] = dataset['kpt_shape']
 
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         with target_path.open('w', encoding='utf-8') as stream:
             yaml_handler.dump(model, stream)
     except Exception as error:

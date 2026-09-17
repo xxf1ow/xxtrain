@@ -31,12 +31,17 @@ def copy_class_reference_images(
 
 
 def export_model_to_onnx(best_model: YOLO, root_path: str | Path, name: str) -> Path:
-    print('🚀 Exporting best model to ONNX format ...')
-    temp_onnx_path = best_model.export(format='onnx', simplify=True)
     formatted_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     onnx_path = Path(root_path) / 'weights' / f'{name}_{formatted_time}.onnx'
+    return export_model_to_path(best_model, onnx_path)
+
+
+def export_model_to_path(best_model: YOLO, onnx_path: Path) -> Path:
+    print('🚀 Exporting best model to ONNX format ...')
+    temp_onnx_path = Path(best_model.export(format='onnx', simplify=True))
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(temp_onnx_path, onnx_path)
+    if temp_onnx_path.resolve() != onnx_path.resolve():
+        shutil.move(temp_onnx_path, onnx_path)
     print(f'✅ Model exported to ONNX format: {onnx_path}')
     return onnx_path
 
