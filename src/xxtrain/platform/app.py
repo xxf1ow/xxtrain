@@ -233,15 +233,17 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
         return {'annotation_url': annotation_url}
 
     @app.post('/platform/api/detection/sync', dependencies=[Depends(write_request)])
-    def sync_annotation(request: Request, body: _EmptyBody) -> dict[str, object]:
+    def sync_annotation(request: Request, body: _EmptyBody) -> Response:
         user_id = authenticated_user(request)
         try:
             view = service.sync_detection(user_id)
+        except TargetValidationError as error:
+            return validation_response(error)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return workspace_payload(view)
+        return JSONResponse(content=workspace_payload(view))
 
     @app.post('/platform/api/detection/cache', dependencies=[Depends(write_request)])
     def generate_detection_cache(request: Request, body: _EmptyBody) -> dict[str, object]:

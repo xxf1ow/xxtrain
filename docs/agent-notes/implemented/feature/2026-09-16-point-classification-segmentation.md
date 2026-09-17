@@ -111,9 +111,9 @@ CVAT 交换现支持类型化任务标签、分类 tag 和指针 polyline。初�
 
 本次现场证据是人工验收及两项定向浏览器检查，不宣称自动三步骤 harness 已在现场全量执行。事务故障注入、精确对象绑定及全部边界场景由离线联合回归覆盖；全量 suite 中未配置真实浏览器环境的测试明确跳过。验收后平台进程和本次启动的 12 个 CVAT／代理依赖容器均停用，restart 策略保持 `no`；工作区图片、数据库、缓存和凭据保留，ClearML 未启动。
 
-### Open compatibility issue
+### Detection sync compatibility
 
-当前页面使用 `/platform/api/targets/detect/sync`，检测框与负样本冲突返回 409、业务原因和修正链接。保留的 `/platform/api/detection/sync` 尚未单独处理 `TargetValidationError`，同一冲突被转换为 502 通用提示，修正链接丢失。真实 ASGI 路由对照复现该差异；两个接口均不写入冲突标注。兼容接口的错误映射及回归测试需要补齐，不能把当前页面验收当作旧接口也已验证。
+当前页面使用 `/platform/api/targets/detect/sync`；保留的 `/platform/api/detection/sync` 复用相同的业务校验响应。检测框与负样本冲突时，两个接口均返回 409、业务原因和修正链接，不写入冲突标注。ASGI 回归同时覆盖两个入口，防止兼容接口将 `TargetValidationError` 当作普通运行错误而丢失修正信息；一般操作失败仍返回脱敏的 502。
 
 ## Alternatives considered
 

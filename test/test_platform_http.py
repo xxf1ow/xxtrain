@@ -349,6 +349,23 @@ class PlatformHttpTest(unittest.TestCase):
         malformed = self.client.post('/platform/api/targets/classify/start', headers=headers, json={'job_id': 73})
         self.assertEqual(422, malformed.status_code)
 
+    def test_detection_sync_routes_preserve_conflict_correction_details(self) -> None:
+        headers = self.authenticate()
+        for route, operation in (
+            ('/platform/api/detection/sync', 'sync'),
+            ('/platform/api/targets/detect/sync', 'sync:detect'),
+        ):
+            with self.subTest(route=route):
+                self.service.errors[operation] = TargetValidationError(
+                    '图片不能同时包含检测框和负样本标记。', '/tasks/41/jobs/73?frame=0'
+                )
+                response = self.client.post(route, headers=headers, json={})
+                self.assertEqual(409, response.status_code)
+                self.assertEqual(
+                    {'detail': '图片不能同时包含检测框和负样本标记。', 'annotation_url': '/tasks/41/jobs/73?frame=0'},
+                    response.json(),
+                )
+
     def test_target_validation_error_exposes_only_safe_correction_details(self) -> None:
         self.service.errors['sync:segment'] = TargetValidationError(
             '裁剪图 3 的标注不符合要求，请返回当前任务修正。', '/tasks/42/jobs/74?frame=2'
