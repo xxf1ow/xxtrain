@@ -1,21 +1,37 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 
-from xxtrain.platform.contracts import FrameResult, ImageInput, JobRef, PlatformAccessError, PlatformError, PreparedJob
+from xxtrain.platform.contracts import (
+    CvatBinding,
+    EditFrame,
+    EditFrameResult,
+    EditJob,
+    FrameResult,
+    ImageInput,
+    JobRef,
+    PlatformAccessError,
+    PlatformError,
+    PreparedJob,
+)
 
 from .codec import decode_annotations, decode_initial_bindings, encode_mapped_annotations
+from .edit_codec import decode_edit_annotations, decode_edit_bindings, encode_edit_annotations
 from .preparation import PreparationCheckpoint, PreparationState
 
 _EXTRA_ATTRIBUTE = 'xxtrain_labelme_extra'
 _PREPARE_TIMEOUT_SECONDS = 120.0
 _POLL_INTERVAL_SECONDS = 0.25
 _REQUEST_TIMEOUT_SECONDS = 10.0
+
+type _UploadFrame = ImageInput | EditFrame
+type _BindingDecoder = Callable[[dict, JobRef, list[dict]], tuple[CvatBinding, ...]]
 
 
 class CvatClient:
@@ -47,11 +63,24 @@ class CvatClient:
         attribute IDs; callers must not manufacture them.
         """
 
+        return self.create_edit_task(name, labels, 'rectangle')
+
+    def create_edit_task(self, name: str, labels: tuple[str, ...], label_type: str) -> int:
+        """Create a typed CVAT task and return its server-assigned ID.
+
+        ``label_type`` must be ``rectangle``, ``tag``, or ``polyline``. Each label receives the mutable reserved
+        text attribute used for initialization correlation.
+        """
+
+        if label_type not in {'rectangle', 'tag', 'polyline'}:
+            raise ValueError(f'Unsupported CVAT label type: {label_type!r}')
+
         payload = {
             'name': name,
             'labels': [
                 {
                     'name': label,
+                    'type': label_type,
                     'attributes': [
                         {
                             'name': _EXTRA_ATTRIBUTE,
@@ -86,69 +115,38 @@ class CvatClient:
         and recovery require every platform token and native CVAT ID before the Job is assigned.
         """
 
-        if preparation.stage == 'initializing':
-            raise PlatformError(
-                f'CVAT task {task_id} has ambiguous annotation initialization; administrator reconciliation is required'
-            )
-
-        deadline = time.monotonic() + _PREPARE_TIMEOUT_SECONDS
-        filenames = self._upload_filenames(images)
-        task = self._json(
-            self._service_request('GET', f'/api/tasks/{task_id}', deadline=deadline, deadline_task_id=task_id)
+        return self._prepare_frames(
+            task_id,
+            images,
+            user_id,
+            tuple(image.sample_id for image in images),
+            lambda labels: encode_mapped_annotations(images, labels),
+            lambda payload, ref, labels: decode_initial_bindings(payload, images, ref, labels),
+            preparation=preparation,
+            checkpoint=checkpoint,
         )
-        if not isinstance(task, dict):
-            raise PlatformError(f'CVAT /api/tasks/{task_id} returned an invalid size')
-        size = task.get('size')
-        if size is not None:
-            size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
 
-        current = preparation
-        if size in (None, 0):
-            if current.stage == 'uploading':
-                if current.request_id is None:
-                    raise PlatformError(
-                        f'CVAT task {task_id} has an upload without a request ID; '
-                        'administrator reconciliation is required'
-                    )
-                self._wait_for_request(task_id, current.request_id, deadline)
-            elif current.stage == 'new':
-                current = PreparationState('uploading')
-                self._checkpoint(checkpoint, current)
-                request_id = self._upload_images(task_id, images, filenames, deadline)
-                current = PreparationState('uploading', request_id)
-                self._checkpoint(checkpoint, current)
-                self._wait_for_request(task_id, request_id, deadline)
-            else:
-                raise PlatformError(f'CVAT task {task_id} has no uploaded data for preparation stage {current.stage!r}')
+    def prepare_edit_task(self, task_id: int, frames: tuple[EditFrame, ...], user_id: int) -> PreparedJob:
+        """Upload ordered edit frames, initialize typed annotations, and return original-image bindings.
 
-        self._verify_frames(task_id, images, filenames, deadline)
-        if current.stage in {'new', 'uploading'}:
-            current = PreparationState('uploaded')
-            self._checkpoint(checkpoint, current)
+        Generated filenames are opaque ordering keys. ``PreparedJob.ref.sample_ids`` contains each original image ID
+        once in first-frame order; callers retain the supplied mappings when constructing ``EditJob``.
+        """
 
-        job_id = self._wait_for_job(task_id, len(images), deadline)
-        ref = JobRef(task_id, job_id, tuple(image.sample_id for image in images))
+        sample_ids = tuple(dict.fromkeys(frame.mapping.image_id for frame in frames))
 
-        labels = self._labels(task_id, deadline=deadline)
-        if current.stage != 'initialized':
-            annotations = encode_mapped_annotations(images, labels)
-            current = PreparationState('initializing')
-            self._checkpoint(checkpoint, current)
-            response = self._service_request(
-                'PUT', f'/api/jobs/{job_id}/annotations', json=annotations, deadline=deadline, deadline_task_id=task_id
-            )
-            current = PreparationState('initialized')
-            self._checkpoint(checkpoint, current)
-        else:
-            response = self._service_request(
-                'GET', f'/api/jobs/{job_id}/annotations', deadline=deadline, deadline_task_id=task_id
-            )
-        bindings = decode_initial_bindings(self._json(response), images, ref, labels)
+        def decode(payload: dict, ref: JobRef, labels: list[dict]) -> tuple[CvatBinding, ...]:
+            job = EditJob(ref, tuple(frame.mapping for frame in frames))
+            return decode_edit_bindings(payload, frames, job, labels)
 
-        self._service_request(
-            'PATCH', f'/api/jobs/{job_id}', json={'assignee': user_id}, deadline=deadline, deadline_task_id=task_id
+        return self._prepare_frames(
+            task_id,
+            frames,
+            user_id,
+            sample_ids,
+            lambda labels: encode_edit_annotations(frames, labels, mapped=True),
+            decode,
         )
-        return PreparedJob(ref, bindings)
 
     def fetch_detection(self, ref: JobRef) -> tuple[FrameResult, ...]:
         """Fetch and decode the current rectangle annotations for ``ref`` using CVAT's actual label IDs."""
@@ -156,6 +154,13 @@ class CvatClient:
         labels = self._labels(ref.task_id)
         response = self._service_request('GET', f'/api/jobs/{ref.job_id}/annotations')
         return decode_annotations(self._json(response), ref, labels)
+
+    def fetch_edit(self, job: EditJob) -> tuple[EditFrameResult, ...]:
+        """Fetch persistent tag or polyline annotations using the Job's verified frame order."""
+
+        labels = self._labels(job.ref.task_id)
+        response = self._service_request('GET', f'/api/jobs/{job.ref.job_id}/annotations')
+        return decode_edit_annotations(self._json(response), job, labels)
 
     def job_is_unfinished(self, ref: JobRef) -> bool:
         """Return whether the Job state differs from completed.
@@ -208,8 +213,83 @@ class CvatClient:
         response = self._browser_request('POST', '/api/auth/logout', cookie=cookie, csrf=csrf)
         return self._session_cookies(response)
 
+    def _prepare_frames(
+        self,
+        task_id: int,
+        frames: tuple[_UploadFrame, ...],
+        user_id: int,
+        sample_ids: tuple[str, ...],
+        encode: Callable[[list[dict]], dict],
+        decode_bindings: _BindingDecoder,
+        *,
+        preparation: PreparationState = PreparationState(),
+        checkpoint: PreparationCheckpoint | None = None,
+    ) -> PreparedJob:
+        if preparation.stage == 'initializing':
+            raise PlatformError(
+                f'CVAT task {task_id} has ambiguous annotation initialization; administrator reconciliation is required'
+            )
+
+        deadline = time.monotonic() + _PREPARE_TIMEOUT_SECONDS
+        filenames = self._upload_filenames(frames)
+        task = self._json(
+            self._service_request('GET', f'/api/tasks/{task_id}', deadline=deadline, deadline_task_id=task_id)
+        )
+        if not isinstance(task, dict):
+            raise PlatformError(f'CVAT /api/tasks/{task_id} returned an invalid size')
+        size = task.get('size')
+        if size is not None:
+            size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
+
+        current = preparation
+        if size in (None, 0):
+            if current.stage == 'uploading':
+                if current.request_id is None:
+                    raise PlatformError(
+                        f'CVAT task {task_id} has an upload without a request ID; '
+                        'administrator reconciliation is required'
+                    )
+                self._wait_for_request(task_id, current.request_id, deadline)
+            elif current.stage == 'new':
+                current = PreparationState('uploading')
+                self._checkpoint(checkpoint, current)
+                request_id = self._upload_images(task_id, frames, filenames, deadline)
+                current = PreparationState('uploading', request_id)
+                self._checkpoint(checkpoint, current)
+                self._wait_for_request(task_id, request_id, deadline)
+            else:
+                raise PlatformError(f'CVAT task {task_id} has no uploaded data for preparation stage {current.stage!r}')
+
+        self._verify_frames(task_id, frames, filenames, deadline)
+        if current.stage in {'new', 'uploading'}:
+            current = PreparationState('uploaded')
+            self._checkpoint(checkpoint, current)
+
+        job_id = self._wait_for_job(task_id, len(frames), deadline)
+        ref = JobRef(task_id, job_id, sample_ids)
+        labels = self._labels(task_id, deadline=deadline)
+        if current.stage != 'initialized':
+            annotations = encode(labels)
+            current = PreparationState('initializing')
+            self._checkpoint(checkpoint, current)
+            response = self._service_request(
+                'PUT', f'/api/jobs/{job_id}/annotations', json=annotations, deadline=deadline, deadline_task_id=task_id
+            )
+            current = PreparationState('initialized')
+            self._checkpoint(checkpoint, current)
+        else:
+            response = self._service_request(
+                'GET', f'/api/jobs/{job_id}/annotations', deadline=deadline, deadline_task_id=task_id
+            )
+        payload = self._json(response)
+        bindings = decode_bindings(payload, ref, labels)
+        self._service_request(
+            'PATCH', f'/api/jobs/{job_id}', json={'assignee': user_id}, deadline=deadline, deadline_task_id=task_id
+        )
+        return PreparedJob(ref, bindings)
+
     def _upload_images(
-        self, task_id: int, images: tuple[ImageInput, ...], filenames: tuple[str, ...], deadline: float
+        self, task_id: int, images: tuple[_UploadFrame, ...], filenames: tuple[str, ...], deadline: float
     ) -> str:
         with ExitStack() as stack:
             files = [
@@ -248,7 +328,7 @@ class CvatClient:
             self._poll_pause(task_id, deadline)
 
     def _verify_frames(
-        self, task_id: int, images: tuple[ImageInput, ...], filenames: tuple[str, ...], deadline: float
+        self, task_id: int, images: tuple[_UploadFrame, ...], filenames: tuple[str, ...], deadline: float
     ) -> None:
         path = f'/api/tasks/{task_id}/data/meta'
         metadata = self._json(self._service_request('GET', path, deadline=deadline, deadline_task_id=task_id))
@@ -412,7 +492,7 @@ class CvatClient:
         return value
 
     @staticmethod
-    def _upload_filenames(images: tuple[ImageInput, ...]) -> tuple[str, ...]:
+    def _upload_filenames(images: tuple[_UploadFrame, ...]) -> tuple[str, ...]:
         return tuple(f'{index:08d}{Path(image.image_path).suffix.lower()}' for index, image in enumerate(images))
 
     @staticmethod
