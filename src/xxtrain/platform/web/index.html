@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Point 检测标注台</title>
+  <title>Point 标注台</title>
   <link rel="stylesheet" href="/platform/style.css">
   <script src="/platform/app.js" defer></script>
 </head>
@@ -13,7 +13,7 @@
     <div class="brand-mark" aria-hidden="true">XX</div>
     <div>
       <p class="utility-label">现场标注工具</p>
-      <p class="product-name">Point 检测标注台</p>
+      <p class="product-name">Point 标注台</p>
     </div>
     <div id="session-tools" class="session-tools" hidden>
       <span id="session-user" class="session-user"></span>
@@ -66,7 +66,7 @@
           <div class="target-index" aria-hidden="true">01</div>
           <div class="target-summary">
             <h2>检测模型 <span class="availability">可用</span></h2>
-            <p>已标注图片：<strong id="annotated-image-count">—</strong> / <span id="detect-image-total">—</span> 张</p>
+            <p>已标注原图：<strong id="annotated-image-count">—</strong> / <span id="detect-image-total">—</span> 张</p>
           </div>
           <div class="target-actions">
             <button id="primary-action" class="primary-button" type="button" disabled>开始标注</button>
@@ -75,30 +75,37 @@
           <p class="target-help">有图片即可标注；全部标注完成且至少 50 张图片含框后可训练。本阶段“开始训练”仅生成训练缓存。</p>
           <p id="detect-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
           <p id="workspace-error" class="error-message operation-error" role="alert" hidden></p>
+          <a id="detect-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>
         </article>
         <article class="target" data-target="classify" aria-disabled="true">
           <div class="target-index" aria-hidden="true">02</div>
           <div class="target-summary">
-            <h2>分类模型 <span class="availability">未开放</span></h2>
-            <p>已标注图片：— / <span id="classify-image-total">—</span> 张</p>
+            <h2>分类模型 <span class="availability">可用</span></h2>
+            <p>已标注裁剪图：<strong id="classify-annotated-count">—</strong> / <span id="classify-image-total">—</span> 张</p>
           </div>
           <div class="target-actions">
-            <button class="primary-button" type="button" disabled>开始标注</button>
-            <button class="primary-button" type="button" disabled>开始训练</button>
+            <button id="classify-annotate-action" class="primary-button" type="button" disabled>开始标注</button>
+            <button id="classify-cache-action" class="primary-button" type="button" disabled>开始训练</button>
           </div>
-          <p class="target-help">检测标注全部完成且至少 50 张图片含框后可进行分类标注，无需先训练检测模型。分类功能尚未开放。</p>
+          <p class="target-help">每张裁剪图只选择一个分类标签；检测标注全部完成且至少 50 张原图含框后可进行分类标注，无需先生成检测缓存。</p>
+          <p id="classify-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
+          <p id="classify-error" class="error-message operation-error" role="alert" hidden></p>
+          <a id="classify-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>
         </article>
         <article class="target" data-target="segment" aria-disabled="true">
           <div class="target-index" aria-hidden="true">03</div>
           <div class="target-summary">
-            <h2>分割模型 <span class="availability">未开放</span></h2>
-            <p>已标注图片：— / <span id="segment-image-total">—</span> 张</p>
+            <h2>指针分割模型 <span class="availability">可用</span></h2>
+            <p>已标注裁剪图：<strong id="segment-annotated-count">—</strong> / <span id="segment-image-total">—</span> 张</p>
           </div>
           <div class="target-actions">
-            <button class="primary-button" type="button" disabled>开始标注</button>
-            <button class="primary-button" type="button" disabled>开始训练</button>
+            <button id="segment-annotate-action" class="primary-button" type="button" disabled>开始标注</button>
+            <button id="segment-cache-action" class="primary-button" type="button" disabled>开始训练</button>
           </div>
-          <p class="target-help">分类标注全部完成且至少 50 张图片合格后可进行分割标注，无需先训练分类模型。分割功能尚未开放。</p>
+          <p class="target-help">每张裁剪图至少绘制一条两点折线；分类全部完成后即可标注，无需先生成分类缓存。</p>
+          <p id="segment-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
+          <p id="segment-error" class="error-message operation-error" role="alert" hidden></p>
+          <a id="segment-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>
         </article>
       </div>
 

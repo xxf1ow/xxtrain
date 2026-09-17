@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import tempfile
 import uuid
 from pathlib import Path
@@ -14,7 +15,7 @@ from xxtrain.platform.contracts import AnnotationRecord
 from xxtrain.workspace_data import WorkspaceData
 from xxtrain.workspace_data.repository import AnnotationRepository
 
-FIXTURE_MARKER = 'xxtrain-task-6-synthetic-sqlite-workspace-v2'
+FIXTURE_MARKER = 'xxtrain-task-7-point-workflow-v2'
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -25,21 +26,14 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_image(path: Path, accent: str, *, diagonal: bool) -> None:
-    image = Image.new('RGB', (800, 600), '#eef2f2')
+def _write_image(path: Path, index: int) -> None:
+    rng = random.Random(index + 7301)
+    image = Image.new('RGB', (320, 240))
+    image.putdata([(rng.randrange(256), rng.randrange(256), rng.randrange(256)) for _ in range(320 * 240)])
     draw = ImageDraw.Draw(image)
-    if diagonal:
-        for offset in range(-600, 801, 60):
-            draw.line((offset, 0, offset + 600, 600), fill='#91a8aa', width=8)
-        draw.ellipse((430, 180, 720, 470), fill='#d9e4e4', outline=accent, width=9)
-    else:
-        for x in range(0, 801, 100):
-            draw.line((x, 0, x, 600), fill='#c5d2d2', width=1)
-        for y in range(0, 601, 100):
-            draw.line((0, y, 800, y), fill='#c5d2d2', width=1)
-    draw.rectangle((120, 100, 300, 260), outline=accent, width=5)
-    draw.text((130, 110), 'synthetic Point acceptance', fill='#172c32')
-    image.save(path, quality=95)
+    draw.rectangle((40, 30, 280, 210), outline='#ffffff', width=4)
+    draw.text((48, 38), f'Point acceptance {index:02d}', fill='#ffffff')
+    image.save(path, quality=85)
 
 
 def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) -> dict[str, object]:
@@ -60,30 +54,71 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
     for directory in (images_dir, staging_dir, baseline_dir, runtime_dir):
         directory.mkdir()
 
-    first_image = staging_dir / 'point-a.jpg'
-    second_image = staging_dir / 'point-b.jpg'
-    _write_image(first_image, '#007d8a', diagonal=False)
-    _write_image(second_image, '#d56a30', diagonal=True)
+    staged_images = []
+    for index in range(50):
+        image_path = staging_dir / f'point-{index:02d}.jpg'
+        _write_image(image_path, index)
+        staged_images.append(image_path)
 
     workspace = WorkspaceData(workspace_dir)
-    admission = workspace.admit((first_image, second_image))
-    if admission.accepted_count != 2:
-        raise RuntimeError('Synthetic fixture textures must admit as two distinct images')
+    admission = workspace.admit(tuple(staged_images))
+    if admission.accepted_count != 50:
+        raise RuntimeError('Synthetic fixture textures must admit as 50 distinct images')
     images = workspace.images()
 
-    original_rectangle_points = [[120.0, 100.0], [300.0, 260.0]]
-    initial_annotation = AnnotationRecord(
-        uuid.uuid4(), images[0].sample_id, 'detect', None, 'rectangle', 'tl', original_rectangle_points
+    original_rectangle_points = [[40.0, 30.0], [280.0, 210.0]]
+    primary_detections = tuple(
+        AnnotationRecord(uuid.uuid4(), image.sample_id, 'detect', None, 'rectangle', 'tl', original_rectangle_points)
+        for image in images
+    )
+    sibling_detection = AnnotationRecord(
+        uuid.uuid4(), images[0].sample_id, 'detect', None, 'rectangle', 'tc', [[60.0, 50.0], [180.0, 150.0]]
+    )
+    detections = (primary_detections[0], sibling_detection, *primary_detections[1:])
+    classifications = tuple(
+        AnnotationRecord(
+            uuid.uuid4(),
+            detection.image_id,
+            'classify',
+            detection.id,
+            'classification',
+            ('tl', 'tc', 'cl', 'cc')[index % 4],
+            None,
+        )
+        for index, detection in enumerate(detections)
+    )
+    segments = tuple(
+        AnnotationRecord(
+            uuid.uuid4(),
+            detection.image_id,
+            'segment',
+            detection.id,
+            'polyline',
+            '1',
+            [[80.0, 70.0], [160.0, 130.0]] if detection.id == sibling_detection.id else [[80.0, 70.0], [220.0, 170.0]],
+        )
+        for detection in detections
+    )
+    extra_segment = AnnotationRecord(
+        uuid.uuid4(),
+        primary_detections[0].image_id,
+        'segment',
+        primary_detections[0].id,
+        'polyline',
+        '1',
+        [[90.0, 160.0], [210.0, 80.0]],
     )
     database_path = workspace_dir / 'annotations.db'
-    AnnotationRepository(database_path, point_task_definition()).save_annotations((initial_annotation,))
+    AnnotationRepository(database_path, point_task_definition()).save_annotations(
+        (*detections, *classifications, *segments, extra_segment)
+    )
 
     baseline_path = baseline_dir / 'reference.json'
     _write_json(baseline_path, {'kind': 'synthetic-baseline', 'immutable': True})
 
     suffix = uuid.uuid4().hex[:10]
-    workspace_id = f'task-6-synthetic-{suffix}'
-    display_name = f'Task 6 合成验收 {suffix}'
+    workspace_id = f'task-7-point-workflow-{suffix}'
+    display_name = f'Point 三模型验收 {suffix}'
     config_path = root / 'workspace.json'
     _write_json(
         config_path,
@@ -104,7 +139,12 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
         'display_name': display_name,
         'config_path': str(config_path),
         'database_path': str(database_path),
-        'initial_annotation_ids': [str(initial_annotation.id)],
+        'runtime_dir': str(runtime_dir),
+        'initial_annotation_ids': {
+            'detect': [str(record.id) for record in detections],
+            'classify': [str(record.id) for record in classifications],
+            'segment': [str(record.id) for record in (*segments, extra_segment)],
+        },
         'original_rectangle_points': original_rectangle_points,
         'images': [
             {'path': str(image.image_path), 'sha256': _sha256(image.image_path), 'sample_id': image.sample_id}

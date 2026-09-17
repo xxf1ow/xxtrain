@@ -49,7 +49,7 @@ class AnnotationChanges:
 
 @dataclass(frozen=True)
 class CvatBinding:
-    """Bind one CVAT object identity to an annotation within a job sample."""
+    """Bind one CVAT object identity to an annotation under its original image ID."""
 
     sample_id: str
     object_type: str
@@ -73,11 +73,14 @@ class DetectionBox:
 
 @dataclass(frozen=True)
 class ImageInput:
+    """Registered image with current detection boxes or explicit negative confirmation."""
+
     sample_id: str
     image_path: Path
     width: int
     height: int
     boxes: tuple[DetectionBox, ...]
+    negative: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,13 +104,19 @@ class DetectionSummary:
 
 @dataclass(frozen=True)
 class FrameResult:
+    """Current rectangles and explicit image-level negative confirmation from CVAT.
+
+    No confirmation means unfinished when boxes are empty. Boxes plus confirmation are a validation conflict.
+    """
+
     sample_id: str
     boxes: tuple[DetectionBox, ...]
+    negative: bool = False
 
 
 @dataclass(frozen=True)
 class JobRef:
-    """CVAT task, job, and workspace sample identifiers for a disposable runtime entry."""
+    """CVAT task and job IDs plus ordered unique original image IDs for a disposable runtime entry."""
 
     task_id: int
     job_id: int
@@ -132,6 +141,88 @@ class DetectionSync:
 
 
 @dataclass(frozen=True)
+class TargetSync:
+    """One validated downstream synchronization and its predicted final fingerprint."""
+
+    changes: AnnotationChanges
+    bindings: tuple[CvatBinding, ...]
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class EditAnnotation:
+    """One classification or shape annotation in edit-frame coordinates."""
+
+    id: UUID | None
+    kind: str
+    label: str
+    geometry: JsonValue
+    cvat_id: int | None = None
+
+
+@dataclass(frozen=True)
+class FrameMapping:
+    """Map an ordered edit frame to its original image and integer source-pixel bounds.
+
+    ``frame_id`` is the original image SHA for a full-image frame and the parent annotation UUID string for
+    a crop. ``image_id`` is always the original image SHA. Full-image bounds are ``(0, 0, width, height)``;
+    crop bounds are the actual clamped pixel rectangle. ``parent_id`` is null only for full-image frames.
+    """
+
+    frame_id: str
+    image_id: str
+    parent_id: UUID | None
+    bounds: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class EditFrame:
+    """One image frame and its annotations for a target-specific edit job."""
+
+    mapping: FrameMapping
+    image_path: Path
+    width: int
+    height: int
+    annotations: tuple[EditAnnotation, ...]
+
+
+@dataclass(frozen=True)
+class EditFrameResult:
+    """Annotations returned for one edit frame identity."""
+
+    frame_id: str
+    annotations: tuple[EditAnnotation, ...]
+
+
+@dataclass(frozen=True)
+class EditJob:
+    """A CVAT job reference plus frame-to-source mappings in exact CVAT frame order."""
+
+    ref: JobRef
+    frames: tuple[FrameMapping, ...]
+
+
+@dataclass(frozen=True)
+class TargetSummary:
+    """Counts target samples and samples with complete annotations."""
+
+    sample_count: int
+    annotated_sample_count: int
+
+
+@dataclass(frozen=True)
+class TargetView:
+    """One model target's fact-derived progress and available actions."""
+
+    id: str
+    sample_count: int
+    annotated_sample_count: int
+    can_annotate: bool
+    can_generate_cache: bool
+    cache_ready: bool
+
+
+@dataclass(frozen=True)
 class WorkspaceView:
     workspace_id: str
     name: str
@@ -140,10 +231,19 @@ class WorkspaceView:
     boxed_image_count: int
     can_generate_detection_cache: bool
     detection_cache_ready: bool
+    targets: tuple[TargetView, ...] = ()
 
 
 class PlatformError(Exception):
     pass
+
+
+class TargetValidationError(PlatformError):
+    """A safe annotation validation failure with its server-owned correction link."""
+
+    def __init__(self, message: str, annotation_url: str) -> None:
+        super().__init__(message)
+        self.annotation_url = annotation_url
 
 
 class PlatformAccessError(PlatformError):

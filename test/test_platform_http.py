@@ -21,7 +21,14 @@ else:
     from xxtrain.integrations.cvat import CvatClient
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig
-    from xxtrain.platform.contracts import JobRef, PlatformAccessError, PlatformError, WorkspaceView
+    from xxtrain.platform.contracts import (
+        JobRef,
+        PlatformAccessError,
+        PlatformError,
+        TargetValidationError,
+        TargetView,
+        WorkspaceView,
+    )
     from xxtrain.platform.runtime import RuntimeCache
     from xxtrain.platform.service import AnnotationService
     from xxtrain.workspace_data import WorkspaceData
@@ -71,7 +78,7 @@ class FakeService:
         self.calls.append((name, user_id))
         if name in self.errors:
             raise self.errors[name]
-        if name == 'begin':
+        if name == 'begin' or name.startswith('begin:'):
             return '/tasks/41/jobs/73'
         return self.view_result
 
@@ -81,8 +88,14 @@ class FakeService:
     def begin_detection(self, user_id: int) -> str:
         return self._result('begin', user_id)  # type: ignore[return-value]
 
+    def begin_target(self, user_id: int, target: str) -> str:
+        return self._result(f'begin:{target}', user_id)  # type: ignore[return-value]
+
     def sync_detection(self, user_id: int) -> WorkspaceView:
         return self._result('sync', user_id)  # type: ignore[return-value]
+
+    def sync_target(self, user_id: int, target: str) -> WorkspaceView:
+        return self._result(f'sync:{target}', user_id)  # type: ignore[return-value]
 
     def upload(self, user_id: int, staged: tuple[Path, ...]) -> WorkspaceView:
         self.staged = staged
@@ -91,6 +104,9 @@ class FakeService:
 
     def generate_detection_cache(self, user_id: int) -> WorkspaceView:
         return self._result('cache', user_id)  # type: ignore[return-value]
+
+    def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
+        return self._result(f'cache:{target}', user_id)  # type: ignore[return-value]
 
 
 class FakeCvat:
@@ -134,6 +150,14 @@ class PlatformHttpTest(unittest.TestCase):
             cvat_internal_url='http://cvat.test',
         )
         self.service = FakeService()
+        self.service.view_result = replace(
+            self.service.view_result,
+            targets=(
+                TargetView('detect', 2, 0, True, False, False),
+                TargetView('classify', 0, 0, False, False, False),
+                TargetView('segment', 0, 0, False, False, False),
+            ),
+        )
         self.cvat = FakeCvat()
         self.client = AsgiTestClient(create_app(self.config, self.service, self.cvat))
         self.addCleanup(self.client.close)
@@ -178,9 +202,36 @@ class PlatformHttpTest(unittest.TestCase):
                 'detection_cache_ready': False,
                 'task': {'id': 'point', 'name': 'Point'},
                 'targets': [
-                    {'id': 'detect', 'name': '检测', 'available': True},
-                    {'id': 'classify', 'name': '分类', 'available': False},
-                    {'id': 'segment', 'name': '分割', 'available': False},
+                    {
+                        'id': 'detect',
+                        'sample_count': 2,
+                        'annotated_sample_count': 0,
+                        'can_annotate': True,
+                        'can_generate_cache': False,
+                        'cache_ready': False,
+                        'name': '检测',
+                        'available': True,
+                    },
+                    {
+                        'id': 'classify',
+                        'sample_count': 0,
+                        'annotated_sample_count': 0,
+                        'can_annotate': False,
+                        'can_generate_cache': False,
+                        'cache_ready': False,
+                        'name': '分类',
+                        'available': True,
+                    },
+                    {
+                        'id': 'segment',
+                        'sample_count': 0,
+                        'annotated_sample_count': 0,
+                        'can_annotate': False,
+                        'can_generate_cache': False,
+                        'cache_ready': False,
+                        'name': '分割',
+                        'available': True,
+                    },
                 ],
             },
             response.json(),
@@ -194,6 +245,9 @@ class PlatformHttpTest(unittest.TestCase):
             ('/platform/api/detection/start', {}),
             ('/platform/api/detection/sync', {}),
             ('/platform/api/detection/cache', {}),
+            ('/platform/api/targets/classify/start', {}),
+            ('/platform/api/targets/classify/sync', {}),
+            ('/platform/api/targets/classify/cache', {}),
         )
         cvat_calls = list(self.cvat.calls)
         for path, payload in requests:
@@ -211,6 +265,9 @@ class PlatformHttpTest(unittest.TestCase):
             ('/platform/api/detection/start', {}),
             ('/platform/api/detection/sync', {}),
             ('/platform/api/detection/cache', {}),
+            ('/platform/api/targets/segment/start', {}),
+            ('/platform/api/targets/segment/sync', {}),
+            ('/platform/api/targets/segment/cache', {}),
         )
         for path, payload in requests:
             with self.subTest(path=path):
@@ -264,6 +321,66 @@ class PlatformHttpTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual({'annotation_url': '/tasks/41/jobs/73'}, response.json())
         self.assertEqual([('begin', 17)], self.service.calls)
+
+    def test_target_actions_dispatch_strict_targets_and_accept_only_empty_objects(self) -> None:
+        headers = self.authenticate()
+        for target in ('detect', 'classify', 'segment'):
+            for action in ('start', 'sync', 'cache'):
+                response = self.client.post(f'/platform/api/targets/{target}/{action}', headers=headers, json={})
+                self.assertEqual(200, response.status_code, (target, action, response.text))
+        calls = [name for name, _user_id in self.service.calls]
+        self.assertEqual(
+            [
+                'begin:detect',
+                'sync:detect',
+                'cache:detect',
+                'begin:classify',
+                'sync:classify',
+                'cache:classify',
+                'begin:segment',
+                'sync:segment',
+                'cache:segment',
+            ],
+            calls,
+        )
+        for target in ('train', '../classify', 'CLASSIFY'):
+            response = self.client.post(f'/platform/api/targets/{target}/start', headers=headers, json={})
+            self.assertIn(response.status_code, (404, 422))
+        malformed = self.client.post('/platform/api/targets/classify/start', headers=headers, json={'job_id': 73})
+        self.assertEqual(422, malformed.status_code)
+
+    def test_detection_sync_routes_preserve_conflict_correction_details(self) -> None:
+        headers = self.authenticate()
+        for route, operation in (
+            ('/platform/api/detection/sync', 'sync'),
+            ('/platform/api/targets/detect/sync', 'sync:detect'),
+        ):
+            with self.subTest(route=route):
+                self.service.errors[operation] = TargetValidationError(
+                    '图片不能同时包含检测框和负样本标记。', '/tasks/41/jobs/73?frame=0'
+                )
+                response = self.client.post(route, headers=headers, json={})
+                self.assertEqual(409, response.status_code)
+                self.assertEqual(
+                    {'detail': '图片不能同时包含检测框和负样本标记。', 'annotation_url': '/tasks/41/jobs/73?frame=0'},
+                    response.json(),
+                )
+
+    def test_target_validation_error_exposes_only_safe_correction_details(self) -> None:
+        self.service.errors['sync:segment'] = TargetValidationError(
+            '裁剪图 3 的标注不符合要求，请返回当前任务修正。', '/tasks/42/jobs/74?frame=2'
+        )
+
+        response = self.client.post('/platform/api/targets/segment/sync', headers=self.authenticate(), json={})
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual(
+            {
+                'detail': '裁剪图 3 的标注不符合要求，请返回当前任务修正。',
+                'annotation_url': '/tasks/42/jobs/74?frame=2',
+            },
+            response.json(),
+        )
 
     def test_sync_error_is_not_success(self) -> None:
         self.service.errors['sync'] = PlatformError('Could not save annotations at C:/private/site')

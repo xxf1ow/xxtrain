@@ -20,6 +20,10 @@ from xxtrain.integrations.cvat import CvatClient, PreparationState
 from xxtrain.platform.contracts import (
     CvatBinding,
     DetectionBox,
+    EditAnnotation,
+    EditFrame,
+    EditJob,
+    FrameMapping,
     FrameResult,
     ImageInput,
     JobRef,
@@ -102,6 +106,7 @@ class CvatClientTest(unittest.TestCase):
                 [
                     {
                         'name': name,
+                        'type': 'tag' if name == '无检测目标' else 'rectangle',
                         'attributes': [
                             {
                                 'name': 'xxtrain_labelme_extra',
@@ -112,7 +117,7 @@ class CvatClientTest(unittest.TestCase):
                             }
                         ],
                     }
-                    for name in POINT_BOX_LABELS
+                    for name in (*POINT_BOX_LABELS, '无检测目标')
                 ],
             )
             return httpx.Response(201, json={'id': 7})
@@ -122,6 +127,34 @@ class CvatClientTest(unittest.TestCase):
 
         self.assertEqual(client.create_task('Point detection', POINT_BOX_LABELS), 7)
         self.assertEqual(len(seen), 1)
+
+    def test_create_edit_task_sends_explicit_tag_label_type(self):
+        def respond(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, 'POST')
+            self.assertEqual(
+                json.loads(request.content)['labels'],
+                [
+                    {
+                        'name': 'tl',
+                        'type': 'tag',
+                        'attributes': [
+                            {
+                                'name': 'xxtrain_labelme_extra',
+                                'mutable': True,
+                                'input_type': 'text',
+                                'default_value': '{}',
+                                'values': [],
+                            }
+                        ],
+                    }
+                ],
+            )
+            return httpx.Response(201, json={'id': 17})
+
+        client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
+
+        self.assertTrue(hasattr(client, 'create_edit_task'), 'typed CVAT task creation is not implemented')
+        self.assertEqual(client.create_edit_task('Point classification', ('tl',), 'tag'), 17)
 
     def test_prepare_uploads_numbered_images_initializes_annotations_and_assigns_job(self):
         checkpoints = []
@@ -315,6 +348,116 @@ class CvatClientTest(unittest.TestCase):
         self.assertNotIn(('POST', '/api/tasks/7/data'), requests)
         self.assertEqual(checkpoints[0], PreparationState('uploaded'))
 
+    def test_prepare_edit_task_uploads_crop_frames_and_returns_original_identity_bindings(self):
+        requests = []
+        labels = [
+            {
+                'id': 41,
+                'name': 'tl',
+                'type': 'tag',
+                'attributes': [
+                    {
+                        'id': 71,
+                        'name': 'xxtrain_labelme_extra',
+                        'mutable': True,
+                        'input_type': 'text',
+                        'default_value': '{}',
+                        'values': [],
+                    }
+                ],
+            }
+        ]
+        original_id = 'a' * 64
+        first_parent = UUID('11111111-1111-1111-1111-111111111111')
+        second_parent = UUID('22222222-2222-2222-2222-222222222222')
+        first_annotation = UUID('33333333-3333-3333-3333-333333333333')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_path = root / 'opaque-first.png'
+            second_path = root / 'opaque-second.png'
+            first_path.write_bytes(b'first-crop')
+            second_path.write_bytes(b'second-crop')
+            frames = (
+                EditFrame(
+                    FrameMapping(str(first_parent), original_id, first_parent, (1, 2, 11, 12)),
+                    first_path,
+                    10,
+                    10,
+                    (EditAnnotation(first_annotation, 'classification', 'tl', None),),
+                ),
+                EditFrame(
+                    FrameMapping(str(second_parent), original_id, second_parent, (20, 30, 40, 50)),
+                    second_path,
+                    20,
+                    20,
+                    (),
+                ),
+            )
+
+            def respond(request: httpx.Request) -> httpx.Response:
+                requests.append((request.method, request.url.path))
+                if request.url.path == '/api/tasks/7':
+                    return httpx.Response(200, json={'id': 7})
+                if request.url.path == '/api/tasks/7/data':
+                    self.assertIn(b'filename="00000000.png"', request.content)
+                    self.assertIn(b'filename="00000001.png"', request.content)
+                    self.assertIn(b'first-crop', request.content)
+                    self.assertIn(b'second-crop', request.content)
+                    return httpx.Response(202, json={'rq_id': 'edit-upload-7'})
+                if request.url.path == '/api/requests/edit-upload-7':
+                    return httpx.Response(200, json={'id': 'edit-upload-7', 'status': 'finished'})
+                if request.url.path == '/api/tasks/7/data/meta':
+                    return httpx.Response(
+                        200,
+                        json={
+                            'size': 2,
+                            'start_frame': 0,
+                            'stop_frame': 1,
+                            'deleted_frames': [],
+                            'frames': [
+                                {'name': '00000000.png', 'width': 10, 'height': 10},
+                                {'name': '00000001.png', 'width': 20, 'height': 20},
+                            ],
+                        },
+                    )
+                if request.url.path == '/api/jobs':
+                    return httpx.Response(
+                        200,
+                        json=page(
+                            [
+                                {
+                                    'id': 8,
+                                    'task_id': 7,
+                                    'type': 'annotation',
+                                    'start_frame': 0,
+                                    'stop_frame': 1,
+                                    'frame_count': 2,
+                                }
+                            ]
+                        ),
+                    )
+                if request.url.path == '/api/labels':
+                    return httpx.Response(200, json=page(labels))
+                if request.url.path == '/api/jobs/8/annotations':
+                    payload = json.loads(request.content)
+                    self.assertEqual(payload['tags'][0]['frame'], 0)
+                    payload['tags'][0]['id'] = 91
+                    return httpx.Response(200, json=payload)
+                if request.url.path == '/api/jobs/8':
+                    self.assertEqual(json.loads(request.content), {'assignee': 23})
+                    return httpx.Response(200, json={'id': 8})
+                return httpx.Response(404)
+
+            client = CvatClient(
+                'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
+            )
+            self.assertTrue(hasattr(client, 'prepare_edit_task'), 'CVAT edit task preparation is not implemented')
+            prepared = client.prepare_edit_task(7, frames, 23)
+
+        self.assertEqual(prepared.ref, JobRef(7, 8, (original_id,)))
+        self.assertEqual(prepared.bindings, (CvatBinding(original_id, 'tag', 91, first_annotation),))
+        self.assertEqual(requests[-1], ('PATCH', '/api/jobs/8'))
+
     def test_prepare_does_not_repeat_initialized_annotations(self):
         requests = []
         with tempfile.TemporaryDirectory() as directory:
@@ -495,6 +638,90 @@ class CvatClientTest(unittest.TestCase):
         http = httpx.Client(transport=httpx.MockTransport(respond))
         client = CvatClient('http://cvat.test', 'private-token', http)
         self.assertEqual(client.fetch_detection(JobRef(7, 8, ('b', 'a'))), (FrameResult('b', ()), FrameResult('a', ())))
+
+    def test_fetch_edit_decodes_pointer_lines_through_the_real_client(self):
+        labels = [
+            {
+                'id': 51,
+                'name': '1',
+                'type': 'polyline',
+                'attributes': [{'id': 81, 'name': 'xxtrain_labelme_extra', 'input_type': 'text'}],
+            }
+        ]
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/api/labels':
+                return httpx.Response(200, json=page(labels))
+            if request.url.path == '/api/jobs/8/annotations':
+                return httpx.Response(
+                    200,
+                    json={
+                        'version': 0,
+                        'tags': [],
+                        'tracks': [],
+                        'shapes': [
+                            {
+                                'id': 91,
+                                'type': 'polyline',
+                                'frame': 0,
+                                'label_id': 51,
+                                'points': [1, 2, 3, 4],
+                                'occluded': False,
+                                'outside': False,
+                                'rotation': 0,
+                                'z_order': 0,
+                                'attributes': [],
+                            }
+                        ],
+                    },
+                )
+            return httpx.Response(404)
+
+        parent_id = UUID('11111111-1111-1111-1111-111111111111')
+        mapping = FrameMapping(str(parent_id), 'a' * 64, parent_id, (10, 20, 30, 40))
+        job = EditJob(JobRef(7, 8, ('a' * 64,)), (mapping,))
+        client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
+
+        self.assertTrue(hasattr(client, 'fetch_edit'), 'CVAT edit fetching is not implemented')
+        results = client.fetch_edit(job)
+
+        self.assertEqual(results[0].frame_id, str(parent_id))
+        self.assertEqual(results[0].annotations, (EditAnnotation(None, 'polyline', '1', [[1.0, 2.0], [3.0, 4.0]], 91),))
+
+    def test_fetch_edit_decodes_classification_tags_through_the_real_client(self):
+        labels = [
+            {
+                'id': 41,
+                'name': 'tl',
+                'type': 'tag',
+                'attributes': [{'id': 71, 'name': 'xxtrain_labelme_extra', 'input_type': 'text'}],
+            }
+        ]
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/api/labels':
+                return httpx.Response(200, json=page(labels))
+            if request.url.path == '/api/jobs/8/annotations':
+                return httpx.Response(
+                    200,
+                    json={
+                        'version': 0,
+                        'tags': [{'id': 92, 'frame': 0, 'label_id': 41, 'attributes': []}],
+                        'tracks': [],
+                        'shapes': [],
+                    },
+                )
+            return httpx.Response(404)
+
+        parent_id = UUID('11111111-1111-1111-1111-111111111111')
+        mapping = FrameMapping(str(parent_id), 'a' * 64, parent_id, (10, 20, 30, 40))
+        job = EditJob(JobRef(7, 8, ('a' * 64,)), (mapping,))
+        client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
+
+        results = client.fetch_edit(job)
+
+        self.assertEqual(results[0].frame_id, str(parent_id))
+        self.assertEqual(results[0].annotations, (EditAnnotation(None, 'classification', 'tl', None, 92),))
 
     def test_job_is_unfinished_reads_state_without_exposing_response_details(self):
         for state, expected in (('new', True), ('in progress', True), ('completed', False)):

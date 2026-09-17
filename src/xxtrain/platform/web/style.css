@@ -310,6 +310,10 @@ h1 {
   flex-basis: 100%;
 }
 
+.correction-link {
+  justify-self: start;
+}
+
 .operation-progress::before {
   content: "";
   flex: 0 0 18px;
