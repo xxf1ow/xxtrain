@@ -15,16 +15,22 @@ from xxtrain.platform.contracts import (
     DetectionBox,
     DetectionSummary,
     DetectionSync,
+    EditFrame,
+    EditFrameResult,
+    EditJob,
     FrameResult,
     ImageInput,
     ImageRecord,
     JobRef,
     PlatformAccessError,
     PreparedJob,
+    TargetSummary,
+    TargetSync,
     UploadResult,
 )
 from xxtrain.workspace_data.changes import plan_changes
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, image_sha256, perceptual_hash
+from xxtrain.workspace_data.editing import fingerprint_target, prepare_sync, project_target_frames, summarize_target
 from xxtrain.workspace_data.labelme import detection_document
 from xxtrain.workspace_data.repository import AnnotationRepository
 
@@ -129,6 +135,18 @@ class WorkspaceData:
         """Return image-level detection counts aggregated from registered database facts."""
         return self._repository.detection_summary()
 
+    def target_frames(self, target: str, runtime_root: Path) -> tuple[EditFrame, ...]:
+        """Return current crop frames populated with one downstream target's annotations."""
+        return project_target_frames(target, self.images(), self._repository.annotations(), runtime_root)
+
+    def target_summary(self, target: str) -> TargetSummary:
+        """Return crop and completed-crop counts for a downstream annotation target."""
+        return summarize_target(target, self.images(), self._repository.annotations())
+
+    def target_fingerprint(self, target: str) -> str:
+        """Hash one downstream target's current input facts and stable associations."""
+        return fingerprint_target(target, self.images(), self._repository.annotations())
+
     def detection_fingerprint(self) -> str:
         """Hash registered image identities and normalized detection business content."""
         return self._fingerprint(self._repository.annotations())
@@ -228,6 +246,16 @@ class WorkspaceData:
     def commit_detection_sync(self, ref: JobRef, sync: DetectionSync) -> None:
         """Atomically commit a prepared detection change set and its native CVAT bindings."""
         self._repository.apply_changes(sync.changes, ref=ref, bindings=sync.bindings)
+
+    def prepare_target_sync(self, target: str, job: EditJob, results: tuple[EditFrameResult, ...]) -> TargetSync:
+        """Validate exact crop coverage and plan one target-scoped synchronization."""
+        images = self.images()
+        current = self._repository.annotations()
+        return prepare_sync(target, job, results, images, current, self._repository.bindings(job.ref), self._task)
+
+    def commit_target_sync(self, job: EditJob, sync: TargetSync) -> None:
+        """Atomically commit prepared downstream annotations and their native CVAT bindings."""
+        self._repository.apply_changes(sync.changes, ref=job.ref, bindings=sync.bindings)
 
     def _fingerprint(self, annotations: tuple[AnnotationRecord, ...]) -> str:
         by_image: dict[str, list[AnnotationRecord]] = {}

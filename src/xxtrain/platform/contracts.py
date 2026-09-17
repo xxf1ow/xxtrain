@@ -132,6 +132,15 @@ class DetectionSync:
 
 
 @dataclass(frozen=True)
+class TargetSync:
+    """One validated downstream synchronization and its predicted final fingerprint."""
+
+    changes: AnnotationChanges
+    bindings: tuple[CvatBinding, ...]
+    fingerprint: str
+
+
+@dataclass(frozen=True)
 class EditAnnotation:
     """One classification or shape annotation in edit-frame coordinates."""
 
