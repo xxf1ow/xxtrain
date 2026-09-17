@@ -64,6 +64,26 @@ class TrainingDeliveryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '03-cc'):
                 build_delivery(result, DeliveryDefinition(True, True), dataset, root / 'output')
 
+    def test_classification_delivery_rejects_non_contiguous_model_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source.onnx'
+            source.write_bytes(b'model')
+            dataset = root / 'classify'
+            dataset.mkdir()
+            (dataset / 'dataset.yaml').write_text(
+                yaml.safe_dump({'names': {0: 'tl', 1: 'tc', 2: 'cl', 3: 'cc'}}), encoding='utf-8'
+            )
+            for class_names in ({1: '00-tl'}, {0: '00-tl', 2: '03-cc'}):
+                with self.subTest(class_names=class_names):
+                    with self.assertRaisesRegex(ValueError, 'contiguous zero-based'):
+                        build_delivery(
+                            TrainingResult(source, class_names, {}),
+                            DeliveryDefinition(True, True),
+                            dataset,
+                            root / 'output',
+                        )
+
 
 if __name__ == '__main__':
     unittest.main()

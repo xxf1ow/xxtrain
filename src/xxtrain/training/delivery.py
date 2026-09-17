@@ -25,9 +25,15 @@ def build_delivery(result: TrainingResult, definition: DeliveryDefinition, datas
         shutil.copy2(result.onnx_path, output)
         return output
 
+    indices = sorted(result.class_names)
+    if indices != list(range(len(indices))):
+        raise ValueError('Model class indices must be contiguous zero-based integers')
     catalog = _load_catalog(dataset_dir)
-    classes = [_resolve_class(dataset_dir, name, catalog) for _, name in sorted(result.class_names.items())]
-    labels = [label for label, _image in classes]
+    classes = [
+        (output_index, *_resolve_class(dataset_dir, result.class_names[output_index], catalog))
+        for output_index in indices
+    ]
+    labels = [label for _output_index, label, _image in classes]
     if len(set(labels)) != len(labels):
         raise ValueError(f'Duplicate delivery labels: {labels}')
     output = output_dir / 'model.zip'
@@ -36,7 +42,7 @@ def build_delivery(result: TrainingResult, definition: DeliveryDefinition, datas
         if definition.labels:
             archive.writestr('labels.txt', ''.join(f'{label}\n' for label in labels))
         if definition.reference_images:
-            for output_index, (label, image) in enumerate(classes):
+            for output_index, label, image in classes:
                 archive.write(image, f'references/{output_index}_{label}{image.suffix}')
     return output
 

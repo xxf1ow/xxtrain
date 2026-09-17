@@ -1,4 +1,3 @@
-import os
 import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -76,7 +75,7 @@ def _prepare_local_dataset(task_type: TaskType, source: Path, target: Path) -> P
                 suffix = image.suffix
                 local_image = target / 'images' / split / f'{index:08d}{suffix}'
                 local_label = target / 'labels' / split / f'{index:08d}.txt'
-                _link_file(image, local_image)
+                _copy_image(image, local_image)
                 local_label.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(image.with_suffix('.txt'), local_label)
                 local_images.append(str(local_image))
@@ -96,7 +95,7 @@ def _link_classification_splits(source: Path, target: Path) -> list[str]:
         for class_dir in sorted(path for path in split_root.iterdir() if path.is_dir()):
             classes.add(class_dir.name)
             for image in sorted(path for path in class_dir.iterdir() if path.is_file()):
-                _link_file(image, target / split / class_dir.name / image.name)
+                _copy_image(image, target / split / class_dir.name / image.name)
     if not classes:
         raise ValueError(f'Prepared classification dataset has no classes: {source}')
     return sorted(classes)
@@ -116,15 +115,9 @@ def _read_paths(path: Path) -> list[Path]:
     return [Path(line.strip()).resolve() for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
-def _link_file(source: Path, target: Path) -> None:
+def _copy_image(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(source, target)
-    except OSError:
-        try:
-            target.symlink_to(source)
-        except OSError:
-            shutil.copy2(source, target)
+    shutil.copy2(source, target)
 
 
 def _numeric_metrics(values: Mapping[str, object]) -> dict[str, float]:

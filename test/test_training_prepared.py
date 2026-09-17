@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from PIL import Image
+from ultralytics.data.utils import check_image
 
 from xxtrain.task import TaskType
 from xxtrain.training import TrainingProgress, TrainingSettings, train_prepared
@@ -130,6 +132,50 @@ class PreparedTrainingTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, 'export failed'):
                 train_prepared(TrainingSettings(TaskType.DETECT), dataset, self.root / 'failed-run')
+
+    def test_real_ultralytics_jpeg_repair_cannot_modify_publication_image(self) -> None:
+        dataset = self.root / 'publication' / 'detect'
+        image = dataset / 'sample.jpg'
+        image.parent.mkdir(parents=True)
+        with Image.new('RGB', (16, 16), 'red') as value:
+            value.save(image, 'JPEG')
+        image.write_bytes(image.read_bytes() + b'junk')
+        image.with_suffix('.txt').write_text('', encoding='utf-8')
+        for split in ('train', 'val'):
+            (dataset / f'{split}.txt').write_text(str(image), encoding='utf-8')
+        (dataset / 'dataset.yaml').write_text(
+            yaml.safe_dump(
+                {
+                    'path': str(dataset.parent),
+                    'train': 'detect/train.txt',
+                    'val': 'detect/val.txt',
+                    'names': {0: 'Point'},
+                }
+            ),
+            encoding='utf-8',
+        )
+        source_before = image.read_bytes()
+        model = MagicMock(names={0: 'Point'})
+        model.trainer = MagicMock(best='')
+        model.val.return_value = MagicMock(results_dict={})
+        exported = self.root / 'temporary.onnx'
+        model.export.side_effect = lambda **_kwargs: (exported.write_bytes(b'onnx'), exported)[1]
+
+        def scan_local_image(**arguments: object) -> None:
+            metadata = yaml.safe_load(Path(arguments['data']).read_text(encoding='utf-8'))
+            local_list = Path(arguments['data']).parent / metadata['train']
+            local_image = Path(local_list.read_text(encoding='utf-8'))
+            message, _shape = check_image(str(local_image))
+            self.assertIn('restored and saved', message)
+
+        model.train.side_effect = scan_local_image
+        with (
+            patch('xxtrain.training.prepared.YOLO', return_value=model),
+            patch('xxtrain.training.prepared.prepare_pretrained_weights', return_value=self.root / 'default.pt'),
+        ):
+            train_prepared(TrainingSettings(TaskType.DETECT), dataset, self.root / 'scanner-run')
+
+        self.assertEqual(source_before, image.read_bytes())
 
 
 if __name__ == '__main__':
