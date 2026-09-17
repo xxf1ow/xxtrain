@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from PIL import Image
+
 _MISSING_HTTP_DEPENDENCIES = tuple(name for name in ('fastapi', 'httpx') if find_spec(name) is None)
 if _MISSING_HTTP_DEPENDENCIES:
     raise unittest.SkipTest(f'platform extra is required: {", ".join(_MISSING_HTTP_DEPENDENCIES)}')
@@ -22,6 +24,7 @@ else:
     from xxtrain.business_tasks.point import point_task_definition
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig, load_config
+    from xxtrain.platform.runtime import RuntimeCache
     from xxtrain.workspace_data import WorkspaceData
     from xxtrain.workspace_data.repository import AnnotationRepository
 
@@ -567,7 +570,7 @@ class PlatformFixtureTest(unittest.TestCase):
             self.assertEqual(root / 'workspace' / 'annotations.db', database_path)
             self.assertTrue(database_path.is_file())
             self.assertFalse((root / 'workspace' / 'annotations').exists())
-            self.assertEqual(2, len(receipt['images']))
+            self.assertEqual(50, len(receipt['images']))
             for immutable in [*receipt['images'], receipt['baseline']]:
                 path = Path(immutable['path'])
                 self.assertTrue(path.is_relative_to(root))
@@ -577,11 +580,20 @@ class PlatformFixtureTest(unittest.TestCase):
             self.assertEqual(
                 [image['sample_id'] for image in receipt['images']], [image.sample_id for image in workspace.images()]
             )
-            records = AnnotationRepository(database_path, point_task_definition()).annotations(step_key='detect')
-            self.assertEqual(receipt['initial_annotation_ids'], [str(record.id) for record in records])
+            repository = AnnotationRepository(database_path, point_task_definition())
+            records = repository.annotations(step_key='detect')
+            self.assertEqual(receipt['initial_annotation_ids']['detect'], [str(record.id) for record in records])
             self.assertEqual(receipt['images'][0]['sample_id'], records[0].image_id)
             self.assertEqual('tl', records[0].label)
             self.assertEqual(receipt['original_rectangle_points'], records[0].geometry)
+            self.assertEqual(
+                receipt['initial_annotation_ids']['classify'],
+                [str(record.id) for record in repository.annotations(step_key='classify')],
+            )
+            self.assertEqual(
+                receipt['initial_annotation_ids']['segment'],
+                [str(record.id) for record in repository.annotations(step_key='segment')],
+            )
 
 
 @unittest.skipUnless(_LIVE_REQUESTED, 'real browser acceptance environment is not configured')
@@ -617,11 +629,12 @@ class PlatformLiveBrowserTest(unittest.TestCase):
     @classmethod
     def _validate_receipt(cls) -> None:
         if cls.receipt.get('marker') != FIXTURE_MARKER:
-            raise RuntimeError('fixture receipt is not an xxtrain Task 6 synthetic workspace')
+            raise RuntimeError('fixture receipt is not an xxtrain Task 7 Point workflow workspace')
         root = Path(cls.receipt.get('root', '')).resolve()
         if not root.is_dir() or not root.name.startswith('xxtrain-point-acceptance-'):
-            raise RuntimeError('fixture root is not a generated Task 6 temporary directory')
+            raise RuntimeError('fixture root is not a generated Task 7 temporary directory')
         required_paths = [cls.receipt.get('database_path', ''), cls.receipt.get('baseline', {}).get('path', '')]
+        required_paths.append(cls.receipt.get('runtime_dir', ''))
         required_paths.extend(item.get('path', '') for item in cls.receipt.get('images', []))
         if not required_paths or any(not Path(path).resolve().is_relative_to(root) for path in required_paths):
             raise RuntimeError('fixture receipt points outside its generated temporary directory')
@@ -671,123 +684,186 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             self.fail(f'login failed: {error}; request checks: {observed_request}')
         expect(page.locator('#workspace-name')).to_have_text(self.receipt['display_name'])
         expect(page.locator('[data-target="detect"]')).to_have_attribute('aria-disabled', 'false')
-        expect(page.locator('[data-target="classify"]')).to_have_attribute('aria-disabled', 'true')
-        expect(page.locator('[data-target="segment"]')).to_have_attribute('aria-disabled', 'true')
+        expect(page.locator('[data-target="classify"]')).to_have_attribute('aria-disabled', 'false')
+        expect(page.locator('[data-target="segment"]')).to_have_attribute('aria-disabled', 'false')
 
     def _assert_immutable_inputs(self) -> None:
         for immutable in [*self.receipt['images'], self.receipt['baseline']]:
             path = Path(immutable['path'])
             self.assertEqual(immutable['sha256'], hashlib.sha256(path.read_bytes()).hexdigest(), path)
 
-    def _saved_detection_records(self):
-        return AnnotationRepository(Path(self.receipt['database_path']), point_task_definition()).annotations(
-            step_key='detect'
+    def _job_identity(self, page: Page) -> tuple[int, int]:
+        matched = re.search(r'/tasks/(\d+)/jobs/(\d+)/?$', page.url)
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        return int(matched.group(1)), int(matched.group(2))
+
+    def _job_annotations(self, page: Page) -> dict[str, object]:
+        _, job_id = self._job_identity(page)
+        return page.evaluate(
+            """async (jobId) => {
+              const response = await fetch(`/api/jobs/${jobId}/annotations`, {credentials: 'same-origin'});
+              if (!response.ok) throw new Error(`annotations GET failed: ${response.status}`);
+              return response.json();
+            }""",
+            job_id,
         )
 
-    def test_detection_annotation_round_trip(self) -> None:
+    def _replace_job_annotations(self, page: Page, payload: dict[str, object]) -> dict[str, object]:
+        _, job_id = self._job_identity(page)
+        return page.evaluate(
+            """async ({jobId, payload}) => {
+              const csrf = document.cookie.split(';').map((part) => part.trim())
+                .find((part) => part.startsWith('csrftoken='))?.split('=', 2)[1];
+              const response = await fetch(`/api/jobs/${jobId}/annotations`, {
+                method: 'PUT', credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf || ''},
+                body: JSON.stringify(payload),
+              });
+              if (!response.ok) throw new Error(`annotations PUT failed: ${response.status}`);
+              return response.json();
+            }""",
+            {'jobId': job_id, 'payload': payload},
+        )
+
+    def _complete_and_return(self, page: Page) -> None:
+        _, job_id = self._job_identity(page)
+        page.evaluate(
+            """async (jobId) => {
+              const csrf = document.cookie.split(';').map((part) => part.trim())
+                .find((part) => part.startsWith('csrftoken='))?.split('=', 2)[1];
+              const response = await fetch(`/api/jobs/${jobId}`, {
+                method: 'PATCH', credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf || ''},
+                body: JSON.stringify({state: 'completed'}),
+              });
+              if (!response.ok) throw new Error(`job PATCH failed: ${response.status}`);
+            }""",
+            job_id,
+        )
+        page.goto(f'{_LIVE_VALUES["XXTRAIN_PLATFORM_URL"].rstrip("/")}/?returned=1', wait_until='domcontentloaded')
+        page.wait_for_function("!document.getElementById('workspace-panel').hidden")
+
+    def _open_target(self, page: Page, target: str) -> None:
+        with page.expect_navigation(wait_until='domcontentloaded'):
+            page.locator(f'#{target}-annotate-action').click()
+        expect(page.locator('.cvat-canvas-container')).to_be_visible()
+
+    def test_three_target_native_round_trip_correction_and_cache_readiness(self) -> None:
         page = self._new_page()
         self._login(page)
-        expect(page.locator('#image-count')).to_have_text('2')
-        expect(page.locator('#annotated-image-count')).to_have_text('1')
-        expect(page.locator('#cache-action')).to_be_disabled()
-        page.screenshot(path=self.artifact_dir / '01-platform-ready.png', full_page=True)
+        expect(page.locator('#image-count')).to_have_text('50')
+        expect(page.locator('#annotated-image-count')).to_have_text('50')
+        initial_ids = self.receipt['initial_annotation_ids']
+        repository = AnnotationRepository(Path(self.receipt['database_path']), point_task_definition())
 
+        self._open_target(page, 'classify')
+        task_id, _ = self._job_identity(page)
+        labels = page.evaluate(
+            """async (taskId) => (await fetch(`/api/labels?task_id=${taskId}`, {
+              credentials: 'same-origin'
+            })).json()""",
+            task_id,
+        )
+        self.assertEqual({'tag'}, {label['type'] for label in labels['results']})
+        classification = self._job_annotations(page)
+        self.assertEqual(50, len(classification['tags']))
+        native_tag_ids = {tag['id'] for tag in classification['tags']}
+        self.assertEqual(50, len(native_tag_ids))
+        self._complete_and_return(page)
+        self.assertEqual(
+            initial_ids['classify'], [str(record.id) for record in repository.annotations(step_key='classify')]
+        )
+        data = WorkspaceData(Path(self.receipt['root']) / 'workspace')
+        runtime = RuntimeCache(Path(self.receipt['runtime_dir']))
+        classify_job = runtime.edit_job_for('classify', data.target_fingerprint('classify'))
+        self.assertIsNotNone(classify_job)
+        assert classify_job is not None
+        self.assertEqual(native_tag_ids, {binding.object_id for binding in repository.bindings(classify_job.ref)})
+
+        self._open_target(page, 'classify')
+        invalid_classification = self._job_annotations(page)
+        duplicate = dict(invalid_classification['tags'][0])
+        duplicate.pop('id', None)
+        invalid_classification['tags'].append(duplicate)
+        self._replace_job_annotations(page, invalid_classification)
+        self._complete_and_return(page)
+        expect(page.locator('#classify-error')).to_contain_text('标注不符合要求')
+        correction = page.locator('#classify-correction')
+        expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
-            page.get_by_role('button', name='检测标注', exact=True).click()
-        first_job_url = page.url
-        self.assertRegex(first_job_url, r'/tasks/\d+/jobs/\d+/?$')
-        expect(page.locator('.cvat-header')).to_be_hidden()
-        expect(page.locator('.cvat-canvas-container')).to_be_visible()
-        expect(page.get_by_role('button', name='完成', exact=True)).to_be_visible()
-        page.screenshot(path=self.artifact_dir / '02-cvat-first-job.png', full_page=True)
+            correction.click()
+        corrected = self._job_annotations(page)
+        corrected['tags'] = corrected['tags'][:-1]
+        self._replace_job_annotations(page, corrected)
+        self._complete_and_return(page)
+        expect(page.locator('#classify-annotated-count')).to_have_text('50')
 
-        existing_shape = page.locator('.cvat_canvas_shape').first
-        expect(existing_shape).to_be_visible()
-        bounds = existing_shape.bounding_box()
-        self.assertIsNotNone(bounds)
-        assert bounds is not None
-        page.mouse.move(bounds['x'] + bounds['width'] / 2, bounds['y'] + bounds['height'] / 2)
-        page.mouse.down()
-        page.mouse.move(bounds['x'] + bounds['width'] / 2 + 30, bounds['y'] + bounds['height'] / 2 + 20, steps=5)
-        page.mouse.up()
+        self._open_target(page, 'segment')
+        task_id, _ = self._job_identity(page)
+        labels = page.evaluate(
+            """async (taskId) => (await fetch(`/api/labels?task_id=${taskId}`, {
+              credentials: 'same-origin'
+            })).json()""",
+            task_id,
+        )
+        self.assertEqual({'polyline'}, {label['type'] for label in labels['results']})
+        segmentation = self._job_annotations(page)
+        self.assertEqual(51, len(segmentation['shapes']))
+        existing_shape_ids = {shape['id'] for shape in segmentation['shapes']}
+        copied = dict(segmentation['shapes'][0])
+        copied.pop('id', None)
+        copied['points'] = [60, 140, 180, 60]
+        segmentation['shapes'].append(copied)
+        saved = self._replace_job_annotations(page, segmentation)
+        new_native_ids = {shape['id'] for shape in saved['shapes']}
+        self.assertTrue(existing_shape_ids < new_native_ids)
+        self._complete_and_return(page)
+        segment_records = repository.annotations(step_key='segment')
+        self.assertEqual(52, len(segment_records))
+        self.assertTrue({UUID(value) for value in initial_ids['segment']} < {record.id for record in segment_records})
 
-        page.locator('.cvat-draw-rectangle-control').click()
-        page.locator('.cvat-draw-rectangle-popover').get_by_role('button', name='Shape', exact=True).click()
-        canvas = page.locator('.cvat-canvas-container')
-        canvas.click(position={'x': 250, 'y': 230})
-        canvas.click(position={'x': 450, 'y': 390})
-
-        annotation_pattern = re.compile(r'/api/jobs/\d+/annotations(?:/.*)?(?:\?.*)?$')
-        write_failure = {'injected': False}
-
-        def fail_first_annotation_write(route: Route) -> None:
-            if not write_failure['injected'] and route.request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-                write_failure['injected'] = True
-                route.abort('connectionfailed')
-            else:
-                route.continue_()
-
-        page.route(annotation_pattern, fail_first_annotation_write)
-        page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.get_by_test_id('xxtrain-return-error')).to_have_text('CVAT 保存未完成，请留在本页重试。')
-        self.assertEqual(first_job_url.rstrip('/'), page.url.rstrip('/'))
-        page.screenshot(path=self.artifact_dir / '03-cvat-save-failure.png', full_page=True)
-        self.assertTrue(write_failure['injected'])
-        page.unroute(annotation_pattern, fail_first_annotation_write)
-
+        self._open_target(page, 'segment')
+        invalid_segment = self._job_annotations(page)
+        invalid_segment['shapes'][0]['points'].extend(invalid_segment['shapes'][0]['points'][:2])
+        self._replace_job_annotations(page, invalid_segment)
+        self._complete_and_return(page)
+        expect(page.locator('#segment-error')).to_contain_text('标注不符合要求')
+        correction = page.locator('#segment-correction')
+        expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
-            page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.locator('#annotated-image-count')).to_have_text('1')
-        expect(page).to_have_url(re.compile(r'/platform/$'))
-        page.screenshot(path=self.artifact_dir / '04-first-save.png', full_page=True)
+            correction.click()
+        corrected = self._job_annotations(page)
+        corrected['shapes'][0]['points'] = corrected['shapes'][0]['points'][:4]
+        self._replace_job_annotations(page, corrected)
+        self._complete_and_return(page)
+        expect(page.locator('#segment-annotated-count')).to_have_text('50')
 
-        records = self._saved_detection_records()
-        rectangles = [record for record in records if record.kind == 'rectangle']
-        self.assertEqual({'Point', 'tl'}, {record.label for record in rectangles})
-        classified = next(record for record in rectangles if record.label == 'tl')
-        initial_id = UUID(self.receipt['initial_annotation_ids'][0])
-        self.assertEqual(initial_id, classified.id)
-        self.assertEqual(self.receipt['images'][0]['sample_id'], classified.image_id)
-        self.assertNotEqual(self.receipt['original_rectangle_points'], classified.geometry)
-        added = next(record for record in rectangles if record.label == 'Point')
-        self.assertNotIn(added.id, {UUID(value) for value in self.receipt['initial_annotation_ids']})
-        self._assert_immutable_inputs()
-
-        with page.expect_navigation(wait_until='domcontentloaded'):
-            page.get_by_role('button', name='检测标注', exact=True).click()
-        second_job_url = page.url
-        self.assertNotEqual(first_job_url.rstrip('/'), second_job_url.rstrip('/'))
-        expect(page.locator('.cvat-header')).to_be_hidden()
-        expect(page.locator('.cvat-canvas-container')).to_be_visible()
-        page.reload(wait_until='domcontentloaded')
-        self.assertEqual(second_job_url.rstrip('/'), page.url.rstrip('/'))
-        expect(page.locator('.cvat-header')).to_be_hidden()
-        expect(page.locator('.cvat-canvas-container')).to_be_visible()
-
-        shapes = page.locator('.cvat_canvas_shape')
-        for remaining in range(shapes.count() - 1, -1, -1):
-            shape = shapes.first
-            bounds = shape.bounding_box()
-            self.assertIsNotNone(bounds)
-            assert bounds is not None
-            page.mouse.click(bounds['x'] + bounds['width'] / 2, bounds['y'] + bounds['height'] / 2)
-            page.keyboard.press('Delete')
-            expect(shapes).to_have_count(remaining)
-
-        page.route('**/platform/api/detection/sync', lambda route: route.abort('connectionfailed'), times=1)
-        with page.expect_navigation(wait_until='domcontentloaded'):
-            page.get_by_role('button', name='完成', exact=True).click()
-        expect(page.locator('#workspace-error')).to_contain_text('刷新页面')
-        expect(page.locator('#annotated-image-count')).to_have_text('1')
-        page.screenshot(path=self.artifact_dir / '05-platform-sync-failure.png', full_page=True)
-
-        page.reload(wait_until='domcontentloaded')
-        expect(page.locator('#annotated-image-count')).to_have_text('0')
-        expect(page).to_have_url(re.compile(r'/platform/$'))
-        page.screenshot(path=self.artifact_dir / '06-empty-detection-save.png', full_page=True)
-        final_records = self._saved_detection_records()
-        self.assertEqual((), final_records)
-        self.assertTrue({classified.id, added.id}.isdisjoint(record.id for record in final_records))
+        records = repository.annotations()
+        parents = {record.id: record.image_id for record in records if record.step_key == 'detect'}
+        self.assertTrue(
+            all(parents[record.parent_id] == record.image_id for record in records if record.step_key != 'detect')
+        )
+        segment_job = runtime.edit_job_for('segment', data.target_fingerprint('segment'))
+        self.assertIsNotNone(segment_job)
+        assert segment_job is not None
+        self.assertTrue(all(frame.image_id == parents[frame.parent_id] for frame in segment_job.frames))
+        page.locator('#classify-cache-action').click()
+        expect(page.locator('#classify-cache-action')).to_have_text('训练缓存已生成')
+        page.locator('#segment-cache-action').click()
+        expect(page.locator('#segment-cache-action')).to_have_text('训练缓存已生成')
+        for target in ('classify', 'segment'):
+            fingerprint = data.target_fingerprint(target)
+            publication = Path(self.receipt['runtime_dir']) / 'cache' / fingerprint
+            self.assertEqual(
+                {'fingerprint': fingerprint, 'target': target},
+                json.loads((publication / 'manifest.json').read_text(encoding='utf-8')),
+            )
+            image_path = next(
+                path for path in (publication / target).rglob('*') if path.suffix.lower() in {'.jpg', '.jpeg', '.png'}
+            )
+            with Image.open(image_path) as image:
+                image.verify()
         self._assert_immutable_inputs()
 
 

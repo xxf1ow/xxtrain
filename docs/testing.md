@@ -43,6 +43,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
+Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQLite 数据层和训练缓存运行，覆盖原生身份、对象级失效、重启、回滚重试和缓存可读性：
+
+```powershell
+uv run --locked --extra platform python -m unittest test.test_platform_point_workflow -v
+```
+
 HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与错误脱敏、严格目标路由及安全修正响应，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖 SQLite 派生计数、50 张有框原图门槛、裁剪图完成条件、稳定对象身份、下游 Job 失效、同步失败顺序、重启恢复、跨线程读取和三个缓存发布。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、三行计数、写操作互斥、逐行缓存按钮、每标签页返回目标、修正链接及同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT 的 tag/polyline 编辑与返回修正、浏览器布局、镜像注入和代理连通性属于部署验收。
 
 运行 Point 上传和检测缓存增量的完整离线验证：
@@ -51,13 +57,13 @@ HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 
 uv run --locked --extra platform python -m unittest test.test_platform_data test.test_platform_service test.test_platform_downstream_service test.test_platform_http test.test_platform_cvat_client test.test_platform_cvat_codec test.test_platform_browser test.test_task_transforms -v
 ```
 
-真实验收显式安装 `platform-test` 并同时提供 `XXTRAIN_PLATFORM_URL`、`XXTRAIN_PLATFORM_TEST_USER` 和 `XXTRAIN_PLATFORM_TEST_PASSWORD`；未配置时浏览器测试在启动浏览器或访问网络前跳过。测试固定读取 `.superpowers/platform-acceptance/fixture.json`，只接受当前 marker、独立生成的临时根目录，以及根目录内的数据库、图片和基准路径。receipt 必须记录 `database_path`、图片 `sample_id` 和初始标注 UUID，测试通过正式 repository 回读保存结果。验收后停用本次启动的临时服务：
+真实验收显式安装 `platform-test` 并同时提供 `XXTRAIN_PLATFORM_URL`、`XXTRAIN_PLATFORM_TEST_USER` 和 `XXTRAIN_PLATFORM_TEST_PASSWORD`；未配置时浏览器测试在启动浏览器或访问网络前跳过。测试固定读取 `.superpowers/platform-acceptance/fixture.json`，只接受当前 marker、独立生成的临时根目录，以及根目录内的数据库、图片和基准路径。receipt 必须记录 `database_path`、50 张图片的 `sample_id` 和三个步骤的初始标注 UUID，测试通过正式 repository 回读保存结果。验收后停用本次启动的临时服务：
 
 ```powershell
 uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
 ```
 
-同版本真实验收覆盖初始化映射、无修改回收、移动、改类、新增、删除、复制、全量 PUT、事务回滚重试、旧 Job 拒收、重启恢复与至少 50 张图片的可读缓存。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。当前运行证据、范围和未覆盖项记录在 [SQLite 标注存储 Agent Note](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md#live-acceptance-status)；离线 mock、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
+同版本真实验收覆盖 tag 唯一选择、polyline 多指针、原生身份往返、裁剪来源和 frame 关联、分类数量及 line 点数修正、返回目标路由和两个下游缓存可读性。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。当前运行证据、范围和未覆盖项记录在 [Point 分类与指针分割 Agent Note](agent-notes/proposed/feature/2026-09-16-point-classification-segmentation.md#implementation-status)；离线 HTTPX fixture、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
 
 修改平台 package-data 或入口后构建 wheel，并检查 wheel 包含三个页面资源、CVAT 返回插件及 `xxtrain-platform` console script。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 
