@@ -143,6 +143,14 @@ class HttpxCvatFixture:
             return httpx.Response(200, json=_page(self.tasks[int(request.url.params['task_id'])]['labels']))
         if path.startswith('/api/jobs/') and path.endswith('/annotations'):
             job = self.jobs[int(path.split('/')[3])]
+            if request.method == 'PATCH' and request.url.params.get('action') == 'create':
+                payload = json.loads(request.content)
+                for key in ('tags', 'shapes'):
+                    for item in payload.get(key, []):
+                        item['id'] = self.next_object_id
+                        self.next_object_id += 1
+                        job['annotations'][key].append(item)
+                return httpx.Response(200, json=copy.deepcopy(payload))
             if request.method == 'PUT':
                 payload = json.loads(request.content)
                 for item in [*payload.get('tags', []), *payload.get('shapes', [])]:
@@ -583,12 +591,70 @@ class PointWorkflowTest(unittest.TestCase):
 
 
 class PointWorkflowFixtureTest(unittest.TestCase):
+    def test_seeded_fixture_round_trips_and_builds_consumable_caches(self) -> None:
+        import yaml
+        from torchvision.datasets import ImageFolder
+
+        from xxtrain.data import ImageInfo, LabelCatalog
+        from xxtrain.data.formats import decode_segment
+
+        with tempfile.TemporaryDirectory() as parent:
+            receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
+            config = load_config(Path(receipt['config_path']))
+            data = WorkspaceData(config.workspace_dir)
+            repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
+            before = repository.annotations()
+            cvat = HttpxCvatFixture()
+            self.addCleanup(cvat.close)
+            runtime = RuntimeCache(config.runtime_dir)
+            service = AnnotationService(config, data, cvat.client, runtime)
+            for target in ('classify', 'segment'):
+                frames = data.target_frames(target, config.runtime_dir)
+                if target == 'segment':
+                    self.assertEqual((60, 50, 180, 150), frames[1].mapping.bounds)
+                    self.assertEqual([[20, 20], [100, 80]], frames[1].annotations[0].geometry)
+                cvat.expect(frames)
+                service.begin_target(17, target)
+                job = runtime.edit_job_for(target, data.target_fingerprint(target))
+                bindings = repository.bindings(job.ref)
+                service.sync_target(17, target)
+                self.assertEqual(before, repository.annotations())
+                self.assertEqual(bindings, repository.bindings(job.ref))
+                service.generate_target_cache(17, target)
+                publication = config.runtime_dir / 'cache' / data.target_fingerprint(target) / target
+                if target == 'classify':
+                    datasets = [ImageFolder(publication / split) for split in ('train', 'val')]
+                    self.assertEqual(51, sum(len(dataset) for dataset in datasets))
+                    for dataset in datasets:
+                        for image, label in dataset:
+                            self.assertEqual((224, 224), image.size)
+                            self.assertIn(dataset.classes[label], ('00-tl', '01-tc', '02-cl', '03-cc'))
+                else:
+                    dataset = yaml.safe_load((publication / 'dataset.yaml').read_text())
+                    image_paths = []
+                    for split in ('train', 'val'):
+                        image_paths.extend((Path(dataset['path']) / dataset[split]).read_text().splitlines())
+                    self.assertEqual(51, len(image_paths))
+                    labels = [Path(path).with_suffix('.txt') for path in image_paths]
+                    rows = [line.split() for path in labels for line in path.read_text().splitlines()]
+                    self.assertEqual(52, len(rows))
+                    self.assertTrue(all(row[0] == '0' and len(row) == 7 for row in rows))
+                    self.assertTrue(all(0 <= float(value) <= 1 for row in rows for value in row[1:]))
+                    for path in image_paths:
+                        with Image.open(path) as image:
+                            for row in Path(path).with_suffix('.txt').read_text().splitlines():
+                                decoded = decode_segment(
+                                    row, ImageInfo(width=image.width, height=image.height), LabelCatalog(('Point',))
+                                )
+                                self.assertEqual('Point', decoded.label)
+                            image.verify()
+
     def test_fixture_is_fresh_complete_and_records_explicit_identity(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
             repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
 
-            self.assertEqual('xxtrain-task-7-point-workflow-v1', FIXTURE_MARKER)
+            self.assertEqual('xxtrain-task-7-point-workflow-v2', FIXTURE_MARKER)
             self.assertEqual(50, len(receipt['images']))
             self.assertEqual({'detect', 'classify', 'segment'}, set(receipt['initial_annotation_ids']))
             for target, ids in receipt['initial_annotation_ids'].items():

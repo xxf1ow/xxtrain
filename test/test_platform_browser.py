@@ -8,12 +8,12 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from importlib import resources
 from importlib.util import find_spec
 from pathlib import Path
+from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
-from uuid import UUID
 
 from PIL import Image
 
@@ -77,6 +77,7 @@ class PlatformBrowserTest(unittest.TestCase):
         self.assertIn('检测', page.text)
         self.assertIn('分类', page.text)
         self.assertIn('分割', page.text)
+        self.assertIn('每张裁剪图只选择一个分类标签', page.text)
         self.assertIn('href="/platform/style.css"', page.text)
         self.assertIn('src="/platform/app.js"', page.text)
         self.assertNotIn('http://', page.text)
@@ -96,6 +97,8 @@ class PlatformBrowserTest(unittest.TestCase):
         stored_target: str | None = None,
         validation_failure: bool = False,
         classify_ready: bool = False,
+        validation_payload: dict[str, str] | None = None,
+        load_actions: str = 'await loaded();',
     ) -> dict[str, object]:
         script = self.client.get('/platform/app.js')
         self.assertEqual(200, script.status_code)
@@ -178,8 +181,9 @@ globalThis.fetch = async (url, options = {{}}) => {{
   if (failure && options.method === 'POST') {{
     return {{ok: false, status: 502, json: async () => ({{detail: '平台暂时无法完成操作，请重试。'}})}};
   }}
-  if ({json.dumps(validation_failure)} && url.endsWith('/sync') && options.method === 'POST') {{
-    return {{ok: false, status: 409, json: async () => ({{
+  if ({json.dumps(validation_failure or validation_payload is not None)}
+      && url.endsWith('/sync') && options.method === 'POST') {{
+    return {{ok: false, status: 409, json: async () => ({json.dumps(validation_payload)} || {{
       detail: '裁剪图 3 的标注不符合要求，请返回当前任务修正。',
       annotation_url: '/tasks/42/jobs/74?frame=2',
     }})}};
@@ -200,7 +204,7 @@ globalThis.fetch = async (url, options = {{}}) => {{
   return {{ok: true, status: 200, json: async () => body}};
 }};
 eval({json.dumps(script.text)});
-await loaded();
+{load_actions}
 const get = (id) => elements.get(id);
 const snapshot = () => ({{
   images: get('image-count')?.textContent,
@@ -217,6 +221,8 @@ const snapshot = () => ({{
   cacheText: get('cache-action')?.textContent,
   error: get('workspace-error')?.textContent,
   classifyError: get('classify-error')?.textContent,
+  segmentError: get('segment-error')?.textContent,
+  segmentCorrectionHref: get('segment-correction')?.href || null,
   correctionHref: get('classify-correction')?.href || null,
   targetProgress: ['detect', 'classify', 'segment'].map((target) => get(`${{target}}-progress`)?.textContent),
   uploadProgress: get('upload-progress')?.textContent,
@@ -227,6 +233,7 @@ const snapshot = () => ({{
     .map((id) => get(id)?.disabled),
 }});
 const before = snapshot();
+before.syncObservations = globalThis.syncObservations;
 {actions}
 process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned, replaced,
   storedTarget: sessionStorage.getItem('xxtrain-return-target')}}));
@@ -402,6 +409,119 @@ await get('image-files').listeners.change();
         self.assertIsNone(failed['replaced'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_live_complete_wait_observes_delayed_and_fast_platform_sync(self) -> None:
+        for target, delayed in (('detect', True), ('classify', True), ('segment', False)):
+            with self.subTest(target=target, delayed=delayed):
+                page = Mock()
+                page.url = 'http://testserver/platform/' + ('?returned=1' if delayed else '')
+                page.expect_navigation.return_value = nullcontext()
+                PlatformLiveBrowserTest()._complete_with_plugin(page, target)
+                expression = page.wait_for_function.call_args.args[0]
+                argument = page.wait_for_function.call_args.kwargs.get('arg')
+                result = self.run_page(
+                    returned=True,
+                    stored_target=target,
+                    load_actions=f"""
+const complete = () => {{
+  const value = eval({json.dumps(expression)});
+  return typeof value === 'function' ? value({json.dumps(argument)}) : value;
+}};
+hold = {json.dumps(delayed)};
+const loading = loaded();
+globalThis.syncObservations = [];
+if (hold) {{
+  while (!release) await Promise.resolve();
+  syncObservations.push({{visible: !elements.get('workspace-panel').hidden, complete: complete()}});
+  release();
+}}
+await loading;
+syncObservations.push({{visible: !elements.get('workspace-panel').hidden, complete: complete()}});
+""",
+                )
+                observations = result['before']['syncObservations']
+                if delayed:
+                    self.assertEqual({'visible': True, 'complete': False}, observations[0])
+                self.assertEqual({'visible': True, 'complete': True}, observations[-1])
+                failed = self.run_page(
+                    returned=True,
+                    stored_target=target,
+                    sync_failure=True,
+                    load_actions=f"""
+await loaded();
+globalThis.syncObservations = [({expression})({json.dumps(argument)})];
+""",
+                )
+                self.assertEqual([False], failed['before']['syncObservations'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_validation_reasons_reach_http_and_page_without_private_details(self) -> None:
+        import copy
+
+        from xxtrain.platform.contracts import TargetValidationError
+        from xxtrain.platform.service import AnnotationService
+
+        from .test_platform_point_workflow import HttpxCvatFixture
+
+        with tempfile.TemporaryDirectory() as parent:
+            receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
+            config = load_config(Path(receipt['config_path']))
+            data = WorkspaceData(config.workspace_dir)
+            repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
+            cvat = HttpxCvatFixture()
+            self.addCleanup(cvat.close)
+            service = AnnotationService(config, data, cvat.client, RuntimeCache(config.runtime_dir))
+            client = AsgiTestClient(create_app(config, service, FakeCvat()))
+            self.addCleanup(client.close)
+            client.get('/platform/')
+            client.cookies.set('sessionid', 'active')
+            headers = {'origin': 'http://testserver', 'x-xtrain-csrf': client.cookies.get('xxtrain_csrf')}
+            before = repository.annotations()
+            for target in ('classify', 'segment'):
+                cvat.expect(data.target_frames(target, config.runtime_dir))
+                service.begin_target(17, target)
+            cases = (
+                ('classify', None, '只能保留一个分类标签'),
+                ('segment', [20, 20, 50, 50, 80, 80], '必须恰好有两个点'),
+                ('segment', [20, 20, 20, 20], '两个端点不能重合'),
+                ('segment', [20, 20, 999, 999], '端点必须位于裁剪图内'),
+            )
+            originals = {target: copy.deepcopy(cvat.job(target)['annotations']) for target in ('classify', 'segment')}
+            for target, points, reason in cases:
+                with self.subTest(reason=reason):
+                    payload = copy.deepcopy(originals[target])
+                    if target == 'classify':
+                        payload['tags'].append({**payload['tags'][0], 'id': 9999})
+                    else:
+                        payload['shapes'][0]['points'] = points
+                    cvat.job(target)['annotations'] = payload
+                    with self.assertRaises(TargetValidationError) as raised:
+                        service.sync_target(17, target)
+                    self.assertIn(reason, str(raised.exception))
+                    response = client.post(f'/platform/api/targets/{target}/sync', headers=headers, json={})
+                    self.assertEqual(409, response.status_code)
+                    detail = response.json()
+                    self.assertEqual(str(raised.exception), detail['detail'])
+                    self.assertIn('裁剪图 1', detail['detail'])
+                    self.assertIn('请返回', detail['detail'])
+                    self.assertTrue(detail['annotation_url'].endswith('?frame=0'))
+                    for secret in (str(config.workspace_dir), str(before[0].id), 'ValueError', 'label_id'):
+                        self.assertNotIn(secret, response.text)
+                    page = self.run_page(returned=True, stored_target=target, validation_payload=detail)
+                    self.assertIn(reason, page['after'][f'{target}Error'])
+                    link = 'correctionHref' if target == 'classify' else 'segmentCorrectionHref'
+                    self.assertEqual(detail['annotation_url'], page['after'][link])
+                    self.assertEqual(target, page['storedTarget'])
+                    self.assertIsNone(page['replaced'])
+                    self.assertEqual(before, repository.annotations())
+            secret = f'CVAT response password=secret at {config.workspace_dir} object {before[0].id}'
+            with patch('xxtrain.platform.service.validate_target_annotations', side_effect=ValueError(secret)):
+                response = client.post('/platform/api/targets/classify/sync', headers=headers, json={})
+            self.assertEqual(409, response.status_code)
+            self.assertIn('标注类型、标签或坐标不符合要求', response.json()['detail'])
+            self.assertNotIn(secret, response.text)
+            self.assertNotIn('password', response.text)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_invalid_return_hint_falls_back_to_detection(self) -> None:
         result = self.run_page(returned=True, stored_target='../../segment')
 
@@ -563,6 +683,114 @@ await operation;
 
 
 class PlatformFixtureTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline acceptance sequence')
+    def test_live_scenario_preserves_current_bindings_and_restores_invalidated_pointers(self) -> None:
+        import copy
+
+        from xxtrain.platform.contracts import TargetValidationError
+        from xxtrain.platform.service import AnnotationService
+
+        from .test_platform_point_workflow import HttpxCvatFixture
+
+        with tempfile.TemporaryDirectory() as parent:
+            receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
+            config = load_config(Path(receipt['config_path']))
+            data = WorkspaceData(config.workspace_dir)
+            cvat = HttpxCvatFixture()
+            self.addCleanup(cvat.close)
+            service = AnnotationService(config, data, cvat.client, RuntimeCache(config.runtime_dir))
+            case = PlatformLiveBrowserTest()
+            case.receipt = receipt
+            page = Mock()
+            page.expect_navigation.side_effect = lambda **kwargs: nullcontext()
+            active = {}
+
+            def open_target(_page, target):
+                cvat.expect(data.images() if target == 'detect' else data.target_frames(target, config.runtime_dir))
+                page.url = service.begin_target(17, target)
+                active['target'] = target
+
+            def complete(_page, target='detect'):
+                self.assertEqual(target, active['target'])
+                cvat.job(active['target'])['state'] = 'completed'
+                service.sync_target(17, active['target'])
+                page.url = '/platform/'
+
+            def malformed(_page):
+                cvat.job(active['target'])['state'] = 'completed'
+                with self.assertRaises(TargetValidationError):
+                    service.sync_target(17, active['target'])
+
+            def click(selector):
+                if selector.endswith('-cache-action'):
+                    service.generate_target_cache(17, selector.split('-')[0][1:])
+                elif selector.endswith('-correction'):
+                    job = cvat.job(active['target'])
+                    page.url = f'/tasks/{job["task_id"]}/jobs/{job["id"]}'
+
+            def draw(_page):
+                shapes = cvat.job('segment')['annotations']['shapes']
+                shapes.append(
+                    {
+                        'id': cvat.next_object_id,
+                        'frame': 0,
+                        'type': 'polyline',
+                        'label_id': cvat.label_id('segment', '1'),
+                        'points': [60, 60, 120, 100],
+                        'attributes': [],
+                        'occluded': False,
+                        'outside': False,
+                        'rotation': 0,
+                        'z_order': 0,
+                    }
+                )
+                cvat.next_object_id += 1
+
+            def delete(_page):
+                payload = cvat.job(active['target'])['annotations']
+                items = payload['tags'] if active['target'] == 'classify' else payload['shapes']
+                selected = max((item for item in items if item['frame'] == 0), key=lambda item: item['id'])
+                items.remove(selected)
+
+            def evaluate(script, argument):
+                # Execute the harness's REST JavaScript; only fetch is replaced by the in-process CVAT fixture.
+                harness = f"""
+globalThis.document = {{cookie: 'csrftoken=offline'}};
+let request;
+globalThis.fetch = async (url, options = {{}}) => {{
+  request = {{url, ...options}};
+  return {{ok: true, json: async () => ({{}})}};
+}};
+(async () => {{ await ({script})({json.dumps(argument)}); process.stdout.write(JSON.stringify(request)); }})();
+"""
+                result = subprocess.run(['node', '-e', harness], capture_output=True, text=True, check=True)
+                request = json.loads(result.stdout)
+                method = request.get('method', 'GET')
+                payload = json.loads(request['body']) if 'body' in request else None
+                if method == 'PUT':
+                    # CVAT full replacement assigns new native IDs, including for unchanged objects.
+                    for item in [*payload.get('tags', []), *payload.get('shapes', [])]:
+                        item.pop('id', None)
+                response = cvat.http.request(method, 'http://cvat.test' + request['url'], json=payload)
+                self.assertLess(response.status_code, 400)
+                return response.json()
+
+            page.evaluate.side_effect = evaluate
+            page.locator.side_effect = lambda selector: Mock(click=lambda: click(selector))
+            case._new_page = lambda: page
+            case._login = lambda _page: None
+            case._open_target = open_target
+            case._complete_with_plugin = complete
+            case._complete_malformed_via_api = malformed
+            case._job_annotations = lambda _page: copy.deepcopy(cvat.job(active['target'])['annotations'])
+            case._select_first_object_label = lambda _page, label: cvat.job('classify')['annotations']['tags'][
+                0
+            ].update(label_id=cvat.label_id('classify', label), attributes=[])
+            case._draw_two_point_polyline = draw
+            case._delete_last_object = delete
+            with patch(f'{__name__}.expect', create=True):
+                case.test_three_target_native_round_trip_correction_and_cache_readiness()
+
     def test_live_job_lookup_distinguishes_detection_from_edit_targets(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
@@ -593,6 +821,16 @@ class PlatformFixtureTest(unittest.TestCase):
             self.assertNotIn('annotation_path', receipt)
             database_path = Path(receipt['database_path'])
             self.assertEqual(FIXTURE_MARKER, receipt['marker'])
+            with patch.object(PlatformLiveBrowserTest, 'receipt', receipt, create=True):
+                PlatformLiveBrowserTest._validate_receipt()
+            with patch.object(
+                PlatformLiveBrowserTest,
+                'receipt',
+                {**receipt, 'marker': 'xxtrain-task-7-point-workflow-v1'},
+                create=True,
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'fixture receipt'):
+                    PlatformLiveBrowserTest._validate_receipt()
             self.assertEqual(root.parent, Path(parent))
             self.assertTrue(root.name.startswith('xxtrain-point-acceptance-'))
             self.assertEqual(root / 'workspace' / 'annotations.db', database_path)
@@ -739,18 +977,18 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             job_id,
         )
 
-    def _replace_job_annotations(self, page: Page, payload: dict[str, object]) -> dict[str, object]:
+    def _create_malformed_annotations(self, page: Page, payload: dict[str, object]) -> dict[str, object]:
         _, job_id = self._job_identity(page)
         return page.evaluate(
             """async ({jobId, payload}) => {
               const csrf = document.cookie.split(';').map((part) => part.trim())
                 .find((part) => part.startsWith('csrftoken='))?.split('=', 2)[1];
-              const response = await fetch(`/api/jobs/${jobId}/annotations`, {
-                method: 'PUT', credentials: 'same-origin',
+              const response = await fetch(`/api/jobs/${jobId}/annotations?action=create`, {
+                method: 'PATCH', credentials: 'same-origin',
                 headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf || ''},
                 body: JSON.stringify(payload),
               });
-              if (!response.ok) throw new Error(`annotations PUT failed: ${response.status}`);
+              if (!response.ok) throw new Error(`annotations PATCH failed: ${response.status}`);
               return response.json();
             }""",
             {'jobId': job_id, 'payload': payload},
@@ -780,11 +1018,17 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             page.locator(action).click()
         expect(page.locator('.cvat-canvas-container')).to_be_visible()
 
-    def _complete_with_plugin(self, page: Page) -> None:
+    def _complete_with_plugin(self, page: Page, target: str = 'detect') -> None:
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.get_by_role('button', name='完成', exact=True).click()
-        page.wait_for_function("!document.getElementById('workspace-panel').hidden")
-        self.assertEqual('1', page.url.partition('?')[2].removeprefix('returned='))
+        page.wait_for_function(
+            """(target) => !document.getElementById('workspace-panel').hidden
+              && !new URLSearchParams(location.search).has('returned')
+              && sessionStorage.getItem('xxtrain-return-target') === null
+              && document.getElementById(target === 'detect' ? 'workspace-error' : `${target}-error`).hidden
+              && document.getElementById(`${target}-progress`).hidden""",
+            arg=target,
+        )
 
     def _select_first_object_label(self, page: Page, label: str) -> None:
         item = page.locator('.cvat-objects-sidebar-state-item:visible').first
@@ -866,9 +1110,10 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         classifications_before = repository.annotations(step_key='classify')
         self.assertEqual(initial_ids['classify'], [str(record.id) for record in classifications_before])
         classify_bindings_before = repository.bindings(classify_job.ref)
+        initial_segments = repository.annotations(step_key='segment')
         self.assertEqual(native_tag_ids, {binding.object_id for binding in repository.bindings(classify_job.ref)})
         self._select_first_object_label(page, 'cc')
-        self._complete_with_plugin(page)
+        self._complete_with_plugin(page, 'classify')
         classifications_after = repository.annotations(step_key='classify')
         changed_classifications = [
             (before, after)
@@ -880,6 +1125,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(changed_before.id, changed_after.id)
         self.assertEqual(changed_before.image_id, changed_after.image_id)
         self.assertEqual(changed_before.parent_id, changed_after.parent_id)
+        self.assertEqual(classify_job.frames[0].parent_id, changed_after.parent_id)
         self.assertEqual('cc', changed_after.label)
         classify_bindings_after = repository.bindings(classify_job.ref)
         self.assertEqual(classify_bindings_before, classify_bindings_after)
@@ -887,22 +1133,36 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             binding for binding in classify_bindings_after if binding.annotation_id == changed_after.id
         )
         self.assertIn(changed_binding.object_id, native_tag_ids)
+        retained_segments = tuple(record for record in initial_segments if record.parent_id != changed_after.parent_id)
+        removed_segment_ids = {record.id for record in initial_segments if record.parent_id == changed_after.parent_id}
+        self.assertEqual(2, len(removed_segment_ids))
+        self.assertEqual(50, len(retained_segments))
+        self.assertEqual(retained_segments, repository.annotations(step_key='segment'))
 
+        previous_classify_ref = classify_job.ref
         self._open_target(page, 'classify')
+        classify_job = _acceptance_job(runtime, data, 'classify')
+        self.assertIsNotNone(classify_job)
+        assert classify_job is not None
+        self.assertNotEqual(previous_classify_ref, classify_job.ref)
+        classify_bindings_after = repository.bindings(classify_job.ref)
         invalid_classification = self._job_annotations(page)
         duplicate = dict(invalid_classification['tags'][0])
         duplicate.pop('id', None)
-        invalid_classification['tags'].append(duplicate)
-        malformed_classification = self._replace_job_annotations(page, invalid_classification)
+        self._create_malformed_annotations(page, {'tags': [duplicate], 'shapes': [], 'tracks': []})
+        malformed_classification = self._job_annotations(page)
         self.assertEqual(52, len(malformed_classification['tags']))
+        self.assertEqual(invalid_classification['tags'], malformed_classification['tags'][:-1])
         self._complete_malformed_via_api(page)
-        expect(page.locator('#classify-error')).to_contain_text('标注不符合要求')
+        expect(page.locator('#classify-error')).to_contain_text('只能保留一个分类标签')
+        self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
+        self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
         correction = page.locator('#classify-correction')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
         self._delete_last_object(page)
-        self._complete_with_plugin(page)
+        self._complete_with_plugin(page, 'classify')
         expect(page.locator('#classify-annotated-count')).to_have_text('51')
         self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
         self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
@@ -917,51 +1177,68 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         )
         self.assertEqual({'polyline'}, {label['type'] for label in labels['results']})
         segmentation = self._job_annotations(page)
-        self.assertEqual(52, len(segmentation['shapes']))
+        self.assertEqual(50, len(segmentation['shapes']))
         existing_shape_ids = {shape['id'] for shape in segmentation['shapes']}
-        self.assertEqual(52, len(existing_shape_ids))
+        self.assertEqual(50, len(existing_shape_ids))
         segment_job = _acceptance_job(runtime, data, 'segment')
         self.assertIsNotNone(segment_job)
         assert segment_job is not None
         segment_records_before = repository.annotations(step_key='segment')
-        self.assertEqual(initial_ids['segment'], [str(record.id) for record in segment_records_before])
+        self.assertEqual(retained_segments, segment_records_before)
         segment_bindings_before = repository.bindings(segment_job.ref)
         self.assertEqual(existing_shape_ids, {binding.object_id for binding in segment_bindings_before})
         self._draw_two_point_polyline(page)
-        self._complete_with_plugin(page)
+        self._draw_two_point_polyline(page)
+        self._complete_with_plugin(page, 'segment')
         segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(53, len(segment_records))
-        self.assertTrue({UUID(value) for value in initial_ids['segment']} < {record.id for record in segment_records})
-        new_segment = next(
+        self.assertEqual(52, len(segment_records))
+        self.assertTrue({record.id for record in retained_segments} < {record.id for record in segment_records})
+        self.assertTrue(removed_segment_ids.isdisjoint(record.id for record in segment_records))
+        new_segments = tuple(
             record for record in segment_records if record.id not in {item.id for item in segment_records_before}
         )
-        self.assertEqual(segment_job.frames[0].parent_id, new_segment.parent_id)
-        self.assertEqual(segment_job.frames[0].image_id, new_segment.image_id)
+        self.assertEqual(2, len(new_segments))
         segment_bindings = repository.bindings(segment_job.ref)
-        new_segment_binding = next(binding for binding in segment_bindings if binding.annotation_id == new_segment.id)
-        self.assertNotIn(new_segment_binding.object_id, existing_shape_ids)
+        self.assertTrue(set(segment_bindings_before) < set(segment_bindings))
+        for new_segment in new_segments:
+            self.assertEqual(segment_job.frames[0].parent_id, new_segment.parent_id)
+            self.assertEqual(segment_job.frames[0].image_id, new_segment.image_id)
+            new_segment_binding = next(
+                binding for binding in segment_bindings if binding.annotation_id == new_segment.id
+            )
+            self.assertNotIn(new_segment_binding.object_id, existing_shape_ids)
 
+        previous_segment_ref = segment_job.ref
         self._open_target(page, 'segment')
+        segment_job = _acceptance_job(runtime, data, 'segment')
+        self.assertIsNotNone(segment_job)
+        assert segment_job is not None
+        self.assertNotEqual(previous_segment_ref, segment_job.ref)
+        segment_bindings_before = repository.bindings(segment_job.ref)
         invalid_segment = self._job_annotations(page)
         invalid_line = dict(invalid_segment['shapes'][0])
         invalid_line.pop('id', None)
         invalid_line['points'] = [60, 140, 120, 100, 180, 60]
-        invalid_segment['shapes'].append(invalid_line)
-        malformed_segment = self._replace_job_annotations(page, invalid_segment)
-        self.assertEqual(54, len(malformed_segment['shapes']))
+        self._create_malformed_annotations(page, {'tags': [], 'shapes': [invalid_line], 'tracks': []})
+        malformed_segment = self._job_annotations(page)
+        self.assertEqual(53, len(malformed_segment['shapes']))
+        self.assertEqual(invalid_segment['shapes'], malformed_segment['shapes'][:-1])
         self._complete_malformed_via_api(page)
-        expect(page.locator('#segment-error')).to_contain_text('标注不符合要求')
+        expect(page.locator('#segment-error')).to_contain_text('必须恰好有两个点')
+        self.assertEqual(segment_records, repository.annotations(step_key='segment'))
+        self.assertEqual(segment_bindings_before, repository.bindings(segment_job.ref))
         correction = page.locator('#segment-correction')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
         self._delete_last_object(page)
         self._draw_two_point_polyline(page)
-        self._complete_with_plugin(page)
+        self._complete_with_plugin(page, 'segment')
         expect(page.locator('#segment-annotated-count')).to_have_text('51')
         corrected_segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(54, len(corrected_segment_records))
+        self.assertEqual(53, len(corrected_segment_records))
         self.assertTrue({record.id for record in segment_records} < {record.id for record in corrected_segment_records})
+        self.assertTrue(set(segment_bindings_before) < set(repository.bindings(segment_job.ref)))
 
         records = repository.annotations()
         parents = {record.id: record.image_id for record in records if record.step_key == 'detect'}

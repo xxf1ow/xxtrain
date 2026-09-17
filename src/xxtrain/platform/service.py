@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 
 _TARGETS = frozenset({'detect', 'classify', 'segment'})
 _EDIT_TARGETS = {'classify': (('tl', 'tc', 'cl', 'cc'), 'tag'), 'segment': (('1',), 'polyline')}
+_EDIT_VALIDATION_REASONS = {
+    'Point classification requires at most one annotation': '每张裁剪图只能保留一个分类标签，请删除多余标签。',
+    'Point segmentation lines require exactly two points': '每条指针线必须恰好有两个点，请删除错误线并用两点重新绘制。',
+    'Point segmentation lines require two distinct points': '指针线的两个端点不能重合，请重新绘制有长度的线。',
+    'Line point lies outside the crop': '指针线的端点必须位于裁剪图内，请将越界端点移回图内。',
+}
 
 
 class AnnotationService:
@@ -245,9 +251,10 @@ class AnnotationService:
                                 raise ValueError('Line point lies outside the crop')
             except (TypeError, ValueError) as error:
                 path = f'{self.cvat.job_path(job.ref)}?frame={index}'
-                raise TargetValidationError(
-                    f'裁剪图 {index + 1} 的标注不符合要求，请返回当前任务修正。', path
-                ) from error
+                reason = _EDIT_VALIDATION_REASONS.get(
+                    str(error), '标注类型、标签或坐标不符合要求，请检查当前目标的标注规则。'
+                )
+                raise TargetValidationError(f'裁剪图 {index + 1}：{reason}请返回当前任务修正。', path) from error
 
     @staticmethod
     def _target_view(view: WorkspaceView, target: str) -> TargetView:

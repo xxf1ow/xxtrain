@@ -15,7 +15,7 @@ from xxtrain.platform.contracts import AnnotationRecord
 from xxtrain.workspace_data import WorkspaceData
 from xxtrain.workspace_data.repository import AnnotationRepository
 
-FIXTURE_MARKER = 'xxtrain-task-7-point-workflow-v1'
+FIXTURE_MARKER = 'xxtrain-task-7-point-workflow-v2'
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -89,7 +89,13 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
     )
     segments = tuple(
         AnnotationRecord(
-            uuid.uuid4(), detection.image_id, 'segment', detection.id, 'polyline', '1', [[80.0, 70.0], [220.0, 170.0]]
+            uuid.uuid4(),
+            detection.image_id,
+            'segment',
+            detection.id,
+            'polyline',
+            '1',
+            [[80.0, 70.0], [160.0, 130.0]] if detection.id == sibling_detection.id else [[80.0, 70.0], [220.0, 170.0]],
         )
         for detection in detections
     )
