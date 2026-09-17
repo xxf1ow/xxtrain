@@ -29,7 +29,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - `xxtrain.platform.app` 提供同源图片上传、检测标注和缓存生成页面；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；上传文件在独立运行目录暂存，页面计数和缓存按钮由服务返回的数据库派生结果驱动；
 - `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；摘要、输入指纹和 CVAT 输入只读取已登记图片及数据库标注。分类和分割投影共用检测框裁剪与实际边界，数据层从数据库派生目标计数和包含上游关联的输入指纹。对象级同步通过稳定 UUID 和当前 Job 的 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响的下游对象，并在同一事务内提交标注和映射。检测缓存从数据库生成可丢弃的 LabelMe 输入，不回写权威 JSON；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签、检测、分类和分割步骤规则及目标开放状态；
-- `xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存；
+- `xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，并依据目标目录及精确 manifest 判断下游缓存是否完整；`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存，`xxtrain.platform.target_cache` 使用共享裁剪图生成分类和指针分割训练缓存；
 - `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换检测矩形；`xxtrain.integrations.cvat.edit_codec` 按 `EditJob.frames` 的精确顺序转换分类 tag 和指针 polyline。两者只在初始化时用临时 UUID 令牌关联 CVAT 原生 ID，常规回收只返回原生 ID；
 - `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并以共享流程完成检测或编辑图片的上传、frame 核对、Job 分配、初始化和读取；只有完整对象映射建立后才返回可发布的 Job，浏览器会话与服务令牌隔离。平台服务与页面尚未开放分类和分割入口。同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
 - `xxtrain.cli` 只把命令参数传给训练包 API，不重新实现数据或训练逻辑。
@@ -50,4 +50,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-内部自助训练平台仍处于提案阶段；Point 页面在业务任务与现场下共享图片上传区，按检测、分类、分割顺序逐行展示各模型的图片标注进度与标注、训练入口。当前支持批量上传、检测标注同步和至少 50 张有框图片的检测缓存生成；“开始训练”仅生成缓存。现场管理、分类、分割、训练提交和 ClearML 服务连接尚未实现，对应模型入口禁用。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
+内部自助训练平台仍处于提案阶段；Point 页面在业务任务与现场下共享图片上传区，按检测、分类、分割顺序逐行展示各模型的图片标注进度与标注、训练入口。当前支持批量上传、检测标注同步和至少 50 张有框图片的检测缓存生成；分类和指针分割缓存生成已具备内部数据层能力，但对应服务与页面入口仍禁用。“开始训练”仅生成缓存。现场管理、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

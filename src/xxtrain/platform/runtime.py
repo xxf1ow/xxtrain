@@ -10,7 +10,7 @@ type RuntimeJob = JobRef | EditJob
 
 
 class RuntimeCache:
-    """Persist disposable CVAT job references and locate generated detection caches."""
+    """Persist disposable CVAT job references and locate generated training caches."""
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
@@ -59,6 +59,24 @@ class RuntimeCache:
     def has_detection_cache(self, fingerprint: str) -> bool:
         """Return whether a complete Point detection dataset exists for the fingerprint."""
         return (self._root / 'cache' / fingerprint / 'detect').is_dir()
+
+    def has_target_cache(self, target: str, fingerprint: str) -> bool:
+        """Return whether a downstream cache has its exact manifest and target directory.
+
+        Missing, unreadable, and malformed disposable manifests are cache misses. Unsupported targets raise
+        ``ValueError``.
+        """
+        if target not in {'classify', 'segment'}:
+            raise ValueError(f'Unsupported target cache: {target!r}')
+        publication = self._root / 'cache' / fingerprint
+        if not (publication / target).is_dir():
+            return False
+        try:
+            with (publication / 'manifest.json').open(encoding='utf-8') as stream:
+                manifest = json.load(stream)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        return manifest == {'fingerprint': fingerprint, 'target': target}
 
     def _load_jobs(self) -> dict[str, dict[str, RuntimeJob]]:
         if not self._jobs_path.exists():
