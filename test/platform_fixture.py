@@ -67,10 +67,14 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
     images = workspace.images()
 
     original_rectangle_points = [[40.0, 30.0], [280.0, 210.0]]
-    detections = tuple(
+    primary_detections = tuple(
         AnnotationRecord(uuid.uuid4(), image.sample_id, 'detect', None, 'rectangle', 'tl', original_rectangle_points)
         for image in images
     )
+    sibling_detection = AnnotationRecord(
+        uuid.uuid4(), images[0].sample_id, 'detect', None, 'rectangle', 'tc', [[60.0, 50.0], [180.0, 150.0]]
+    )
+    detections = (primary_detections[0], sibling_detection, *primary_detections[1:])
     classifications = tuple(
         AnnotationRecord(
             uuid.uuid4(),
@@ -91,9 +95,9 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
     )
     extra_segment = AnnotationRecord(
         uuid.uuid4(),
-        detections[0].image_id,
+        primary_detections[0].image_id,
         'segment',
-        detections[0].id,
+        primary_detections[0].id,
         'polyline',
         '1',
         [[90.0, 160.0], [210.0, 80.0]],

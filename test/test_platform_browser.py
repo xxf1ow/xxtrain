@@ -584,6 +584,8 @@ class PlatformFixtureTest(unittest.TestCase):
             records = repository.annotations(step_key='detect')
             self.assertEqual(receipt['initial_annotation_ids']['detect'], [str(record.id) for record in records])
             self.assertEqual(receipt['images'][0]['sample_id'], records[0].image_id)
+            self.assertEqual(records[0].image_id, records[1].image_id)
+            self.assertNotEqual(records[0].id, records[1].id)
             self.assertEqual('tl', records[0].label)
             self.assertEqual(receipt['original_rectangle_points'], records[0].geometry)
             self.assertEqual(
@@ -726,7 +728,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             {'jobId': job_id, 'payload': payload},
         )
 
-    def _complete_and_return(self, page: Page) -> None:
+    def _complete_malformed_via_api(self, page: Page) -> None:
         _, job_id = self._job_identity(page)
         page.evaluate(
             """async (jobId) => {
@@ -745,9 +747,51 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.wait_for_function("!document.getElementById('workspace-panel').hidden")
 
     def _open_target(self, page: Page, target: str) -> None:
+        action = '#primary-action' if target == 'detect' else f'#{target}-annotate-action'
         with page.expect_navigation(wait_until='domcontentloaded'):
-            page.locator(f'#{target}-annotate-action').click()
+            page.locator(action).click()
         expect(page.locator('.cvat-canvas-container')).to_be_visible()
+
+    def _complete_with_plugin(self, page: Page) -> None:
+        with page.expect_navigation(wait_until='domcontentloaded'):
+            page.get_by_role('button', name='完成', exact=True).click()
+        page.wait_for_function("!document.getElementById('workspace-panel').hidden")
+        self.assertEqual('1', page.url.partition('?')[2].removeprefix('returned='))
+
+    def _select_first_object_label(self, page: Page, label: str) -> None:
+        item = page.locator('.cvat-objects-sidebar-state-item:visible').first
+        selector = item.locator('.cvat-objects-sidebar-state-item-label-selector')
+        expect(selector).to_be_visible()
+        selector.click()
+        option = page.locator(f'.ant-select-dropdown:visible .ant-select-item-option[title="{label}"]')
+        expect(option).to_be_visible()
+        option.click()
+
+    def _delete_last_object(self, page: Page) -> None:
+        items = page.locator('.cvat-objects-sidebar-state-item:visible')
+        before = items.count()
+        self.assertGreater(before, 0)
+        items.last.hover()
+        items.last.click()
+        page.keyboard.press('Delete')
+        expect(items).to_have_count(before - 1)
+
+    def _draw_two_point_polyline(self, page: Page) -> None:
+        items = page.locator('.cvat-objects-sidebar-state-item:visible')
+        before = items.count()
+        page.locator('.cvat-draw-polyline-control').click()
+        popover = page.locator('.cvat-draw-shape-popover:visible')
+        expect(popover).to_be_visible()
+        points = popover.locator('.cvat-draw-shape-popover-points-selector input')
+        points.fill('2')
+        popover.locator('.cvat-draw-polyline-shape-button').click()
+        canvas = page.locator('.cvat-canvas-container')
+        bounds = canvas.bounding_box()
+        self.assertIsNotNone(bounds)
+        assert bounds is not None
+        canvas.click(position={'x': bounds['width'] * 0.4, 'y': bounds['height'] * 0.6})
+        canvas.click(position={'x': bounds['width'] * 0.6, 'y': bounds['height'] * 0.4})
+        expect(items).to_have_count(before + 1)
 
     def test_three_target_native_round_trip_correction_and_cache_readiness(self) -> None:
         page = self._new_page()
@@ -756,6 +800,24 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         expect(page.locator('#annotated-image-count')).to_have_text('50')
         initial_ids = self.receipt['initial_annotation_ids']
         repository = AnnotationRepository(Path(self.receipt['database_path']), point_task_definition())
+        data = WorkspaceData(Path(self.receipt['root']) / 'workspace')
+        runtime = RuntimeCache(Path(self.receipt['runtime_dir']))
+
+        self._open_target(page, 'detect')
+        detection = self._job_annotations(page)
+        self.assertEqual(51, len(detection['shapes']))
+        native_detection_ids = {shape['id'] for shape in detection['shapes']}
+        self.assertEqual(51, len(native_detection_ids))
+        detect_job = runtime.edit_job_for('detect', data.target_fingerprint('detect'))
+        self.assertIsNotNone(detect_job)
+        assert detect_job is not None
+        detect_bindings_before = repository.bindings(detect_job.ref)
+        self.assertEqual(native_detection_ids, {binding.object_id for binding in detect_bindings_before})
+        self._complete_with_plugin(page)
+        self.assertEqual(
+            initial_ids['detect'], [str(record.id) for record in repository.annotations(step_key='detect')]
+        )
+        self.assertEqual(detect_bindings_before, repository.bindings(detect_job.ref))
 
         self._open_target(page, 'classify')
         task_id, _ = self._job_identity(page)
@@ -767,37 +829,55 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         )
         self.assertEqual({'tag'}, {label['type'] for label in labels['results']})
         classification = self._job_annotations(page)
-        self.assertEqual(50, len(classification['tags']))
+        self.assertEqual(51, len(classification['tags']))
         native_tag_ids = {tag['id'] for tag in classification['tags']}
-        self.assertEqual(50, len(native_tag_ids))
-        self._complete_and_return(page)
-        self.assertEqual(
-            initial_ids['classify'], [str(record.id) for record in repository.annotations(step_key='classify')]
-        )
-        data = WorkspaceData(Path(self.receipt['root']) / 'workspace')
-        runtime = RuntimeCache(Path(self.receipt['runtime_dir']))
+        self.assertEqual(51, len(native_tag_ids))
         classify_job = runtime.edit_job_for('classify', data.target_fingerprint('classify'))
         self.assertIsNotNone(classify_job)
         assert classify_job is not None
+        classifications_before = repository.annotations(step_key='classify')
+        self.assertEqual(initial_ids['classify'], [str(record.id) for record in classifications_before])
+        classify_bindings_before = repository.bindings(classify_job.ref)
         self.assertEqual(native_tag_ids, {binding.object_id for binding in repository.bindings(classify_job.ref)})
+        self._select_first_object_label(page, 'cc')
+        self._complete_with_plugin(page)
+        classifications_after = repository.annotations(step_key='classify')
+        changed_classifications = [
+            (before, after)
+            for before, after in zip(classifications_before, classifications_after, strict=True)
+            if before != after
+        ]
+        self.assertEqual(1, len(changed_classifications))
+        changed_before, changed_after = changed_classifications[0]
+        self.assertEqual(changed_before.id, changed_after.id)
+        self.assertEqual(changed_before.image_id, changed_after.image_id)
+        self.assertEqual(changed_before.parent_id, changed_after.parent_id)
+        self.assertEqual('cc', changed_after.label)
+        classify_bindings_after = repository.bindings(classify_job.ref)
+        self.assertEqual(classify_bindings_before, classify_bindings_after)
+        changed_binding = next(
+            binding for binding in classify_bindings_after if binding.annotation_id == changed_after.id
+        )
+        self.assertIn(changed_binding.object_id, native_tag_ids)
 
         self._open_target(page, 'classify')
         invalid_classification = self._job_annotations(page)
         duplicate = dict(invalid_classification['tags'][0])
         duplicate.pop('id', None)
         invalid_classification['tags'].append(duplicate)
-        self._replace_job_annotations(page, invalid_classification)
-        self._complete_and_return(page)
+        malformed_classification = self._replace_job_annotations(page, invalid_classification)
+        self.assertEqual(52, len(malformed_classification['tags']))
+        self._complete_malformed_via_api(page)
         expect(page.locator('#classify-error')).to_contain_text('标注不符合要求')
         correction = page.locator('#classify-correction')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
-        corrected = self._job_annotations(page)
-        corrected['tags'] = corrected['tags'][:-1]
-        self._replace_job_annotations(page, corrected)
-        self._complete_and_return(page)
-        expect(page.locator('#classify-annotated-count')).to_have_text('50')
+        self._delete_last_object(page)
+        self._complete_with_plugin(page)
+        expect(page.locator('#classify-annotated-count')).to_have_text('51')
+        self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
+        self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
 
         self._open_target(page, 'segment')
         task_id, _ = self._job_identity(page)
@@ -809,44 +889,57 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         )
         self.assertEqual({'polyline'}, {label['type'] for label in labels['results']})
         segmentation = self._job_annotations(page)
-        self.assertEqual(51, len(segmentation['shapes']))
+        self.assertEqual(52, len(segmentation['shapes']))
         existing_shape_ids = {shape['id'] for shape in segmentation['shapes']}
-        copied = dict(segmentation['shapes'][0])
-        copied.pop('id', None)
-        copied['points'] = [60, 140, 180, 60]
-        segmentation['shapes'].append(copied)
-        saved = self._replace_job_annotations(page, segmentation)
-        new_native_ids = {shape['id'] for shape in saved['shapes']}
-        self.assertTrue(existing_shape_ids < new_native_ids)
-        self._complete_and_return(page)
+        self.assertEqual(52, len(existing_shape_ids))
+        segment_job = runtime.edit_job_for('segment', data.target_fingerprint('segment'))
+        self.assertIsNotNone(segment_job)
+        assert segment_job is not None
+        segment_records_before = repository.annotations(step_key='segment')
+        self.assertEqual(initial_ids['segment'], [str(record.id) for record in segment_records_before])
+        segment_bindings_before = repository.bindings(segment_job.ref)
+        self.assertEqual(existing_shape_ids, {binding.object_id for binding in segment_bindings_before})
+        self._draw_two_point_polyline(page)
+        self._complete_with_plugin(page)
         segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(52, len(segment_records))
+        self.assertEqual(53, len(segment_records))
         self.assertTrue({UUID(value) for value in initial_ids['segment']} < {record.id for record in segment_records})
+        new_segment = next(
+            record for record in segment_records if record.id not in {item.id for item in segment_records_before}
+        )
+        self.assertEqual(segment_job.frames[0].parent_id, new_segment.parent_id)
+        self.assertEqual(segment_job.frames[0].image_id, new_segment.image_id)
+        segment_bindings = repository.bindings(segment_job.ref)
+        new_segment_binding = next(binding for binding in segment_bindings if binding.annotation_id == new_segment.id)
+        self.assertNotIn(new_segment_binding.object_id, existing_shape_ids)
 
         self._open_target(page, 'segment')
         invalid_segment = self._job_annotations(page)
-        invalid_segment['shapes'][0]['points'].extend(invalid_segment['shapes'][0]['points'][:2])
-        self._replace_job_annotations(page, invalid_segment)
-        self._complete_and_return(page)
+        invalid_line = dict(invalid_segment['shapes'][0])
+        invalid_line.pop('id', None)
+        invalid_line['points'] = [60, 140, 120, 100, 180, 60]
+        invalid_segment['shapes'].append(invalid_line)
+        malformed_segment = self._replace_job_annotations(page, invalid_segment)
+        self.assertEqual(54, len(malformed_segment['shapes']))
+        self._complete_malformed_via_api(page)
         expect(page.locator('#segment-error')).to_contain_text('标注不符合要求')
         correction = page.locator('#segment-correction')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
-        corrected = self._job_annotations(page)
-        corrected['shapes'][0]['points'] = corrected['shapes'][0]['points'][:4]
-        self._replace_job_annotations(page, corrected)
-        self._complete_and_return(page)
-        expect(page.locator('#segment-annotated-count')).to_have_text('50')
+        self._delete_last_object(page)
+        self._draw_two_point_polyline(page)
+        self._complete_with_plugin(page)
+        expect(page.locator('#segment-annotated-count')).to_have_text('51')
+        corrected_segment_records = repository.annotations(step_key='segment')
+        self.assertEqual(54, len(corrected_segment_records))
+        self.assertTrue({record.id for record in segment_records} < {record.id for record in corrected_segment_records})
 
         records = repository.annotations()
         parents = {record.id: record.image_id for record in records if record.step_key == 'detect'}
         self.assertTrue(
             all(parents[record.parent_id] == record.image_id for record in records if record.step_key != 'detect')
         )
-        segment_job = runtime.edit_job_for('segment', data.target_fingerprint('segment'))
-        self.assertIsNotNone(segment_job)
-        assert segment_job is not None
         self.assertTrue(all(frame.image_id == parents[frame.parent_id] for frame in segment_job.frames))
         page.locator('#classify-cache-action').click()
         expect(page.locator('#classify-cache-action')).to_have_text('训练缓存已生成')

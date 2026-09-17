@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
 
 try:
     import httpx
@@ -17,7 +18,7 @@ from PIL import Image
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.integrations.cvat import CvatClient
 from xxtrain.platform.config import load_config
-from xxtrain.platform.contracts import PlatformError
+from xxtrain.platform.contracts import AnnotationRecord, CvatBinding, PlatformError
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.workspace_data import WorkspaceData
@@ -193,10 +194,22 @@ class PointWorkflowTest(unittest.TestCase):
             }
             for frame in range(50)
         ]
+        detect_shapes.insert(
+            1,
+            {
+                'id': 10_500,
+                'type': 'rectangle',
+                'frame': 0,
+                'label_id': self.cvat.label_id('detect', 'tc'),
+                'points': [60, 50, 180, 150],
+                'attributes': [],
+            },
+        )
         self.cvat.set_annotations('detect', shapes=detect_shapes)
         detect_view = self.service.sync_target(17, 'detect')
 
-        self.cvat.expect(self.data.target_frames('classify', self.config.runtime_dir))
+        classify_frames = self.data.target_frames('classify', self.config.runtime_dir)
+        self.cvat.expect(classify_frames)
         self.service.begin_target(17, 'classify')
         classify_tags = [
             {
@@ -205,14 +218,15 @@ class PointWorkflowTest(unittest.TestCase):
                 'label_id': self.cvat.label_id('classify', ('tl', 'tc', 'cl', 'cc')[frame % 4]),
                 'attributes': [],
             }
-            for frame in range(50)
+            for frame in range(len(classify_frames))
         ]
         self.cvat.set_annotations('classify', tags=classify_tags)
         classify_view = self.service.sync_target(17, 'classify')
 
-        self.cvat.expect(self.data.target_frames('segment', self.config.runtime_dir))
+        segment_frames = self.data.target_frames('segment', self.config.runtime_dir)
+        self.cvat.expect(segment_frames)
         self.service.begin_target(17, 'segment')
-        segment_shapes = [self._line(frame, 30_000 + frame, [40, 40, 160, 120]) for frame in range(50)]
+        segment_shapes = [self._line(frame, 30_000 + frame, [20, 20, 80, 80]) for frame in range(len(segment_frames))]
         segment_shapes.append(self._line(0, 31_000, [50, 130, 170, 50]))
         self.cvat.set_annotations('segment', shapes=segment_shapes)
         segment_view = self.service.sync_target(17, 'segment')
@@ -223,6 +237,8 @@ class PointWorkflowTest(unittest.TestCase):
             'detect_shapes': detect_shapes,
             'classify_tags': classify_tags,
             'segment_shapes': segment_shapes,
+            'classify_frames': classify_frames,
+            'segment_frames': segment_frames,
         }
 
     def _line(self, frame: int, object_id: int, points: list[int]) -> dict:
@@ -241,8 +257,82 @@ class PointWorkflowTest(unittest.TestCase):
         self.assertTrue(self._targets(views['detect_view'])['classify'].can_annotate)
         self.assertTrue(self._targets(views['classify_view'])['segment'].can_annotate)
         self.assertTrue(self._targets(views['segment_view'])['segment'].can_generate_cache)
+        detect_job = self._runtime_job('detect')
+        classify_job = self._runtime_job('classify')
+        segment_job = self._runtime_job('segment')
+        detect_bindings = self.repository.bindings(detect_job)
+        classify_bindings = self.repository.bindings(classify_job.ref)
+        segment_bindings = self.repository.bindings(segment_job.ref)
+        detect_ids = {binding.object_id: binding.annotation_id for binding in detect_bindings}
+        expected_detection = tuple(
+            AnnotationRecord(
+                detect_ids[shape['id']],
+                detect_job.sample_ids[shape['frame']],
+                'detect',
+                None,
+                'rectangle',
+                'tc' if shape['id'] == 10_500 else 'tl',
+                [shape['points'][:2], shape['points'][2:]],
+            )
+            for shape in views['detect_shapes']
+        )
+        self.assertEqual(expected_detection, self.repository.annotations(step_key='detect'))
+        self.assertEqual(
+            tuple(
+                CvatBinding(record.image_id, 'shape', shape['id'], record.id)
+                for record, shape in zip(expected_detection, views['detect_shapes'], strict=True)
+            ),
+            detect_bindings,
+        )
+
+        class_ids = {binding.object_id: binding.annotation_id for binding in classify_bindings}
+        class_names = ('tl', 'tc', 'cl', 'cc')
+        expected_classification = tuple(
+            AnnotationRecord(
+                class_ids[tag['id']],
+                frame.mapping.image_id,
+                'classify',
+                frame.mapping.parent_id,
+                'classification',
+                class_names[index % len(class_names)],
+                None,
+            )
+            for index, (frame, tag) in enumerate(zip(views['classify_frames'], views['classify_tags'], strict=True))
+        )
+        self.assertEqual(expected_classification, self.repository.annotations(step_key='classify'))
+        self.assertEqual(
+            tuple(
+                CvatBinding(record.image_id, 'tag', tag['id'], record.id)
+                for record, tag in zip(expected_classification, views['classify_tags'], strict=True)
+            ),
+            classify_bindings,
+        )
+
+        segment_ids = {binding.object_id: binding.annotation_id for binding in segment_bindings}
+        expected_segment: list[AnnotationRecord] = []
+        expected_segment_bindings: list[CvatBinding] = []
+        shapes_by_frame: dict[int, list[dict]] = {}
+        for shape in views['segment_shapes']:
+            shapes_by_frame.setdefault(shape['frame'], []).append(shape)
+        for frame_index, frame in enumerate(views['segment_frames']):
+            left, top, _, _ = frame.mapping.bounds
+            for shape in shapes_by_frame[frame_index]:
+                points = shape['points']
+                record = AnnotationRecord(
+                    segment_ids[shape['id']],
+                    frame.mapping.image_id,
+                    'segment',
+                    frame.mapping.parent_id,
+                    'polyline',
+                    '1',
+                    [[left + points[0], top + points[1]], [left + points[2], top + points[3]]],
+                )
+                expected_segment.append(record)
+                expected_segment_bindings.append(CvatBinding(record.image_id, 'shape', shape['id'], record.id))
+        self.assertEqual(tuple(expected_segment), self.repository.annotations(step_key='segment'))
+        self.assertEqual(tuple(expected_segment_bindings), segment_bindings)
         before = self.repository.annotations()
-        jobs = {target: self._runtime_job(target) for target in ('detect', 'classify', 'segment')}
+        jobs = {'detect': detect_job, 'classify': classify_job, 'segment': segment_job}
         bindings_before = {
             target: self.repository.bindings(job.ref if hasattr(job, 'ref') else job) for target, job in jobs.items()
         }
@@ -280,7 +370,14 @@ class PointWorkflowTest(unittest.TestCase):
         self.assertEqual(before_noop, self.repository.annotations())
         self.assertEqual(bindings_noop, self.repository.bindings(segment_job.ref))
 
-        parent = next(record for record in before_noop if record.step_key == 'detect')
+        detect_job = self._runtime_job('detect')
+        detect_bindings = {binding.object_id: binding.annotation_id for binding in self.repository.bindings(detect_job)}
+        parent = next(record for record in before_noop if record.id == detect_bindings[10_000])
+        sibling = next(record for record in before_noop if record.id == detect_bindings[10_500])
+        self.assertEqual(parent.image_id, sibling.image_id)
+        sibling_records_before = tuple(
+            record for record in before_noop if record.id == sibling.id or record.parent_id == sibling.id
+        )
         before_parent_records = tuple(
             record for record in before_noop if record.parent_id != parent.id and record != parent
         )
@@ -292,9 +389,9 @@ class PointWorkflowTest(unittest.TestCase):
             binding for binding in bindings_noop if binding.annotation_id not in original_parent_line_ids
         )
         segment_shapes = copy.deepcopy(values['segment_shapes'])
-        segment_shapes[0]['points'] = [45, 45, 165, 125]
+        segment_shapes[0]['points'] = [25, 25, 85, 85]
         segment_shapes = [shape for shape in segment_shapes if shape['id'] != 31_000]
-        segment_shapes.extend((self._line(0, 31_001, [55, 135, 175, 55]), self._line(0, 31_002, [60, 140, 180, 60])))
+        segment_shapes.extend((self._line(0, 31_001, [30, 100, 150, 30]), self._line(0, 31_002, [35, 105, 155, 35])))
         self.cvat.set_annotations('segment', shapes=segment_shapes)
 
         self.service.sync_target(17, 'segment')
@@ -308,16 +405,40 @@ class PointWorkflowTest(unittest.TestCase):
             record for record in after_pointers if record.parent_id == parent.id and record.step_key == 'segment'
         )
         self.assertEqual(3, len(parent_lines))
-        self.assertIn(pointer_bindings[30_000], {record.id for record in parent_lines})
+        moved_line = next(record for record in parent_lines if record.id == pointer_bindings[30_000])
+        self.assertEqual([[65.0, 55.0], [125.0, 115.0]], moved_line.geometry)
         self.assertNotIn(pointer_bindings[31_000], {record.id for record in parent_lines})
+        new_line_ids = {record.id for record in parent_lines} - {pointer_bindings[30_000]}
+        self.assertEqual(
+            {((70.0, 130.0), (190.0, 60.0)), ((75.0, 135.0), (195.0, 65.0))},
+            {tuple(tuple(point) for point in record.geometry) for record in parent_lines if record.id in new_line_ids},
+        )
         current_segment_job = self._runtime_job('segment')
+        current_segment_bindings = self.repository.bindings(current_segment_job.ref)
         self.assertEqual(
             unrelated_pointer_bindings,
             tuple(
                 binding
-                for binding in self.repository.bindings(current_segment_job.ref)
+                for binding in current_segment_bindings
                 if binding.annotation_id not in {record.id for record in parent_lines}
             ),
+        )
+        line_ids_by_geometry = {tuple(tuple(point) for point in record.geometry): record.id for record in parent_lines}
+        self.assertEqual(
+            {
+                30_000: pointer_bindings[30_000],
+                31_001: line_ids_by_geometry[((70.0, 130.0), (190.0, 60.0))],
+                31_002: line_ids_by_geometry[((75.0, 135.0), (195.0, 65.0))],
+            },
+            {
+                binding.object_id: binding.annotation_id
+                for binding in current_segment_bindings
+                if binding.annotation_id in {record.id for record in parent_lines}
+            },
+        )
+        self.assertEqual(
+            sibling_records_before,
+            tuple(record for record in after_pointers if record.id == sibling.id or record.parent_id == sibling.id),
         )
 
         classify_tags = copy.deepcopy(values['classify_tags'])
@@ -333,6 +454,9 @@ class PointWorkflowTest(unittest.TestCase):
         )
         self.service.sync_target(17, 'classify')
         after_class_change = self.repository.annotations()
+        changed_class = next(record for record in after_class_change if record.id == parent_class_id)
+        self.assertEqual('cc', changed_class.label)
+        self.assertEqual(parent_class_id, changed_class.id)
         unaffected = tuple(record for record in before_class_change if record.parent_id != parent.id)
         self.assertEqual(unaffected, tuple(record for record in after_class_change if record.parent_id != parent.id))
         self.assertFalse(
@@ -347,6 +471,10 @@ class PointWorkflowTest(unittest.TestCase):
                 if binding.annotation_id != parent_class_id
             ),
         )
+        self.assertEqual(
+            sibling_records_before,
+            tuple(record for record in after_class_change if record.id == sibling.id or record.parent_id == sibling.id),
+        )
 
         detect_shapes = copy.deepcopy(values['detect_shapes'])
         detect_shapes[0]['points'] = [42, 31, 279, 209]
@@ -357,24 +485,27 @@ class PointWorkflowTest(unittest.TestCase):
         self.service.sync_target(17, 'detect')
         after_parent_change = self.repository.annotations()
         changed_parent = next(
-            record
-            for record in after_parent_change
-            if record.step_key == 'detect' and record.image_id == parent.image_id
+            record for record in after_parent_change if record.step_key == 'detect' and record.id == parent.id
         )
         self.assertEqual(parent.id, changed_parent.id)
+        self.assertEqual([[42.0, 31.0], [279.0, 209.0]], changed_parent.geometry)
+        unaffected_parent_records = tuple(
+            record for record in before_parent_change if record.id != parent.id and record.parent_id != parent.id
+        )
         self.assertEqual(
-            tuple(record for record in before_parent_change if record.image_id != parent.image_id),
-            tuple(record for record in after_parent_change if record.image_id != parent.image_id),
+            unaffected_parent_records,
+            tuple(record for record in after_parent_change if record.id != parent.id and record.parent_id != parent.id),
         )
         current_detect_job = self._runtime_job('detect')
         self.assertEqual(
-            tuple(binding for binding in detect_bindings_before if binding.sample_id != parent.image_id),
+            tuple(binding for binding in detect_bindings_before if binding.annotation_id != parent.id),
             tuple(
                 binding
                 for binding in self.repository.bindings(current_detect_job)
-                if binding.sample_id != parent.image_id
+                if binding.annotation_id != parent.id
             ),
         )
+        self.assertEqual((sibling,), tuple(record for record in after_parent_change if record.id == sibling.id))
         with self.assertRaisesRegex(PlatformError, 'not ready'):
             self.service.sync_target(17, 'classify')
 
@@ -386,11 +517,22 @@ class PointWorkflowTest(unittest.TestCase):
         self.cvat.set_annotations('classify', tags=tags)
         before_failure = self.repository.annotations()
         bindings_before_failure = self.repository.bindings(new_classify_job.ref)
-        with patch.object(self.data._repository, 'apply_changes', side_effect=PlatformError('injected rollback')):
-            with self.assertRaisesRegex(PlatformError, '取回或保存'):
-                self.service.sync_target(17, 'classify')
+        database_path = Path(self.receipt['database_path'])
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.execute(
+                f"""CREATE TRIGGER reject_workflow_binding BEFORE INSERT ON cvat_annotation_map
+                WHEN NEW.job_id = {new_classify_job.ref.job_id} AND NEW.object_id = 21000
+                BEGIN SELECT RAISE(ABORT, 'injected workflow binding failure'); END"""
+            )
+        with self.assertRaisesRegex(PlatformError, '取回或保存') as raised:
+            self.service.sync_target(17, 'classify')
+        self.assertIsInstance(raised.exception.__cause__, PlatformError)
+        self.assertIsInstance(raised.exception.__cause__.__cause__, sqlite3.Error)
         self.assertEqual(before_failure, self.repository.annotations())
         self.assertEqual(bindings_before_failure, self.repository.bindings(new_classify_job.ref))
+
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.execute('DROP TRIGGER reject_workflow_binding')
 
         restarted = AnnotationService(
             self.config,
@@ -399,10 +541,14 @@ class PointWorkflowTest(unittest.TestCase):
             RuntimeCache(self.config.runtime_dir),
         )
         retried = restarted.sync_target(17, 'classify')
-        self.assertEqual(50, self._targets(retried)['classify'].annotated_sample_count)
+        self.assertEqual(51, self._targets(retried)['classify'].annotated_sample_count)
         self.assertEqual(
-            tuple(record for record in before_failure if record.image_id != parent.image_id),
-            tuple(record for record in self.repository.annotations() if record.image_id != parent.image_id),
+            tuple(record for record in before_failure if record.id != parent.id and record.parent_id != parent.id),
+            tuple(
+                record
+                for record in self.repository.annotations()
+                if record.id != parent.id and record.parent_id != parent.id
+            ),
         )
 
     def _runtime_job(self, target: str):
@@ -424,9 +570,12 @@ class PointWorkflowFixtureTest(unittest.TestCase):
             self.assertEqual({'detect', 'classify', 'segment'}, set(receipt['initial_annotation_ids']))
             for target, ids in receipt['initial_annotation_ids'].items():
                 self.assertEqual(ids, [str(record.id) for record in repository.annotations(step_key=target)])
-            self.assertEqual(50, len(repository.annotations(step_key='detect')))
-            self.assertEqual(50, len(repository.annotations(step_key='classify')))
-            self.assertEqual(51, len(repository.annotations(step_key='segment')))
+            detections = repository.annotations(step_key='detect')
+            self.assertEqual(51, len(detections))
+            self.assertEqual(detections[0].image_id, detections[1].image_id)
+            self.assertNotEqual(detections[0].id, detections[1].id)
+            self.assertEqual(51, len(repository.annotations(step_key='classify')))
+            self.assertEqual(52, len(repository.annotations(step_key='segment')))
 
 
 if __name__ == '__main__':
