@@ -73,11 +73,14 @@ class DetectionBox:
 
 @dataclass(frozen=True)
 class ImageInput:
+    """Registered image with current detection boxes or explicit negative confirmation."""
+
     sample_id: str
     image_path: Path
     width: int
     height: int
     boxes: tuple[DetectionBox, ...]
+    negative: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,8 +104,14 @@ class DetectionSummary:
 
 @dataclass(frozen=True)
 class FrameResult:
+    """Current rectangles and explicit image-level negative confirmation from CVAT.
+
+    No confirmation means unfinished when boxes are empty. Boxes plus confirmation are a validation conflict.
+    """
+
     sample_id: str
     boxes: tuple[DetectionBox, ...]
+    negative: bool = False
 
 
 @dataclass(frozen=True)
@@ -230,7 +239,7 @@ class PlatformError(Exception):
 
 
 class TargetValidationError(PlatformError):
-    """A safe downstream validation failure with its server-owned correction link."""
+    """A safe annotation validation failure with its server-owned correction link."""
 
     def __init__(self, message: str, annotation_url: str) -> None:
         super().__init__(message)

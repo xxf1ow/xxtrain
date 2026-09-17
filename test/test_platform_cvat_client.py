@@ -106,7 +106,7 @@ class CvatClientTest(unittest.TestCase):
                 [
                     {
                         'name': name,
-                        'type': 'rectangle',
+                        'type': 'tag' if name == '无检测目标' else 'rectangle',
                         'attributes': [
                             {
                                 'name': 'xxtrain_labelme_extra',
@@ -117,7 +117,7 @@ class CvatClientTest(unittest.TestCase):
                             }
                         ],
                     }
-                    for name in POINT_BOX_LABELS
+                    for name in (*POINT_BOX_LABELS, '无检测目标')
                 ],
             )
             return httpx.Response(201, json={'id': 7})

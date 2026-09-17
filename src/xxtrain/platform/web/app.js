@@ -61,7 +61,7 @@
       try {
         const payload = await response.json();
         if (typeof payload.detail === 'string') detail = payload.detail;
-        if (typeof payload.annotation_url === 'string' && /^\/tasks\/\d+\/jobs\/\d+(\?frame=\d+)?$/.test(payload.annotation_url)) {
+        if (typeof payload.annotation_url === 'string' && /^\/tasks\/\d+\/jobs\/\d+(\?(defaultWorkspace=TAGS(&frame=\d+)?|frame=\d+))?$/.test(payload.annotation_url)) {
           annotationUrl = payload.annotation_url;
         }
       } catch (_) {

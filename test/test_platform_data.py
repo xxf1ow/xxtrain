@@ -309,7 +309,7 @@ class PlatformDataTest(unittest.TestCase):
         self.assertEqual((), self.repository().annotations(step_key='detect'))
         self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
 
-    def test_prepare_sync_preserves_an_existing_explicit_negative_on_an_empty_frame(self) -> None:
+    def test_prepare_sync_removes_an_existing_negative_when_confirmation_is_absent(self) -> None:
         image = self.accept_image()
         negative = AnnotationRecord(uuid4(), image.sample_id, 'detect', None, 'negative', None, None)
         self.repository().save_annotations((negative,))
@@ -318,8 +318,8 @@ class PlatformDataTest(unittest.TestCase):
         sync = self.workspace.prepare_detection_sync(ref, (FrameResult(image.sample_id, ()),))
         self.workspace.commit_detection_sync(ref, sync)
 
-        self.assertEqual((negative,), self.repository().annotations(step_key='detect'))
-        self.assertEqual(DetectionSummary(1, 1, 0), self.workspace.detection_summary())
+        self.assertEqual((), self.repository().annotations(step_key='detect'))
+        self.assertEqual(DetectionSummary(1, 0, 0), self.workspace.detection_summary())
 
     def test_new_server_identity_gets_a_new_uuid_even_with_a_copied_token(self) -> None:
         image = self.accept_image()

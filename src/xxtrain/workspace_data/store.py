@@ -56,8 +56,9 @@ class WorkspaceData:
             raise PlatformAccessError(f'Directory is not accessible: {path}')
 
     def images(self) -> tuple[ImageInput, ...]:
-        """Return registered image facts and detection boxes in registration order."""
+        """Return registered images, detection boxes, and explicit negative confirmations in registration order."""
         annotations = self._repository.annotations(step_key='detect')
+        negative_ids = {record.image_id for record in annotations if record.kind == 'negative'}
         by_image: dict[str, list[DetectionBox]] = {}
         for record in annotations:
             if record.kind != 'rectangle':
@@ -78,6 +79,7 @@ class WorkspaceData:
                 record.width,
                 record.height,
                 tuple(by_image.get(record.id, ())),
+                record.id in negative_ids,
             )
             for record in self._repository.images()
         )
@@ -204,9 +206,13 @@ class WorkspaceData:
         incoming: list[AnnotationRecord] = []
         bindings: list[CvatBinding] = []
         for result in results:
+            if result.negative and result.boxes:
+                raise ValueError('Detection boxes and negative confirmation cannot coexist')
             if not result.boxes:
-                negative = current_negative.get(result.sample_id)
-                if negative is not None:
+                if result.negative:
+                    negative = current_negative.get(result.sample_id) or AnnotationRecord(
+                        uuid4(), result.sample_id, 'detect', None, 'negative', None, None
+                    )
                     incoming.append(negative)
                 continue
             for box in result.boxes:

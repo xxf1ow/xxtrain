@@ -18,7 +18,7 @@ SQLite 保存平台权威标注，原始图片独立存放。本文部分替代[
 
 `WorkspaceData`、平台服务和 HTTP 真实组件使用 `annotations.db` 作为工作区唯一标注权威。图片接纳登记不可变事实，数据库聚合摘要，输入指纹排除 UUID、CVAT ID 和显示附加字段，检测缓存从数据库导出临时 LabelMe。离线浏览器 fixture 通过正式图片接纳和 repository 写入合成数据库，receipt 记录样本及初始标注身份；检测缓存离线覆盖五种 Point 框标签到类别 0 的投影、显式负样本、图片级门槛及发布后路径。重复摘要和指纹读取只查询已登记数据库事实。CVAT 初始化响应或恢复读取建立原生对象映射后，服务先持久化映射再发布 Job；回收要求每个 shape 携带原生 ID，按稳定 UUID 规划对象级变化，并在数据库事务前清除受影响目标的全部历史 Job 引用及发布结果指纹。事务失败保留原标注和映射，数据库提交后重启可按已发布指纹继续使用当前 Job。
 
-CVAT 回收中的空 frame 只保留数据库里已经存在的显式负样本，不从缺少 shape 推断新的负样本。未标记空 frame 保持未完成；删除最后一个框后，该图片也恢复为未完成。
+CVAT 负样本确认采用 [Point 编辑方案](../../proposed/feature/2026-09-16-point-classification-segmentation.md#cvat-editing)中的图片级 Tag 往返规则。未标记空 frame 保持未完成；删除最后一个框且未添加负样本 Tag 时，该图片也恢复为未完成。
 
 ### Live acceptance status
 

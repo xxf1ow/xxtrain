@@ -157,7 +157,7 @@ class DownstreamServiceTest(unittest.TestCase):
 
         annotation_url = self.service.begin_target(17, 'classify')
 
-        self.assertEqual('/tasks/101/jobs/201', annotation_url)
+        self.assertEqual('/tasks/101/jobs/201?defaultWorkspace=TAGS', annotation_url)
         fingerprint = self.data.target_fingerprint('classify')
         job = self.runtime.edit_job_for('classify', fingerprint)
         self.assertIsNotNone(job)
@@ -200,7 +200,9 @@ class DownstreamServiceTest(unittest.TestCase):
 
         self.assertEqual(existing, self.repository.annotations(step_key='classify'))
         self.assertEqual(job, self.runtime.edit_job_for('classify', self.data.target_fingerprint('classify')))
-        self.assertEqual('/tasks/101/jobs/201?frame=0', getattr(raised.exception, 'annotation_url', None))
+        self.assertEqual(
+            '/tasks/101/jobs/201?defaultWorkspace=TAGS&frame=0', getattr(raised.exception, 'annotation_url', None)
+        )
         self.assertNotIn(str(job.frames[0].parent_id), str(raised.exception))
 
     def test_stale_job_and_runtime_publication_failure_leave_database_authoritative(self) -> None:

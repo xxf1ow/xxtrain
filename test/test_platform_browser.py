@@ -185,7 +185,7 @@ globalThis.fetch = async (url, options = {{}}) => {{
       && url.endsWith('/sync') && options.method === 'POST') {{
     return {{ok: false, status: 409, json: async () => ({json.dumps(validation_payload)} || {{
       detail: '裁剪图 3 的标注不符合要求，请返回当前任务修正。',
-      annotation_url: '/tasks/42/jobs/74?frame=2',
+      annotation_url: '/tasks/42/jobs/74?defaultWorkspace=TAGS&frame=2',
     }})}};
   }}
   const completedTargets = workspace.targets.map((target) =>
@@ -405,7 +405,7 @@ await get('image-files').listeners.change();
         self.assertEqual('/platform/api/targets/classify/sync', failed['calls'][-1]['url'])
         self.assertEqual('classify', failed['storedTarget'])
         self.assertIn('裁剪图 3', failed['after']['classifyError'])
-        self.assertEqual('/tasks/42/jobs/74?frame=2', failed['after']['correctionHref'])
+        self.assertEqual('/tasks/42/jobs/74?defaultWorkspace=TAGS&frame=2', failed['after']['correctionHref'])
         self.assertIsNone(failed['replaced'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
@@ -503,7 +503,7 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                     self.assertEqual(str(raised.exception), detail['detail'])
                     self.assertIn('裁剪图 1', detail['detail'])
                     self.assertIn('请返回', detail['detail'])
-                    self.assertTrue(detail['annotation_url'].endswith('?frame=0'))
+                    self.assertTrue(detail['annotation_url'].endswith('frame=0'))
                     for secret in (str(config.workspace_dir), str(before[0].id), 'ValueError', 'label_id'):
                         self.assertNotIn(secret, response.text)
                     page = self.run_page(returned=True, stored_target=target, validation_payload=detail)
@@ -961,7 +961,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             self.assertEqual(immutable['sha256'], hashlib.sha256(path.read_bytes()).hexdigest(), path)
 
     def _job_identity(self, page: Page) -> tuple[int, int]:
-        matched = re.search(r'/tasks/(\d+)/jobs/(\d+)/?$', page.url)
+        matched = re.search(r'/tasks/(\d+)/jobs/(\d+)/?(?:\?[^#]*)?$', page.url)
         self.assertIsNotNone(matched)
         assert matched is not None
         return int(matched.group(1)), int(matched.group(2))

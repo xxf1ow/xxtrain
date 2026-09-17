@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 from xxtrain.business_tasks import POINT_BOX_LABELS, validate_target_annotations
 from xxtrain.platform.cache import build_detection_cache
@@ -12,6 +13,7 @@ from xxtrain.platform.config import WorkspaceConfig
 from xxtrain.platform.contracts import (
     EditFrameResult,
     EditJob,
+    JobRef,
     PlatformAccessError,
     PlatformError,
     TargetValidationError,
@@ -138,7 +140,7 @@ class AnnotationService:
             fingerprint = self.data.target_fingerprint(target)
             job = self.runtime.edit_job_for(target, fingerprint)
             if job is not None and self.cvat.job_is_unfinished(job.ref):
-                return self.cvat.job_path(job.ref)
+                return self._annotation_path(job.ref, target)
             frames = self.data.target_frames(target, self.config.runtime_dir)
             labels, label_type = _EDIT_TARGETS[target]
             task_id = self.cvat.create_edit_task(f'{self.config.display_name} {target}', labels, label_type)
@@ -146,7 +148,7 @@ class AnnotationService:
             edit_job = EditJob(prepared.ref, tuple(frame.mapping for frame in frames))
             self.data.bind_job(prepared)
             self.runtime.remember_edit_job(target, fingerprint, edit_job)
-            return self.cvat.job_path(prepared.ref)
+            return self._annotation_path(prepared.ref, target)
 
     def sync_detection(self, user_id: int) -> WorkspaceView:
         """Invalidate dependent Jobs, publish the result fingerprint, then commit one database transaction."""
@@ -228,10 +230,19 @@ class AnnotationService:
             raise PlatformError('Annotation job is not ready for the current input')
         try:
             results = self.cvat.fetch_detection(ref)
+            for result in results:
+                if result.negative and result.boxes:
+                    index = ref.sample_ids.index(result.sample_id)
+                    raise TargetValidationError(
+                        f'图片 {index + 1}：检测框与“无检测目标”标签不能同时存在，请删除其中一种。',
+                        self._annotation_path(ref, 'detect', frame=index),
+                    )
             sync = self.data.prepare_detection_sync(ref, results)
             self.runtime.forget_targets(sync.changes.invalidated_steps)
             self.runtime.remember_job('detect', sync.fingerprint, ref)
             self.data.commit_detection_sync(ref, sync)
+        except TargetValidationError:
+            raise
         except (OSError, ValueError, PlatformError) as error:
             raise PlatformError('无法取回或保存标注，请重试。') from error
         return self.view(user_id)
@@ -250,11 +261,20 @@ class AnnotationService:
                             if not 0 <= float(point[0]) <= width or not 0 <= float(point[1]) <= height:
                                 raise ValueError('Line point lies outside the crop')
             except (TypeError, ValueError) as error:
-                path = f'{self.cvat.job_path(job.ref)}?frame={index}'
+                path = self._annotation_path(job.ref, target, frame=index)
                 reason = _EDIT_VALIDATION_REASONS.get(
                     str(error), '标注类型、标签或坐标不符合要求，请检查当前目标的标注规则。'
                 )
                 raise TargetValidationError(f'裁剪图 {index + 1}：{reason}请返回当前任务修正。', path) from error
+
+    def _annotation_path(self, ref: JobRef, target: str, *, frame: int | None = None) -> str:
+        query = {}
+        if target == 'classify':
+            query['defaultWorkspace'] = 'TAGS'
+        if frame is not None:
+            query['frame'] = str(frame)
+        path = self.cvat.job_path(ref)
+        return f'{path}?{urlencode(query)}' if query else path
 
     @staticmethod
     def _target_view(view: WorkspaceView, target: str) -> TargetView:

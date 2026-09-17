@@ -7,6 +7,7 @@ from xxtrain.platform.contracts import CvatBinding, DetectionBox, FrameResult, I
 
 _EXTRA_ATTRIBUTE = 'xxtrain_labelme_extra'
 _ANNOTATION_ID = 'xxtrain_annotation_id'
+NEGATIVE_LABEL = '无检测目标'
 
 
 def _label_catalog(labels: list[dict]) -> tuple[dict[str, tuple[int, int]], dict[int, tuple[str, int]]]:
@@ -40,15 +41,15 @@ def _label_catalog(labels: list[dict]) -> tuple[dict[str, tuple[int, int]], dict
 
 
 def encode_annotations(images: tuple[ImageInput, ...], labels: list[dict]) -> dict:
-    """Encode image rectangles as a CVAT annotation payload using IDs from the supplied label schema."""
+    """Encode rectangles and explicit negative tags using IDs from the supplied CVAT label schema."""
     return _encode_annotations(images, labels, include_annotation_id=False)
 
 
 def encode_mapped_annotations(images: tuple[ImageInput, ...], labels: list[dict]) -> dict:
-    """Encode rectangles with transient UUID tokens for initialization correlation.
+    """Encode rectangles with transient UUID tokens and image-level negative tags.
 
     The token is stored inside the existing reserved extra attribute and does not mutate the input boxes. Invalid
-    labels or non-JSON extras raise ``ValueError``.
+    labels or non-JSON extras raise ``ValueError``. Negative tags use frame identity, not object UUID tokens.
     """
     return _encode_annotations(images, labels, include_annotation_id=True)
 
@@ -56,7 +57,17 @@ def encode_mapped_annotations(images: tuple[ImageInput, ...], labels: list[dict]
 def _encode_annotations(images: tuple[ImageInput, ...], labels: list[dict], *, include_annotation_id: bool) -> dict:
     by_name, _ = _label_catalog(labels)
     shapes = []
+    tags = []
     for frame, image in enumerate(images):
+        if image.negative:
+            if image.boxes:
+                raise ValueError('Detection boxes and negative confirmation cannot coexist')
+            if not any(label.get('name') == NEGATIVE_LABEL and label.get('type') == 'tag' for label in labels):
+                raise ValueError('CVAT negative confirmation requires a typed tag label')
+            label_id, attribute_id = by_name[NEGATIVE_LABEL]
+            tags.append(
+                {'frame': frame, 'label_id': label_id, 'attributes': [{'spec_id': attribute_id, 'value': '{}'}]}
+            )
         for box in image.boxes:
             if box.geometry.label not in POINT_BOX_LABELS or box.geometry.label not in by_name:
                 raise ValueError(f'Unknown Point box label: {box.geometry.label!r}')
@@ -81,14 +92,14 @@ def _encode_annotations(images: tuple[ImageInput, ...], labels: list[dict], *, i
                     'attributes': [{'spec_id': attribute_id, 'value': encoded_extra}],
                 }
             )
-    return {'version': 0, 'shapes': shapes, 'tracks': [], 'tags': []}
+    return {'version': 0, 'shapes': shapes, 'tracks': [], 'tags': tags}
 
 
 def decode_annotations(payload: dict, ref: JobRef, labels: list[dict]) -> tuple[FrameResult, ...]:
-    """Decode CVAT rectangles in frame order and reject annotation data that this adapter cannot preserve."""
+    """Decode rectangles and negative tags in frame order; leave box/tag conflicts for business validation."""
     if not isinstance(payload, dict):
         raise ValueError('CVAT annotation payload must be an object')
-    for field in ('tracks', 'tags'):
+    for field in ('tracks',):
         value = payload.get(field, [])
         if not isinstance(value, list) or value:
             raise ValueError(f'CVAT {field} are not supported')
@@ -98,6 +109,32 @@ def decode_annotations(payload: dict, ref: JobRef, labels: list[dict]) -> tuple[
 
     _, by_id = _label_catalog(labels) if labels else ({}, {})
     frames: list[list[DetectionBox]] = [[] for _ in ref.sample_ids]
+    tags = payload.get('tags', [])
+    if not isinstance(tags, list):
+        raise ValueError('CVAT tags must be a list')
+    negative_frames: set[int] = set()
+    for tag in tags:
+        if not isinstance(tag, dict):
+            raise ValueError('CVAT tags must be objects')
+        frame = tag.get('frame')
+        if isinstance(frame, bool) or not isinstance(frame, int) or not 0 <= frame < len(frames):
+            raise ValueError('CVAT negative tag frame is out of range')
+        label_id = tag.get('label_id')
+        if isinstance(label_id, bool) or label_id not in by_id:
+            raise ValueError('Unknown CVAT negative tag label ID')
+        name, attribute_id = by_id[label_id]
+        if name != NEGATIVE_LABEL or not any(
+            label['id'] == label_id and label.get('type') == 'tag' for label in labels
+        ):
+            raise ValueError('CVAT detection tags require the typed negative label')
+        if frame in negative_frames:
+            raise ValueError('CVAT negative tags must be unique per image')
+        attributes = tag.get('attributes', [])
+        if not isinstance(attributes, list):
+            raise ValueError('CVAT tag attributes must be a list')
+        if _decode_extra(attributes, attribute_id):
+            raise ValueError('CVAT negative tag cannot carry extra annotation content')
+        negative_frames.add(frame)
     for shape in shapes:
         if not isinstance(shape, dict):
             raise ValueError('CVAT shapes must be objects')
@@ -128,7 +165,10 @@ def decode_annotations(payload: dict, ref: JobRef, labels: list[dict]) -> tuple[
             raise ValueError('CVAT rectangle coordinates are invalid') from error
         frames[frame].append(DetectionBox(geometry=geometry, extra=extra, cvat_id=cvat_id))
 
-    return tuple(FrameResult(sample_id, tuple(boxes)) for sample_id, boxes in zip(ref.sample_ids, frames, strict=True))
+    return tuple(
+        FrameResult(sample_id, tuple(boxes), index in negative_frames)
+        for index, (sample_id, boxes) in enumerate(zip(ref.sample_ids, frames, strict=True))
+    )
 
 
 def decode_initial_bindings(
@@ -143,7 +183,9 @@ def decode_initial_bindings(
     if sample_ids != ref.sample_ids:
         raise ValueError('CVAT initialization images do not match the job samples')
 
-    decode_annotations(payload, ref, labels)
+    decoded = decode_annotations(payload, ref, labels)
+    if tuple(result.negative for result in decoded) != tuple(image.negative for image in images):
+        raise ValueError('CVAT initialization negative confirmations do not match the input images')
     _, by_id = _label_catalog(labels) if labels else ({}, {})
     expected: dict[str, tuple[int, str, UUID]] = {}
     for frame, image in enumerate(images):

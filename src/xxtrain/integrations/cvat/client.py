@@ -21,7 +21,7 @@ from xxtrain.platform.contracts import (
     PreparedJob,
 )
 
-from .codec import decode_annotations, decode_initial_bindings, encode_mapped_annotations
+from .codec import NEGATIVE_LABEL, decode_annotations, decode_initial_bindings, encode_mapped_annotations
 from .edit_codec import decode_edit_annotations, decode_edit_bindings, encode_edit_annotations
 from .preparation import PreparationCheckpoint, PreparationState
 
@@ -57,13 +57,15 @@ class CvatClient:
         self._http = http
 
     def create_task(self, name: str, labels: tuple[str, ...]) -> int:
-        """Create a CVAT task and return its server-assigned ID.
+        """Create a detection task with rectangle labels and an explicit negative-image tag.
 
         Each label receives the mutable reserved text attribute used by the codec. CVAT assigns both label and
         attribute IDs; callers must not manufacture them.
         """
 
-        return self.create_edit_task(name, labels, 'rectangle')
+        return self._create_typed_task(
+            name, tuple((label, 'rectangle') for label in labels) + ((NEGATIVE_LABEL, 'tag'),)
+        )
 
     def create_edit_task(self, name: str, labels: tuple[str, ...], label_type: str) -> int:
         """Create a typed CVAT task and return its server-assigned ID.
@@ -74,7 +76,9 @@ class CvatClient:
 
         if label_type not in {'rectangle', 'tag', 'polyline'}:
             raise ValueError(f'Unsupported CVAT label type: {label_type!r}')
+        return self._create_typed_task(name, tuple((label, label_type) for label in labels))
 
+    def _create_typed_task(self, name: str, labels: tuple[tuple[str, str], ...]) -> int:
         payload = {
             'name': name,
             'labels': [
@@ -91,7 +95,7 @@ class CvatClient:
                         }
                     ],
                 }
-                for label in labels
+                for label, label_type in labels
             ],
         }
         response = self._service_request('POST', '/api/tasks', json=payload)
@@ -149,7 +153,7 @@ class CvatClient:
         )
 
     def fetch_detection(self, ref: JobRef) -> tuple[FrameResult, ...]:
-        """Fetch and decode the current rectangle annotations for ``ref`` using CVAT's actual label IDs."""
+        """Fetch current detection rectangles and negative tags using CVAT's actual label IDs."""
 
         labels = self._labels(ref.task_id)
         response = self._service_request('GET', f'/api/jobs/{ref.job_id}/annotations')
