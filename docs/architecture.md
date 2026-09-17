@@ -2,9 +2,9 @@
 
 ## Scope
 
-xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射、可恢复的检测标注业务流程，以及供现场人员使用的检测标注入口。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)已通过离线测试、同版本 CVAT 身份往返和真实上传、标注、缓存验收；完整自助训练平台、ClearML 服务连接及训练快照尚未实现。
+xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射，以及供现场人员完成检测、分类和指针分割标注的可恢复业务流程。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)已通过离线测试、同版本 CVAT 身份往返和真实检测上传、标注、缓存验收；分类和指针分割已完成离线集成，真实 CVAT 验收尚未完成。完整自助训练平台、ClearML 服务连接及训练快照尚未实现。
 
-项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测标注入口。
+项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测、分类和指针分割标注入口。
 
 ## Runtime flow
 
@@ -25,13 +25,13 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.data`](subsystems/annotation-data.md) 拥有不可变标注、几何、标签目录、格式 I/O 和数据集产物辅助函数；
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、模型配置、训练、ONNX 导出和预测检查；
-- `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 从数据库事实派生计数与缓存资格，以一个非阻塞进程锁协调上传接纳、CVAT 创建和同步、检测缓存生成；
-- `xxtrain.platform.app` 提供同源图片上传、检测标注和缓存生成页面；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和操作失败分别返回 401、403 和 502；上传文件在独立运行目录暂存，页面计数和缓存按钮由服务返回的数据库派生结果驱动；
+- `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 从数据库事实派生三个目标的计数、前置条件和缓存资格，以一个非阻塞进程锁协调上传、CVAT Job 创建与同步及缓存生成；
+- `xxtrain.platform.app` 提供同源图片上传和三个 Point 目标的标注及缓存生成页面；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌，认证失败、工作区归属失败和一般操作失败分别返回 401、403 和 502；下游结构校验失败返回安全的问题帧编号和当前 Job 修正路径。上传文件在独立运行目录暂存，页面计数和按钮由服务返回的数据库派生结果驱动；
 - `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；摘要、输入指纹和 CVAT 输入只读取已登记图片及数据库标注。分类和分割投影共用检测框裁剪与实际边界，数据层从数据库派生目标计数和包含上游关联的输入指纹。对象级同步通过稳定 UUID 和当前 Job 的 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响的下游对象，并在同一事务内提交标注和映射。检测缓存从数据库生成可丢弃的 LabelMe 输入，不回写权威 JSON；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签、检测、分类和分割步骤规则及目标开放状态；
 - `xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，并依据目标目录及精确 manifest 判断下游缓存是否完整；`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存，`xxtrain.platform.target_cache` 使用共享裁剪图生成分类和指针分割训练缓存；
 - `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换检测矩形；`xxtrain.integrations.cvat.edit_codec` 按 `EditJob.frames` 的精确顺序转换分类 tag 和指针 polyline。两者只在初始化时用临时 UUID 令牌关联 CVAT 原生 ID，常规回收只返回原生 ID；
-- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并以共享流程完成检测或编辑图片的上传、frame 核对、Job 分配、初始化和读取；只有完整对象映射建立后才返回可发布的 Job，浏览器会话与服务令牌隔离。平台服务与页面尚未开放分类和分割入口。同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
+- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并以共享流程完成检测或编辑图片的上传、frame 核对、Job 分配、初始化和读取；只有完整对象映射建立后才返回可发布的 Job，浏览器会话与服务令牌隔离。平台依据运行目录中当前输入指纹对应的 Job 和 frame 来源映射回收分类及指针结果；同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
 - `xxtrain.cli` 只把命令参数传给训练包 API，不重新实现数据或训练逻辑。
 
 三个子系统页面完整描述各自契约；本文只维护它们之间的运行关系和所有权边界。
@@ -50,4 +50,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-内部自助训练平台仍处于提案阶段；Point 页面在业务任务与现场下共享图片上传区，按检测、分类、分割顺序逐行展示各模型的图片标注进度与标注、训练入口。当前支持批量上传、检测标注同步和至少 50 张有框图片的检测缓存生成；分类和指针分割缓存生成已具备内部数据层能力，但对应服务与页面入口仍禁用。“开始训练”仅生成缓存。现场管理、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
+内部自助训练平台仍处于提案阶段；Point 页面在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。检测满足全部原图已标注且至少 50 张有框原图后开放分类，全部裁剪图各有一个分类后开放指针分割；进入后续步骤不依赖前一步缓存。“开始训练”仅生成所选目标的缓存。三个步骤已完成离线服务、HTTP 和页面集成验证，分类 tag、两点 polyline 及返回修正在同版本真实 CVAT 中的验收仍是交付缺口；现场管理、训练提交和 ClearML 服务连接尚未实现。平台路线和验收标准由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

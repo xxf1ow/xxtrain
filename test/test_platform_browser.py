@@ -77,7 +77,15 @@ class PlatformBrowserTest(unittest.TestCase):
         self.assertTrue(script.headers['content-type'].startswith('text/javascript'))
 
     def run_page(
-        self, actions: str = '', *, returned: bool = False, ready: bool = False, sync_failure: bool = False
+        self,
+        actions: str = '',
+        *,
+        returned: bool = False,
+        ready: bool = False,
+        sync_failure: bool = False,
+        stored_target: str | None = None,
+        validation_failure: bool = False,
+        classify_ready: bool = False,
     ) -> dict[str, object]:
         script = self.client.get('/platform/app.js')
         self.assertEqual(200, script.status_code)
@@ -124,14 +132,24 @@ globalThis.history = {{ replaceState(_state, _unused, url) {{
   replaced = url;
   location.search = new URL(url, 'http://testserver').search;
 }} }};
+const stored = new Map();
+if ({json.dumps(stored_target)} !== null) stored.set('xxtrain-return-target', {json.dumps(stored_target)});
+globalThis.sessionStorage = {{
+  getItem(key) {{ return stored.has(key) ? stored.get(key) : null; }},
+  setItem(key, value) {{ stored.set(key, String(value)); }},
+  removeItem(key) {{ stored.delete(key); }},
+}};
 const workspace = {{
   workspace_id: 'line-3', name: '三号现场', image_count: 10, annotated_image_count: 7, boxed_image_count: 7,
   can_generate_detection_cache: {json.dumps(ready)}, detection_cache_ready: false,
   task: {{id: 'point', name: 'Point'}},
   targets: [
-    {{id: 'detect', name: '检测', available: true}},
-    {{id: 'classify', name: '分类', available: false}},
-    {{id: 'segment', name: '分割', available: false}},
+    {{id: 'detect', name: '检测', available: true, sample_count: 10, annotated_sample_count: 7,
+      can_annotate: true, can_generate_cache: {json.dumps(ready)}, cache_ready: false}},
+    {{id: 'classify', name: '分类', available: true, sample_count: 7, annotated_sample_count: 4,
+      can_annotate: true, can_generate_cache: {json.dumps(classify_ready)}, cache_ready: false}},
+    {{id: 'segment', name: '分割', available: true, sample_count: 7, annotated_sample_count: 0,
+      can_annotate: false, can_generate_cache: false, cache_ready: false}},
   ],
 }};
 let release;
@@ -150,12 +168,24 @@ globalThis.fetch = async (url, options = {{}}) => {{
   if (failure && options.method === 'POST') {{
     return {{ok: false, status: 502, json: async () => ({{detail: '平台暂时无法完成操作，请重试。'}})}};
   }}
+  if ({json.dumps(validation_failure)} && url.endsWith('/sync') && options.method === 'POST') {{
+    return {{ok: false, status: 409, json: async () => ({{
+      detail: '裁剪图 3 的标注不符合要求，请返回当前任务修正。',
+      annotation_url: '/tasks/42/jobs/74?frame=2',
+    }})}};
+  }}
+  const completedTargets = workspace.targets.map((target) =>
+    target.id === 'detect' ? {{...target, sample_count: 50, annotated_sample_count: 50, can_generate_cache: true}}
+      : target);
   const body = url.endsWith('/session')
     ? {{authenticated: true, user_id: 17}}
     : url.endsWith('/sync') ? {{...workspace, image_count: 50, annotated_image_count: 50,
-        boxed_image_count: 50, can_generate_detection_cache: true}}
-    : url.endsWith('/images') ? {{...workspace, image_count: 12}}
-    : url.endsWith('/cache') ? {{...workspace, detection_cache_ready: true}}
+        boxed_image_count: 50, can_generate_detection_cache: true, targets: completedTargets}}
+    : url.endsWith('/images') ? {{...workspace, image_count: 12,
+        targets: workspace.targets.map((target) => target.id === 'detect' ? {{...target, sample_count: 12}} : target)}}
+    : url.endsWith('/cache') ? {{...workspace, detection_cache_ready: true,
+        targets: workspace.targets.map((target) => url.includes(`/targets/${{target.id}}/`)
+          ? {{...target, cache_ready: true}} : target)}}
     : url.endsWith('/start') ? {{annotation_url: '/tasks/41/jobs/73'}} : workspace;
   return {{ok: true, status: 200, json: async () => body}};
 }};
@@ -166,9 +196,19 @@ const snapshot = () => ({{
   images: get('image-count')?.textContent,
   annotated: get('annotated-image-count')?.textContent,
   totals: ['detect', 'classify', 'segment'].map((target) => get(`${{target}}-image-total`)?.textContent),
+  annotatedTargets: ['detect', 'classify', 'segment'].map((target) =>
+    get(target === 'detect' ? 'annotated-image-count' : `${{target}}-annotated-count`)?.textContent),
+  targetButtons: ['detect', 'classify', 'segment'].map((target) => [
+    get(target === 'detect' ? 'primary-action' : `${{target}}-annotate-action`)?.disabled,
+    get(target === 'detect' ? 'cache-action' : `${{target}}-cache-action`)?.disabled,
+    get(target === 'detect' ? 'cache-action' : `${{target}}-cache-action`)?.textContent,
+  ]),
   cacheDisabled: get('cache-action')?.disabled,
   cacheText: get('cache-action')?.textContent,
   error: get('workspace-error')?.textContent,
+  classifyError: get('classify-error')?.textContent,
+  correctionHref: get('classify-correction')?.href || null,
+  targetProgress: ['detect', 'classify', 'segment'].map((target) => get(`${{target}}-progress`)?.textContent),
   uploadProgress: get('upload-progress')?.textContent,
   uploadProgressHidden: get('upload-progress')?.hidden,
   notification: get('workspace-message')?.textContent,
@@ -178,7 +218,8 @@ const snapshot = () => ({{
 }});
 const before = snapshot();
 {actions}
-process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned, replaced}}));
+process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned, replaced,
+  storedTarget: sessionStorage.getItem('xxtrain-return-target')}}));
 }})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
 """
         completed = subprocess.run(
@@ -194,7 +235,7 @@ process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned
         self.assertEqual('10', result['after']['images'])
         self.assertEqual('7', result['after']['annotated'])
         self.assertTrue(result['after']['cacheDisabled'])
-        self.assertEqual(['10', '10', '10'], result['after']['totals'])
+        self.assertEqual(['10', '7', '7'], result['after']['totals'])
         self.assertFalse(result['after']['disabled'][1])
         page = self.client.get('/platform/').text
         self.assertNotIn('data-image-thumbnail', page)
@@ -206,7 +247,7 @@ process.stdout.write(JSON.stringify({{calls, before, after: snapshot(), assigned
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_returned_page_syncs_counts_and_enables_cache(self) -> None:
         result = self.run_page(returned=True)
-        self.assertEqual('/platform/api/detection/sync', result['calls'][-1]['url'])
+        self.assertEqual('/platform/api/targets/detect/sync', result['calls'][-1]['url'])
         self.assertEqual('{}', result['calls'][-1]['body'])
         self.assertEqual('page-token', result['calls'][-1]['csrf'])
         self.assertEqual('50', result['after']['annotated'])
@@ -226,7 +267,7 @@ await upload;
         self.assertEqual('page-token', result['calls'][-1]['csrf'])
         self.assertIsNone(result['calls'][-1]['contentType'])
         self.assertEqual('12', result['after']['images'])
-        self.assertEqual(['12', '12', '12'], result['after']['totals'])
+        self.assertEqual(['12', '7', '7'], result['after']['totals'])
         self.assertEqual('7', result['after']['annotated'])
         self.assertFalse(result['after']['disabled'][0])
 
@@ -262,15 +303,16 @@ await get('cache-action').listeners.click();
         self.assertFalse(result['before']['cacheDisabled'])
         self.assertTrue(result['after']['cacheDisabled'])
         self.assertEqual('训练缓存已生成', result['after']['cacheText'])
-        self.assertEqual('/platform/api/detection/cache', result['calls'][-1]['url'])
+        self.assertEqual('/platform/api/targets/detect/cache', result['calls'][-1]['url'])
         self.assertEqual('{}', result['calls'][-1]['body'])
         self.assertEqual(3, len(result['calls']))
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_start_navigates_to_the_server_annotation_url(self) -> None:
         result = self.run_page("await get('primary-action').listeners.click();")
-        self.assertEqual('/platform/api/detection/start', result['calls'][-1]['url'])
+        self.assertEqual('/platform/api/targets/detect/start', result['calls'][-1]['url'])
         self.assertEqual('/tasks/41/jobs/73', result['assigned'])
+        self.assertEqual('detect', result['storedTarget'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_failed_cache_keeps_counts_and_reenables_controls(self) -> None:
@@ -301,7 +343,7 @@ await get('cache-action').listeners.click();
         self.assertIsNone(result['replaced'])
         self.assertEqual([True, True, True, False, False], result['after']['disabled'])
         self.assertEqual(
-            ['/platform/api/session', '/platform/api/workspace', '/platform/api/detection/sync'],
+            ['/platform/api/session', '/platform/api/workspace', '/platform/api/targets/detect/sync'],
             [call['url'] for call in result['calls']],
         )
         self.assertIsNone(result['assigned'])
@@ -324,6 +366,54 @@ await get('image-files').listeners.change();
         self.assertEqual('7', result['after']['annotated'])
         self.assertEqual('/platform/', result['replaced'])
         self.assertEqual('', result['after']['error'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_target_rows_use_crop_counts_and_target_specific_actions(self) -> None:
+        result = self.run_page("await get('classify-annotate-action').listeners.click();")
+
+        self.assertEqual(['10', '7', '7'], result['after']['totals'])
+        self.assertEqual(['7', '4', '0'], result['after']['annotatedTargets'])
+        self.assertEqual([False, True, '开始训练'], result['before']['targetButtons'][1])
+        self.assertEqual([True, True, '开始训练'], result['before']['targetButtons'][2])
+        self.assertEqual('/platform/api/targets/classify/start', result['calls'][-1]['url'])
+        self.assertEqual('classify', result['storedTarget'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_return_hint_selects_target_sync_and_clears_only_after_success(self) -> None:
+        successful = self.run_page(returned=True, stored_target='segment')
+        failed = self.run_page(returned=True, stored_target='classify', validation_failure=True)
+
+        self.assertEqual('/platform/api/targets/segment/sync', successful['calls'][-1]['url'])
+        self.assertIsNone(successful['storedTarget'])
+        self.assertEqual('/platform/api/targets/classify/sync', failed['calls'][-1]['url'])
+        self.assertEqual('classify', failed['storedTarget'])
+        self.assertIn('裁剪图 3', failed['after']['classifyError'])
+        self.assertEqual('/tasks/42/jobs/74?frame=2', failed['after']['correctionHref'])
+        self.assertIsNone(failed['replaced'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_invalid_return_hint_falls_back_to_detection(self) -> None:
+        result = self.run_page(returned=True, stored_target='../../segment')
+
+        self.assertEqual('/platform/api/targets/detect/sync', result['calls'][-1]['url'])
+        self.assertIsNone(result['storedTarget'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_target_cache_uses_its_row_progress_and_ready_text(self) -> None:
+        result = self.run_page(
+            """
+hold = true;
+const operation = get('classify-cache-action').listeners.click();
+before.generating = snapshot();
+release();
+await operation;
+""",
+            classify_ready=True,
+        )
+
+        self.assertEqual(['', '正在生成训练缓存…', ''], result['before']['generating']['targetProgress'])
+        self.assertEqual('/platform/api/targets/classify/cache', result['calls'][-1]['url'])
+        self.assertEqual([False, True, '训练缓存已生成'], result['after']['targetButtons'][1])
 
     def test_deployment_example_uses_the_exact_workspace_schema_without_credentials(self) -> None:
         path = Path(__file__).parents[1] / 'deploy' / 'platform' / 'workspace.example.json'

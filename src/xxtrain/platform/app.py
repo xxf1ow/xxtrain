@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 from python_multipart.exceptions import MultipartParseError
 from starlette.concurrency import run_in_threadpool
@@ -20,13 +20,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from xxtrain.business_tasks import MODEL_TARGETS
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformError, WorkspaceView
+from xxtrain.platform.contracts import PlatformAccessError, PlatformError, TargetValidationError, WorkspaceView
 from xxtrain.platform.service import AnnotationService
 
 _CSRF_COOKIE = 'xxtrain_csrf'
 _CSRF_HEADER = 'x-xtrain-csrf'
 _OPERATIONAL_ERROR = '平台暂时无法完成操作，请重试。'
 _TARGET_NAMES = {'detect': '检测', 'classify': '分类', 'segment': '分割'}
+_TARGET_IDS = frozenset(_TARGET_NAMES)
 
 
 class _EmptyBody(BaseModel):
@@ -94,14 +95,30 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
             raise HTTPException(status.HTTP_403_FORBIDDEN, '请求令牌无效，请刷新页面。')
 
     def workspace_payload(view: WorkspaceView) -> dict[str, object]:
+        availability = dict(MODEL_TARGETS)
+        target_facts = {target.id: asdict(target) for target in view.targets}
         return {
             **asdict(view),
             'task': {'id': 'point', 'name': 'Point'},
             'targets': [
-                {'id': target, 'name': _TARGET_NAMES[target], 'available': available}
-                for target, available in MODEL_TARGETS
+                {
+                    **target_facts.get(target, {'id': target}),
+                    'name': _TARGET_NAMES[target],
+                    'available': availability[target],
+                }
+                for target in _TARGET_NAMES
             ],
         }
+
+    def target_id(target: str) -> str:
+        if target not in _TARGET_IDS:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, '未知模型目标。')
+        return target
+
+    def validation_response(error: TargetValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT, content={'detail': str(error), 'annotation_url': error.annotation_url}
+        )
 
     def view_for(user_id: int) -> WorkspaceView:
         try:
@@ -231,6 +248,44 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
         user_id = authenticated_user(request)
         try:
             view = service.generate_detection_cache(user_id)
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
+        return workspace_payload(view)
+
+    @app.post('/platform/api/targets/{target}/start', dependencies=[Depends(write_request)])
+    def start_target(request: Request, target: str, body: _EmptyBody) -> dict[str, str]:
+        user_id = authenticated_user(request)
+        target = target_id(target)
+        try:
+            annotation_url = service.begin_target(user_id, target)
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
+        return {'annotation_url': annotation_url}
+
+    @app.post('/platform/api/targets/{target}/sync', dependencies=[Depends(write_request)])
+    def sync_target(request: Request, target: str, body: _EmptyBody) -> Response:
+        user_id = authenticated_user(request)
+        target = target_id(target)
+        try:
+            view = service.sync_target(user_id, target)
+        except TargetValidationError as error:
+            return validation_response(error)
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
+        return JSONResponse(content=workspace_payload(view))
+
+    @app.post('/platform/api/targets/{target}/cache', dependencies=[Depends(write_request)])
+    def generate_target_cache(request: Request, target: str, body: _EmptyBody) -> dict[str, object]:
+        user_id = authenticated_user(request)
+        target = target_id(target)
+        try:
+            view = service.generate_target_cache(user_id, target)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):

@@ -44,9 +44,11 @@ docs/              # 项目权威文档与 Agent Notes
 
 直接构建、运行和开发依赖在 `pyproject.toml` 中声明最低版本，完整解析结果由 `uv.lock` 固定。修改依赖声明后运行 `uv lock` 重新生成锁文件，并在提交前运行 `uv lock --check`；环境安装使用 `uv sync --locked --extra dev`，避免在验证时隐式改写锁文件。
 
-## Point detection portal
+## Point annotation portal
 
-`deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。预先创建可写的 `workspace_dir/images`；服务在工作区根目录初始化 `annotations.db`。`runtime_dir` 独立于工作区，保存可丢弃的 Job 映射与检测缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
+`deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。预先创建可写的 `workspace_dir/images`；服务在工作区根目录初始化 `annotations.db`。`runtime_dir` 独立于工作区，保存三个目标的可丢弃 Job 映射、共享裁剪和训练缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
+
+页面按检测、分类、指针分割三行显示从 SQLite 事实派生的进度与操作资格。CVAT 返回页面使用当前标签页的 allowlisted 目标提示选择同步端点；运行目录中的 Job 和 frame 映射才是服务端来源权威。分类数量或指针线结构无效时，页面保留返回状态并提供当前问题帧的修正链接；刷新可重试同步，不能通过请求体提交 Job、frame 或文件路径。
 
 重复真实部署验收时，必须从当前 checkout 运行 `python -m test.platform_fixture <authorized-parent> --owner-user-id <cvat-user-id> --receipt .superpowers/platform-acceptance/fixture.json` 新建独立工作区。receipt 的 marker 必须匹配当前测试，并记录 `database_path`、每张图片的 `sample_id` 和初始标注 UUID；旧 receipt、旧数据库和旧运行目录不能复用于当前验收。原生身份操作使用正式 `CvatClient`、`AnnotationService` 和 repository，并在每次同步后从独立数据库回读断言；fixture、凭据、日志和截图只保存在忽略的 `.superpowers/` 或授权验收目录，不进入 Git。
 

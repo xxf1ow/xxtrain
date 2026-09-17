@@ -8,7 +8,7 @@ from xxtrain.task import TaskType
 from .definition import StepDefinition, TaskDefinition
 
 POINT_BOX_LABELS = ('Point', 'tl', 'tc', 'cl', 'cc')
-MODEL_TARGETS = (('detect', True), ('classify', False), ('segment', False))
+MODEL_TARGETS = (('detect', True), ('classify', True), ('segment', True))
 
 
 def point_task_definition() -> TaskDefinition:

@@ -202,6 +202,18 @@ class TargetSummary:
 
 
 @dataclass(frozen=True)
+class TargetView:
+    """One model target's fact-derived progress and available actions."""
+
+    id: str
+    sample_count: int
+    annotated_sample_count: int
+    can_annotate: bool
+    can_generate_cache: bool
+    cache_ready: bool
+
+
+@dataclass(frozen=True)
 class WorkspaceView:
     workspace_id: str
     name: str
@@ -210,10 +222,19 @@ class WorkspaceView:
     boxed_image_count: int
     can_generate_detection_cache: bool
     detection_cache_ready: bool
+    targets: tuple[TargetView, ...] = ()
 
 
 class PlatformError(Exception):
     pass
+
+
+class TargetValidationError(PlatformError):
+    """A safe downstream validation failure with its server-owned correction link."""
+
+    def __init__(self, message: str, annotation_url: str) -> None:
+        super().__init__(message)
+        self.annotation_url = annotation_url
 
 
 class PlatformAccessError(PlatformError):

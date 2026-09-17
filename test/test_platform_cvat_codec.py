@@ -35,9 +35,9 @@ def rectangle(*, frame: int, label_id: int, attribute_id: int | None, extra: dic
 
 
 class PointDefinitionTest(unittest.TestCase):
-    def test_point_exposes_detection_as_the_only_enabled_target(self):
+    def test_point_exposes_all_annotation_targets(self):
         self.assertEqual(POINT_BOX_LABELS, ('Point', 'tl', 'tc', 'cl', 'cc'))
-        self.assertEqual(MODEL_TARGETS, (('detect', True), ('classify', False), ('segment', False)))
+        self.assertEqual(MODEL_TARGETS, (('detect', True), ('classify', True), ('segment', True)))
 
 
 class CvatCodecTest(unittest.TestCase):

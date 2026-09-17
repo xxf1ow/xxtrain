@@ -2,31 +2,42 @@
   'use strict';
 
   const apiRoot = '/platform/api';
+  const targetIds = ['detect', 'classify', 'segment'];
+  const returnTargetKey = 'xxtrain-return-target';
   const elements = {
-    loginPanel: document.getElementById('login-panel'),
-    loginForm: document.getElementById('login-form'),
-    loginButton: document.getElementById('login-button'),
-    loginError: document.getElementById('login-error'),
-    username: document.getElementById('username'),
-    password: document.getElementById('password'),
-    workspacePanel: document.getElementById('workspace-panel'),
-    workspaceName: document.getElementById('workspace-name'),
-    taskName: document.getElementById('task-name'),
-    imageCount: document.getElementById('image-count'),
-    annotatedImageCount: document.getElementById('annotated-image-count'),
-    imageFiles: document.getElementById('image-files'),
-    cacheAction: document.getElementById('cache-action'),
-    workspaceMessage: document.getElementById('workspace-message'),
-    workspaceError: document.getElementById('workspace-error'),
-    uploadError: document.getElementById('upload-error'),
-    primaryAction: document.getElementById('primary-action'),
-    sessionTools: document.getElementById('session-tools'),
-    sessionUser: document.getElementById('session-user'),
-    logoutButton: document.getElementById('logout-button'),
+    loginPanel: document.getElementById('login-panel'), loginForm: document.getElementById('login-form'),
+    loginButton: document.getElementById('login-button'), loginError: document.getElementById('login-error'),
+    username: document.getElementById('username'), password: document.getElementById('password'),
+    workspacePanel: document.getElementById('workspace-panel'), workspaceName: document.getElementById('workspace-name'),
+    taskName: document.getElementById('task-name'), imageCount: document.getElementById('image-count'),
+    imageFiles: document.getElementById('image-files'), workspaceMessage: document.getElementById('workspace-message'),
+    uploadError: document.getElementById('upload-error'), sessionTools: document.getElementById('session-tools'),
+    sessionUser: document.getElementById('session-user'), logoutButton: document.getElementById('logout-button'),
+  };
+  const targetElements = {
+    detect: {
+      annotated: document.getElementById('annotated-image-count'), total: document.getElementById('detect-image-total'),
+      annotate: document.getElementById('primary-action'), cache: document.getElementById('cache-action'),
+      progress: document.getElementById('detect-progress'), error: document.getElementById('workspace-error'),
+      correction: document.getElementById('detect-correction'),
+    },
+    classify: {
+      annotated: document.getElementById('classify-annotated-count'), total: document.getElementById('classify-image-total'),
+      annotate: document.getElementById('classify-annotate-action'), cache: document.getElementById('classify-cache-action'),
+      progress: document.getElementById('classify-progress'), error: document.getElementById('classify-error'),
+      correction: document.getElementById('classify-correction'),
+    },
+    segment: {
+      annotated: document.getElementById('segment-annotated-count'), total: document.getElementById('segment-image-total'),
+      annotate: document.getElementById('segment-annotate-action'), cache: document.getElementById('segment-cache-action'),
+      progress: document.getElementById('segment-progress'), error: document.getElementById('segment-error'),
+      correction: document.getElementById('segment-correction'),
+    },
   };
 
   let workspace = null;
   let busy = false;
+  let busyTarget = null;
   let notificationTimer;
 
   function notify(message) {
@@ -46,14 +57,19 @@
     const response = await fetch(`${apiRoot}${path}`, {credentials: 'same-origin', ...options});
     if (!response.ok) {
       let detail = '操作未完成，请重试。';
+      let annotationUrl = null;
       try {
         const payload = await response.json();
         if (typeof payload.detail === 'string') detail = payload.detail;
+        if (typeof payload.annotation_url === 'string' && /^\/tasks\/\d+\/jobs\/\d+(\?frame=\d+)?$/.test(payload.annotation_url)) {
+          annotationUrl = payload.annotation_url;
+        }
       } catch (_) {
-        // The public fallback is intentionally independent of upstream response content.
+        // The public fallback is independent of upstream response content.
       }
       const error = new Error(detail);
       error.status = response.status;
+      error.annotationUrl = annotationUrl;
       throw error;
     }
     return response.status === 204 ? null : response.json();
@@ -61,8 +77,7 @@
 
   function platformPost(path, payload) {
     return request(path, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-XTrain-CSRF': cookie('xxtrain_csrf')},
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-XTrain-CSRF': cookie('xxtrain_csrf')},
       body: JSON.stringify(payload),
     });
   }
@@ -81,26 +96,38 @@
     return new URLSearchParams(location.search).get('returned') === '1';
   }
 
-  function setBusy(value, message = '', area = 'detect') {
+  function storedReturnTarget() {
+    const value = sessionStorage.getItem(returnTargetKey);
+    return targetIds.includes(value) ? value : 'detect';
+  }
+
+  function targetView(target) {
+    return workspace?.targets?.find((item) => item.id === target) || null;
+  }
+
+  function setBusy(value, message = '', area = null) {
     busy = value;
+    busyTarget = value ? area : null;
     const blocked = value || returnedAnnotationsPending();
-    elements.primaryAction.disabled = blocked || !workspace || workspace.image_count === 0;
     elements.imageFiles.disabled = blocked;
-    elements.cacheAction.disabled = blocked || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready;
     elements.loginButton.disabled = value;
     elements.logoutButton.disabled = value;
-    if (!value || message) {
-      for (const target of ['upload', 'detect']) {
-        const progress = document.getElementById(`${target}-progress`);
-        progress.textContent = value && target === area ? message : '';
-        progress.hidden = !progress.textContent;
-      }
+    for (const target of targetIds) {
+      const facts = targetView(target);
+      const row = targetElements[target];
+      row.annotate.disabled = blocked || !facts?.can_annotate;
+      row.cache.disabled = blocked || !facts?.can_generate_cache || facts?.cache_ready;
+      row.progress.textContent = value && target === area ? message : '';
+      row.progress.hidden = !row.progress.textContent;
+      row.annotate.textContent = value && target === area && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
     }
+    const uploadProgress = document.getElementById('upload-progress');
+    uploadProgress.textContent = value && area === 'upload' ? message : '';
+    uploadProgress.hidden = !uploadProgress.textContent;
     if (value) {
       clearTimeout(notificationTimer);
       elements.workspaceMessage.hidden = true;
     }
-    elements.primaryAction.textContent = value && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
   }
 
   function showLogin(message = '') {
@@ -115,13 +142,19 @@
   function renderTargets(targets) {
     const definitions = new Map(targets.map((target) => [target.id, target]));
     document.querySelectorAll('[data-target]').forEach((card) => {
-      const target = definitions.get(card.dataset.target);
-      const available = Boolean(target && target.available);
-      card.classList.toggle('target-active', available);
-      card.setAttribute('aria-disabled', available ? 'false' : 'true');
-      const label = card.querySelector('.availability');
-      if (label) label.textContent = available ? '可用' : '未开放';
+      const facts = definitions.get(card.dataset.target);
+      card.classList.toggle('target-active', Boolean(facts?.available));
+      card.setAttribute('aria-disabled', facts?.can_annotate ? 'false' : 'true');
+      const availability = card.querySelector('.availability');
+      if (availability) availability.textContent = facts?.available ? '可用' : '未开放';
     });
+    for (const target of targetIds) {
+      const facts = definitions.get(target);
+      const row = targetElements[target];
+      row.annotated.textContent = String(facts?.annotated_sample_count ?? 0);
+      row.total.textContent = String(facts?.sample_count ?? 0);
+      row.cache.textContent = facts?.cache_ready ? '训练缓存已生成' : '开始训练';
+    }
   }
 
   function renderWorkspace(next) {
@@ -132,25 +165,31 @@
     elements.workspaceName.textContent = next.name;
     elements.taskName.textContent = next.task.name;
     elements.imageCount.textContent = String(next.image_count);
-    elements.annotatedImageCount.textContent = String(next.annotated_image_count);
-    for (const target of ['detect', 'classify', 'segment']) {
-      document.getElementById(`${target}-image-total`).textContent = String(next.image_count);
+    for (const target of targetIds) {
+      clearError(targetElements[target].error);
+      targetElements[target].correction.hidden = true;
+      targetElements[target].correction.removeAttribute('href');
     }
-    elements.cacheAction.textContent = next.detection_cache_ready ? '训练缓存已生成' : '开始训练';
-    clearError(elements.workspaceError);
-    setBusy(busy);
     renderTargets(next.targets);
+    setBusy(busy, '', busyTarget);
   }
 
-  async function syncAnnotations() {
-    clearError(elements.workspaceError);
-    setBusy(true, '正在保存到平台…');
+  async function syncAnnotations(target) {
+    const row = targetElements[target];
+    clearError(row.error);
+    row.correction.hidden = true;
+    setBusy(true, '正在保存到平台…', target);
     try {
-      renderWorkspace(await platformPost('/detection/sync', {}));
+      renderWorkspace(await platformPost(`/targets/${target}/sync`, {}));
+      sessionStorage.removeItem(returnTargetKey);
       history.replaceState({}, '', '/platform/');
       notify('标注已保存到平台，图片数量已更新。');
     } catch (error) {
-      showError(elements.workspaceError, `${error.message} 刷新页面可重新同步标注。`);
+      showError(row.error, error.annotationUrl ? error.message : `${error.message} 刷新页面可重新同步标注。`);
+      if (error.annotationUrl) {
+        row.correction.href = error.annotationUrl;
+        row.correction.hidden = false;
+      }
     } finally {
       setBusy(false);
     }
@@ -160,7 +199,38 @@
     const session = await request('/session');
     elements.sessionUser.textContent = `用户 ${session.user_id}`;
     renderWorkspace(await request('/workspace'));
-    if (returnedAnnotationsPending()) await syncAnnotations();
+    if (returnedAnnotationsPending()) await syncAnnotations(storedReturnTarget());
+  }
+
+  async function beginTarget(target) {
+    if (busy || returnedAnnotationsPending() || !targetView(target)?.can_annotate) return;
+    const row = targetElements[target];
+    clearError(row.error);
+    setBusy(true, '正在准备标注任务…', target);
+    try {
+      const result = await platformPost(`/targets/${target}/start`, {});
+      sessionStorage.setItem(returnTargetKey, target);
+      location.assign(result.annotation_url);
+    } catch (error) {
+      showError(row.error, error.message);
+      setBusy(false);
+    }
+  }
+
+  async function generateCache(target) {
+    const facts = targetView(target);
+    if (busy || returnedAnnotationsPending() || !facts?.can_generate_cache || facts.cache_ready) return;
+    const row = targetElements[target];
+    clearError(row.error);
+    setBusy(true, '正在生成训练缓存…', target);
+    try {
+      renderWorkspace(await platformPost(`/targets/${target}/cache`, {}));
+      notify('训练缓存已生成。');
+    } catch (error) {
+      showError(row.error, error.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   elements.loginForm.addEventListener('submit', async (event) => {
@@ -179,51 +249,26 @@
     }
   });
 
-  elements.primaryAction.addEventListener('click', async () => {
-    if (busy || returnedAnnotationsPending() || !workspace || workspace.image_count === 0) return;
-    clearError(elements.workspaceError);
-    setBusy(true, '正在准备标注任务…');
-    try {
-      const result = await platformPost('/detection/start', {});
-      location.assign(result.annotation_url);
-    } catch (error) {
-      showError(elements.workspaceError, error.message);
-      setBusy(false);
-    }
-  });
+  for (const target of targetIds) {
+    targetElements[target].annotate.addEventListener('click', () => beginTarget(target));
+    targetElements[target].cache.addEventListener('click', () => generateCache(target));
+  }
 
   elements.imageFiles.addEventListener('change', async () => {
     if (busy || returnedAnnotationsPending() || elements.imageFiles.files.length === 0) return;
     const files = new FormData();
     for (const file of elements.imageFiles.files) files.append('images', file);
-    clearError(elements.workspaceError);
     const selectedCount = elements.imageFiles.files.length;
     clearError(elements.uploadError);
     setBusy(true, `正在上传并去重 ${selectedCount} 张图片…`, 'upload');
     try {
       renderWorkspace(await request('/images', {
-        method: 'POST',
-        headers: {'X-XTrain-CSRF': cookie('xxtrain_csrf')},
-        body: files,
+        method: 'POST', headers: {'X-XTrain-CSRF': cookie('xxtrain_csrf')}, body: files,
       }));
       elements.imageFiles.value = '';
       notify(`本次选择 ${selectedCount} 张图片，上传及去重完成。现场现有 ${workspace.image_count} 张有效图片。`);
     } catch (error) {
       showError(elements.uploadError, error.message);
-    } finally {
-      setBusy(false);
-    }
-  });
-
-  elements.cacheAction.addEventListener('click', async () => {
-    if (busy || returnedAnnotationsPending() || !workspace?.can_generate_detection_cache || workspace.detection_cache_ready) return;
-    clearError(elements.workspaceError);
-    setBusy(true, '正在生成训练缓存…');
-    try {
-      renderWorkspace(await platformPost('/detection/cache', {}));
-      notify('训练缓存已生成。');
-    } catch (error) {
-      showError(elements.workspaceError, error.message);
     } finally {
       setBusy(false);
     }
@@ -236,7 +281,7 @@
       await platformPost('/logout', {});
       showLogin();
     } catch (error) {
-      showError(elements.workspaceError, error.message);
+      showError(targetElements.detect.error, error.message);
     } finally {
       setBusy(false);
     }

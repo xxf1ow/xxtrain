@@ -43,12 +43,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
-HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与错误脱敏，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖 SQLite 派生计数、50 张有框图片门槛、稳定对象身份、下游 Job 失效、同步失败顺序、重启恢复、跨线程读取和缓存发布。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、计数刷新、写操作互斥、缓存按钮和同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收。
+HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与错误脱敏、严格目标路由及安全修正响应，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖 SQLite 派生计数、50 张有框原图门槛、裁剪图完成条件、稳定对象身份、下游 Job 失效、同步失败顺序、重启恢复、跨线程读取和三个缓存发布。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、三行计数、写操作互斥、逐行缓存按钮、每标签页返回目标、修正链接及同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT 的 tag/polyline 编辑与返回修正、浏览器布局、镜像注入和代理连通性属于部署验收。
 
 运行 Point 上传和检测缓存增量的完整离线验证：
 
 ```powershell
-uv run --locked --extra platform python -m unittest test.test_platform_data test.test_platform_service test.test_platform_http test.test_platform_cvat_client test.test_platform_browser test.test_task_transforms -v
+uv run --locked --extra platform python -m unittest test.test_platform_data test.test_platform_service test.test_platform_downstream_service test.test_platform_http test.test_platform_cvat_client test.test_platform_cvat_codec test.test_platform_browser test.test_task_transforms -v
 ```
 
 真实验收显式安装 `platform-test` 并同时提供 `XXTRAIN_PLATFORM_URL`、`XXTRAIN_PLATFORM_TEST_USER` 和 `XXTRAIN_PLATFORM_TEST_PASSWORD`；未配置时浏览器测试在启动浏览器或访问网络前跳过。测试固定读取 `.superpowers/platform-acceptance/fixture.json`，只接受当前 marker、独立生成的临时根目录，以及根目录内的数据库、图片和基准路径。receipt 必须记录 `database_path`、图片 `sample_id` 和初始标注 UUID，测试通过正式 repository 回读保存结果。验收后停用本次启动的临时服务：
