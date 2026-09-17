@@ -50,6 +50,11 @@ class PointTrainingDefinitionTest(unittest.TestCase):
                 self.assertEqual(values['metric_key'], training.metric_key)
                 self.assertEqual(values['metric_name'], training.metric_name)
                 self.assertEqual(values['delivery'], (training.delivery.labels, training.delivery.reference_images))
+                if target == 'classify':
+                    self.assertEqual(0.0, training.settings.train_args['fliplr'])
+                    self.assertEqual(0.0, training.settings.train_args['flipud'])
+                    self.assertEqual(0.0, training.settings.train_args['degrees'])
+                    self.assertIsNone(training.settings.train_args['auto_augment'])
 
 
 if __name__ == '__main__':
