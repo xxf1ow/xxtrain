@@ -50,6 +50,8 @@ Point 的检测、分类和分割共享原图和 SQLite 标注记录。记录用
 
 ## Integration direction
 
+[Point 自助训练与结果交付](2026-09-17-point-training-loop.md)细化单 Agent 排队执行、缓存保留、Agent 本地写入目录和工作区解锁设计。该设计尚未实现，不改变本文的主机权威存储与只读 NFS 方向。
+
 自建页面及后端管理用户流程，调用现有数据读取、转换和训练能力。CVAT 提供标注步骤，ClearML 提供队列、执行、日志、指标和模型产物。训练数据通过 NFS 提供给 Agent；任务如何选择输入、记录配置和限制编辑，由最小用户流程确定，不预先依赖数据集版本服务。
 
 ## Alternatives considered
