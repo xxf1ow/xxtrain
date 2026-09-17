@@ -84,8 +84,11 @@ class RuntimeCache:
             raise ValueError(f'Unsupported target cache: {target!r}')
         if not _safe_component(fingerprint):
             raise ValueError('Training cache fingerprint must name one relative cache directory')
-        publication = self._root / 'cache' / fingerprint
+        cache_root = self._root / 'cache'
+        publication = cache_root / fingerprint
         path = publication / target
+        if not _is_within(path, cache_root):
+            raise ValueError('Training cache is not complete')
         if target != 'detect' and not _has_target_manifest(publication, target, fingerprint):
             raise ValueError('Training cache is not complete')
         if not _has_training_inputs(path):
@@ -199,7 +202,7 @@ def _has_training_inputs(path: Path) -> bool:
         for entry in entries:
             item = Path(entry)
             item_path = item if item.is_absolute() else publication / item
-            if not _is_within(item_path, publication) or not item_path.is_file():
+            if not _has_referenced_file(item_path, publication):
                 return False
     return True
 
@@ -217,10 +220,18 @@ def _dataset_fields(value: str) -> dict[str, str]:
 
 def _is_within(path: Path, root: Path) -> bool:
     try:
-        path.absolute().relative_to(root.absolute())
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
     except ValueError:
         return False
     return True
+
+
+def _has_referenced_file(path: Path, publication: Path) -> bool:
+    try:
+        path.absolute().relative_to(publication.absolute())
+    except ValueError:
+        return False
+    return path.is_file()
 
 
 def _decode_frames(value: object) -> tuple[FrameMapping, ...]:

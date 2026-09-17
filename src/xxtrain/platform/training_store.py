@@ -39,6 +39,7 @@ class TrainingRunStore:
         """Store one run or return the existing run when every durable fact is identical."""
         _validate_run(run)
         with self._connection() as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
             existing = _find_run(connection, run.id)
             if existing is not None:
                 if existing != run:
