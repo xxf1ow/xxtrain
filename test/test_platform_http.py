@@ -17,6 +17,7 @@ else:
     from PIL import Image
 
     from xxtrain.business_tasks import POINT_BOX_LABELS
+    from xxtrain.business_tasks.point import point_task_definition
     from xxtrain.integrations.cvat import CvatClient
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig
@@ -24,6 +25,7 @@ else:
     from xxtrain.platform.runtime import RuntimeCache
     from xxtrain.platform.service import AnnotationService
     from xxtrain.workspace_data import WorkspaceData
+    from xxtrain.workspace_data.repository import AnnotationRepository
 
 
 class AsgiTestClient:
@@ -404,7 +406,6 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             root = Path(directory)
             workspace = root / 'workspace'
             (workspace / 'images').mkdir(parents=True)
-            (workspace / 'annotations').mkdir()
             candidate = root / 'candidate.png'
             Image.new('RGB', (64, 48), 'white').save(candidate)
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
@@ -432,21 +433,14 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             images = root / 'images'
-            annotations = root / 'annotations'
             images.mkdir()
-            annotations.mkdir()
-            image_path = images / 'frame.jpg'
-            Image.new('RGB', (64, 48), 'white').save(image_path)
-            annotation_path = annotations / 'frame.json'
-            annotation_path.write_text(
-                json.dumps(
-                    {'shapes': [{'label': 'mask', 'shape_type': 'polygon', 'points': [[0, 0], [1, 0], [1, 1]]}]}
-                ),
-                encoding='utf-8',
-            )
+            staged = root / 'frame.jpg'
+            Image.new('RGB', (64, 48), 'white').save(staged)
             data = WorkspaceData(root)
+            data.admit((staged,))
+            sample_id = data.images()[0].sample_id
             runtime = RuntimeCache(root / 'runtime')
-            runtime.remember_job('detect', data.detection_fingerprint(), JobRef(41, 73, ('frame',)))
+            runtime.remember_job('detect', data.detection_fingerprint(), JobRef(41, 73, (sample_id,)))
             config = WorkspaceConfig('line-3', '三号现场', 17, root, root / 'runtime', 'http://cvat.test')
             labels = [
                 {'id': 41 + index, 'name': name, 'attributes': [{'id': 71 + index, 'name': 'xxtrain_labelme_extra'}]}
@@ -478,6 +472,7 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                             'tags': [],
                             'shapes': [
                                 {
+                                    'id': 91,
                                     'type': 'rectangle',
                                     'frame': 0,
                                     'label_id': 42,
@@ -503,14 +498,14 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                 start = client.post('/platform/api/detection/start', headers=headers, json={})
                 saved = client.post('/platform/api/detection/sync', headers=headers, json={})
 
-            document = json.loads(annotation_path.read_text(encoding='utf-8'))
+            records = AnnotationRepository(root / 'annotations.db', point_task_definition()).annotations()
             self.assertEqual(204, login.status_code)
             self.assertEqual({'annotation_url': '/tasks/41/jobs/73'}, start.json())
             self.assertEqual(1, saved.json()['annotated_image_count'])
             self.assertEqual(1, saved.json()['boxed_image_count'])
             self.assertFalse((root / 'state.json').exists())
-            self.assertEqual(['mask', 'tl'], [shape['label'] for shape in document['shapes']])
-            self.assertEqual('kept', document['shapes'][1]['description'])
+            self.assertEqual(['tl'], [record.label for record in records])
+            self.assertEqual([[[1.0, 2.0], [20.0, 30.0]]], [record.geometry for record in records])
 
 
 class PlatformEntrypointTest(unittest.TestCase):
@@ -520,7 +515,6 @@ class PlatformEntrypointTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'images').mkdir()
-            (root / 'annotations').mkdir()
             config_path = root / 'workspace.json'
             config_path.write_text(
                 json.dumps(

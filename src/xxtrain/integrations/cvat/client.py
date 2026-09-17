@@ -7,9 +7,9 @@ from urllib.parse import quote
 
 import httpx
 
-from xxtrain.platform.contracts import FrameResult, ImageInput, JobRef, PlatformAccessError, PlatformError
+from xxtrain.platform.contracts import FrameResult, ImageInput, JobRef, PlatformAccessError, PlatformError, PreparedJob
 
-from .codec import decode_annotations, encode_annotations
+from .codec import decode_annotations, decode_initial_bindings, encode_mapped_annotations
 from .preparation import PreparationCheckpoint, PreparationState
 
 _EXTRA_ATTRIBUTE = 'xxtrain_labelme_extra'
@@ -77,12 +77,13 @@ class CvatClient:
         *,
         preparation: PreparationState = PreparationState(),
         checkpoint: PreparationCheckpoint | None = None,
-    ) -> JobRef:
-        """Attach frames, initialize annotations once, assign the Job, and return its server IDs.
+    ) -> PreparedJob:
+        """Attach frames, establish native annotation bindings, assign the Job, and return the prepared job.
 
         The complete operation, including polling, has a 120-second deadline. Callers may supply a preparation
         checkpoint when resuming a task. Ambiguous in-flight writes raise ``PlatformError`` and require
-        administrator reconciliation; the adapter never guesses whether it is safe to repeat them.
+        administrator reconciliation; the adapter never guesses whether it is safe to repeat them. Initialization
+        and recovery require every platform token and native CVAT ID before the Job is assigned.
         """
 
         if preparation.stage == 'initializing':
@@ -128,21 +129,26 @@ class CvatClient:
         job_id = self._wait_for_job(task_id, len(images), deadline)
         ref = JobRef(task_id, job_id, tuple(image.sample_id for image in images))
 
+        labels = self._labels(task_id, deadline=deadline)
         if current.stage != 'initialized':
-            labels = self._labels(task_id, deadline=deadline)
-            annotations = encode_annotations(images, labels)
+            annotations = encode_mapped_annotations(images, labels)
             current = PreparationState('initializing')
             self._checkpoint(checkpoint, current)
-            self._service_request(
+            response = self._service_request(
                 'PUT', f'/api/jobs/{job_id}/annotations', json=annotations, deadline=deadline, deadline_task_id=task_id
             )
             current = PreparationState('initialized')
             self._checkpoint(checkpoint, current)
+        else:
+            response = self._service_request(
+                'GET', f'/api/jobs/{job_id}/annotations', deadline=deadline, deadline_task_id=task_id
+            )
+        bindings = decode_initial_bindings(self._json(response), images, ref, labels)
 
         self._service_request(
             'PATCH', f'/api/jobs/{job_id}', json={'assignee': user_id}, deadline=deadline, deadline_task_id=task_id
         )
-        return ref
+        return PreparedJob(ref, bindings)
 
     def fetch_detection(self, ref: JobRef) -> tuple[FrameResult, ...]:
         """Fetch and decode the current rectangle annotations for ``ref`` using CVAT's actual label IDs."""

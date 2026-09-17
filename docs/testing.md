@@ -43,7 +43,7 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
-HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与文件错误脱敏，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖文件派生计数、50 张有框图片门槛、完成 Job 的替换、指纹匹配、并发写入拒绝和多文件保存失败回滚。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、计数刷新、写操作互斥、缓存按钮和同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收。
+HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与错误脱敏，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖 SQLite 派生计数、50 张有框图片门槛、稳定对象身份、下游 Job 失效、同步失败顺序、重启恢复、跨线程读取和缓存发布。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、计数刷新、写操作互斥、缓存按钮和同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT、浏览器布局、镜像注入和代理连通性属于部署验收。
 
 运行 Point 上传和检测缓存增量的完整离线验证：
 
@@ -51,11 +51,13 @@ HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 
 uv run --locked --extra platform python -m unittest test.test_platform_data test.test_platform_service test.test_platform_http test.test_platform_cvat_client test.test_platform_browser test.test_task_transforms -v
 ```
 
-真实验收显式安装 `platform-test` 并提供全部三个环境变量；未配置时浏览器测试在启动浏览器或访问网络前跳过。只可使用独立生成的临时 fixture，并在验收后停用临时服务：
+真实验收显式安装 `platform-test` 并同时提供 `XXTRAIN_PLATFORM_URL`、`XXTRAIN_PLATFORM_TEST_USER` 和 `XXTRAIN_PLATFORM_TEST_PASSWORD`；未配置时浏览器测试在启动浏览器或访问网络前跳过。测试固定读取 `.superpowers/platform-acceptance/fixture.json`，只接受当前 marker、独立生成的临时根目录，以及根目录内的数据库、图片和基准路径。receipt 必须记录 `database_path`、图片 `sample_id` 和初始标注 UUID，测试通过正式 repository 回读保存结果。验收后停用本次启动的临时服务：
 
 ```powershell
 uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
 ```
+
+同版本真实验收覆盖初始化映射、无修改回收、移动、改类、新增、删除、复制、全量 PUT、事务回滚重试、旧 Job 拒收、重启恢复与至少 50 张图片的可读缓存。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。当前运行证据、范围和未覆盖项记录在 [SQLite 标注存储 Agent Note](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md#live-acceptance-status)；离线 mock、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
 
 修改平台 package-data 或入口后构建 wheel，并检查 wheel 包含三个页面资源、CVAT 返回插件及 `xxtrain-platform` console script。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 
