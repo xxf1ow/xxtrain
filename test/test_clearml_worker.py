@@ -112,6 +112,34 @@ class ClearMLWorkerTests(unittest.TestCase):
         self.task.mark_completed.assert_not_called()
 
     @patch('xxtrain.integrations.clearml.worker._task_init')
+    @patch('xxtrain.integrations.clearml.worker.build_delivery', side_effect=RuntimeError('delivery failed'))
+    @patch('xxtrain.integrations.clearml.worker.train_prepared')
+    def test_delivery_failure_marks_failed_not_completed(self, train, build, task_init):
+        task_init.return_value = self.task
+        train.return_value = TrainingResult(self.root / 'model.onnx', {}, {'metrics/mAP50-95(B)': 0.5})
+
+        with self.assertRaises(RuntimeError):
+            main(self.argv())
+
+        self.task.mark_failed.assert_called_once()
+        self.task.mark_completed.assert_not_called()
+
+    @patch('xxtrain.integrations.clearml.worker._task_init')
+    @patch('xxtrain.integrations.clearml.worker.train_prepared')
+    def test_ultralytics_clearml_callback_is_disabled_before_training(self, train, task_init):
+        from ultralytics import settings
+
+        task_init.return_value = self.task
+
+        def observe_setting(*args, **kwargs):
+            self.assertFalse(settings['clearml'])
+            raise RuntimeError('stop after observation')
+
+        train.side_effect = observe_setting
+        with self.assertRaises(RuntimeError):
+            main(self.argv())
+
+    @patch('xxtrain.integrations.clearml.worker._task_init')
     def test_rejects_cache_path_outside_shared_root(self, task_init):
         task_init.return_value = self.task
         with self.assertRaises(ValueError):

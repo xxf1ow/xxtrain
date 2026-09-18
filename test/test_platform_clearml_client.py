@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from xxtrain.integrations.clearml.client import ClearMLClient, ClearMLConflictError, parse_execution
+from xxtrain.integrations.clearml.client import ClearMLClient, ClearMLConflictError, _ClearMLSDK, parse_execution
 from xxtrain.platform.training_contracts import TrainingRun
 
 
@@ -102,8 +102,13 @@ class ClearMLClientTests(unittest.TestCase):
         self.sdk.enqueue.assert_not_called()
 
     def test_cancelled_task_remains_active_while_worker_owns_it(self):
-        self.sdk.get.return_value = {'id': 'task-1', 'status': 'stopped'}
-        self.sdk.worker_occupancy.return_value = True
+        self.sdk.get.return_value = {
+            'id': 'task-1',
+            'status': 'stopped',
+            'last_worker': 'worker-1',
+            'status_changed': '2026-09-17T12:00:00Z',
+        }
+        self.sdk.worker_released.return_value = False
 
         view = self.client.cancel('task-1')
 
@@ -111,9 +116,12 @@ class ClearMLClientTests(unittest.TestCase):
         self.assertTrue(view.active)
         self.assertIn('worker', view.detail.lower())
 
-    def test_cancelled_task_releases_only_after_worker_absence_is_observed(self):
-        self.sdk.get.side_effect = [{'id': 'task-1', 'status': 'in_progress'}, {'id': 'task-1', 'status': 'stopped'}]
-        self.sdk.worker_occupancy.return_value = False
+    def test_cancelled_task_releases_only_after_fresh_worker_release_report(self):
+        self.sdk.get.side_effect = [
+            {'id': 'task-1', 'status': 'in_progress', 'last_worker': 'worker-1'},
+            {'id': 'task-1', 'status': 'stopped', 'last_worker': 'worker-1', 'status_changed': '2026-09-17T12:00:00Z'},
+        ]
+        self.sdk.worker_released.return_value = True
 
         view = self.client.cancel('task-1')
 
@@ -122,14 +130,76 @@ class ClearMLClientTests(unittest.TestCase):
         self.assertFalse(view.active)
 
     def test_worker_observation_failure_keeps_cancelled_task_active(self):
-        self.sdk.get.return_value = {'id': 'task-1', 'status': 'stopped'}
-        self.sdk.worker_occupancy.side_effect = RuntimeError('offline')
+        self.sdk.get.return_value = {
+            'id': 'task-1',
+            'status': 'stopped',
+            'last_worker': 'worker-1',
+            'status_changed': '2026-09-17T12:00:00Z',
+        }
+        self.sdk.worker_released.side_effect = RuntimeError('offline')
 
         view = self.client.cancel('task-1')
 
         self.assertEqual(view.status, 'unknown')
         self.assertTrue(view.active)
         self.assertNotIn('offline', view.detail)
+
+    def test_missing_worker_record_does_not_prove_release(self):
+        self.sdk.get.return_value = {
+            'id': 'task-1',
+            'status': 'stopped',
+            'last_worker': 'worker-1',
+            'status_changed': '2026-09-17T12:00:00Z',
+        }
+        self.sdk.worker_released.return_value = None
+
+        view = self.client.observe('task-1')
+
+        self.assertEqual(view.status, 'unknown')
+        self.assertTrue(view.active)
+
+    def test_queued_never_started_task_cancels_after_atomic_dequeue(self):
+        self.sdk.get.side_effect = [
+            {'id': 'task-1', 'status': 'queued', 'last_worker': None},
+            {'id': 'task-1', 'status': 'stopped', 'last_worker': None},
+        ]
+
+        view = self.client.cancel('task-1')
+
+        self.sdk.cancel_queued.assert_called_once_with('task-1')
+        self.sdk.worker_released.assert_not_called()
+        self.assertEqual(view.status, 'cancelled')
+        self.assertFalse(view.active)
+
+    def test_sdk_requires_fresh_report_from_the_specific_worker(self):
+        sdk = object.__new__(_ClearMLSDK)
+        sdk._task = Mock()
+        session = sdk._task._get_default_session.return_value
+        response = session.send.return_value
+        response.ok.return_value = True
+        worker = SimpleNamespace(
+            id='worker-1', last_report_time='2026-09-17T12:00:01Z', task=SimpleNamespace(id='other-task')
+        )
+        response.response.workers = [worker]
+
+        self.assertTrue(sdk.worker_released('task-1', worker_id='worker-1', stopped_at='2026-09-17T12:00:00Z'))
+        worker.task = SimpleNamespace(id='task-1')
+        self.assertFalse(sdk.worker_released('task-1', worker_id='worker-1', stopped_at='2026-09-17T12:00:00Z'))
+        worker.task = None
+        worker.last_report_time = '2026-09-17T11:59:59Z'
+        self.assertIsNone(sdk.worker_released('task-1', worker_id='worker-1', stopped_at='2026-09-17T12:00:00Z'))
+        response.response.workers = []
+        self.assertIsNone(sdk.worker_released('task-1', worker_id='worker-1', stopped_at='2026-09-17T12:00:00Z'))
+
+    def test_sdk_does_not_stop_queued_task_when_dequeue_loses_race(self):
+        sdk = object.__new__(_ClearMLSDK)
+        sdk._task = Mock()
+        sdk._task.dequeue.return_value = SimpleNamespace(dequeued=0)
+
+        with self.assertRaises(RuntimeError):
+            sdk.cancel_queued('task-1')
+
+        sdk._task.get_task.assert_not_called()
 
     def test_download_copies_only_the_fixed_owned_deployment_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:

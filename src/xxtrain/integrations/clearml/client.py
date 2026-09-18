@@ -3,6 +3,7 @@ from __future__ import annotations
 import mimetypes
 import re
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -80,24 +81,34 @@ class ClearMLClient:
 
     def cancel(self, task_id: str) -> ExecutionView:
         before = self.sdk.get(task_id)
+        dequeued_never_started = False
         if before.get('status') == 'queued':
             self.sdk.cancel_queued(task_id)
+            dequeued_never_started = not before.get('last_worker')
         elif before.get('status') == 'in_progress':
             self.sdk.request_stop(task_id)
         facts = self.sdk.get(task_id)
         artifact_ready = self.sdk.has_artifact(task_id, 'deployment', project_name=self._project)
         if facts.get('status') == 'stopped':
-            return self._stopped_view(facts, artifact_ready)
+            return self._stopped_view(facts, artifact_ready, dequeued_never_started=dequeued_never_started)
         return parse_execution(facts, artifact_ready=artifact_ready)
 
-    def _stopped_view(self, facts: dict[str, object], artifact_ready: bool) -> ExecutionView:
-        try:
-            occupied = self.sdk.worker_occupancy(str(facts['id']))
-        except Exception:
-            occupied = None
-        if occupied is False:
+    def _stopped_view(
+        self, facts: dict[str, object], artifact_ready: bool, *, dequeued_never_started: bool = False
+    ) -> ExecutionView:
+        if dequeued_never_started and not facts.get('last_worker'):
             return parse_execution(facts, artifact_ready=artifact_ready, worker_released=True)
-        detail = 'ClearML worker still reports this task' if occupied else 'Worker release could not be confirmed'
+        try:
+            released = self.sdk.worker_released(
+                str(facts['id']), worker_id=facts.get('last_worker'), stopped_at=facts.get('status_changed')
+            )
+        except Exception:
+            released = None
+        if released is True:
+            return parse_execution(facts, artifact_ready=artifact_ready, worker_released=True)
+        detail = (
+            'ClearML worker still reports this task' if released is False else 'Worker release could not be confirmed'
+        )
         return parse_execution(facts, artifact_ready=artifact_ready, detail=detail)
 
     def download(self, task_id: str, destination: Path) -> DownloadFile:
@@ -177,11 +188,14 @@ class _ClearMLSDK:
         task = self._task.get_task(task_id=task_id)
         data = task.data.to_dict()
         data['id'] = task.id
+        data['last_worker'] = task.last_worker
         data['parameters'] = task.get_parameters(cast=True)
         return data
 
     def cancel_queued(self, task_id: str) -> None:
-        self._task.dequeue(task_id)
+        response = self._task.dequeue(task_id)
+        if getattr(response, 'dequeued', None) != 1:
+            raise RuntimeError('ClearML task left the queue before cancellation')
         task = self._task.get_task(task_id=task_id)
         task.stopped(ignore_errors=False, force=True, status_reason='cancelled before execution')
 
@@ -189,18 +203,27 @@ class _ClearMLSDK:
         task = self._task.get_task(task_id=task_id)
         task.stop_request(ignore_errors=False, force=False, status_message='Cancellation requested by xxtrain')
 
-    def worker_occupancy(self, task_id: str) -> bool:
+    def worker_released(self, task_id: str, *, worker_id: object, stopped_at: object) -> bool | None:
         from clearml.backend_api.services.v2_20 import workers
 
+        if not isinstance(worker_id, str) or not worker_id:
+            return None
+        stopped_time = _timestamp(stopped_at)
+        if stopped_time is None:
+            return None
         session = self._task._get_default_session()
         response = session.send(workers.GetAllRequest(last_seen=None))
         if not response.ok():
             raise RuntimeError('ClearML worker query failed')
         for worker in response.response.workers or ():
+            if getattr(worker, 'id', None) != worker_id:
+                continue
+            report_time = _timestamp(getattr(worker, 'last_report_time', None))
+            if report_time is None or report_time < stopped_time:
+                return None
             current = getattr(worker, 'task', None)
-            if current is not None and getattr(current, 'id', None) == task_id:
-                return True
-        return False
+            return not (current is not None and getattr(current, 'id', None) == task_id)
+        return None
 
     def has_artifact(self, task_id: str, name: str, *, project_name: str) -> bool:
         try:
@@ -215,3 +238,16 @@ class _ClearMLSDK:
             raise ValueError('ClearML task does not belong to the configured project')
         artifact = task.artifacts[name]
         return SimpleNamespace(name=name, url=artifact.url, local_path=artifact.get_local_copy())
+
+
+def _timestamp(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)

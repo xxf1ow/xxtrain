@@ -129,4 +129,4 @@ ClearML 暂时不可访问时显示状态查询失败，不把未知状态推断
 
 ClearML 适配固定使用 SDK 1.18.0，并在普通模块导入时不初始化 SDK 任务或服务连接。平台使用 `Task.create` 直接创建任务，以完整运行 UUID 作为初始任务名，通过项目和锚定名称精确恢复关联；创建不自动重试，入队固定使用配置队列且只接受远端 `created` 状态。Agent 执行已安装 wheel 中的 worker 入口，从受限共享相对路径读取缓存，在独立运行目录调用训练核心，禁用 Ultralytics 自动 ClearML 集成，并在固定 `deployment` 产物同步上传后才标记完成。下载仅解析该固定产物、核对项目归属并复制到平台私有目录。
 
-运行取消使用 SDK 的 `Task.stop_request`，排队取消先 `Task.dequeue` 再停止任务。ClearML 1.18.0 的 workers 2.20 `GetAllRequest(last_seen=None)` 返回每个 Worker 当前持有的任务；适配器只在服务端状态为 `stopped` 且全部 Worker 明确未持有该任务时报告取消完成。Worker 查询失败、离线或仍持有任务时返回活动的 `unknown`，不会据此释放工作区。真实 ClearML Server、Agent 和 GPU 训练仍未验收，页面与平台服务编排也尚未实现，因此本 Note 保持 proposed。
+运行取消使用 SDK 的 `Task.stop_request`。排队取消只在 `Task.dequeue` 明确返回已移除且任务从未记录执行 Worker 时停止并释放；出队竞争失败不会强制改状态。ClearML 1.18.0 的任务记录提供最后执行 Worker，workers 2.20 `GetAllRequest(last_seen=None)` 提供 Worker ID、当前任务和最后成功上报时间。运行任务只有在服务端状态为 `stopped`，同一 Worker 的记录仍存在，其成功上报时间不早于停止状态变更，并且当前任务已不同，才报告取消完成。Worker 身份缺失、记录缺失、上报过期、查询失败或仍持有任务时返回活动的 `unknown`，不会据此释放工作区。真实 ClearML Server、Agent 和 GPU 训练仍未验收，页面与平台服务编排也尚未实现，因此本 Note 保持 proposed。
