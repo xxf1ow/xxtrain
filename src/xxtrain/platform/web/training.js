@@ -39,13 +39,6 @@
     return request(path, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-XTrain-CSRF': cookie('xxtrain_csrf')}, body: JSON.stringify(body)});
   }
 
-  function retryRequest(runId) {
-    const key = `xxtrain-training-retry-${runId}`;
-    let requestId = sessionStorage.getItem(key);
-    if (!requestId) { requestId = crypto.randomUUID(); sessionStorage.setItem(key, requestId); }
-    return {key, requestId};
-  }
-
   function text(tag, value, className = '') {
     const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node;
   }
@@ -87,27 +80,7 @@
     const cancel = text('button', '取消训练', 'primary-button'); cancel.type = 'button'; cancel.disabled = !execution?.active;
     cancel.addEventListener('click', async () => { cancel.disabled = true; cancel.textContent = '正在取消'; try { await post(`/training-runs/${run.id}/cancel`, {}); await load(); } catch (error) { showError(error.message); cancel.disabled = false; cancel.textContent = '取消训练'; } });
     actions.append(cancel);
-    const retry = text('button', '重新训练', 'primary-button'); retry.type = 'button'; retry.disabled = !execution || Boolean(execution.active);
-    retry.addEventListener('click', async () => {
-      retry.disabled = true;
-      const pending = retryRequest(run.id);
-      try {
-        const next = await post(`/training-runs/${run.id}/retry`, {request_id: pending.requestId});
-        const refreshed = await request('/training-runs');
-        if (!refreshed.some((item) => item.id === next.id)) throw new Error('训练任务状态尚未确认，请重试。');
-        runs = refreshed;
-        sessionStorage.removeItem(pending.key);
-        selectedId = next.id;
-        elements.error.hidden = true;
-        render();
-        schedule();
-      } catch (error) {
-        if (error.status && error.status < 500) sessionStorage.removeItem(pending.key);
-        showError(error.message);
-        retry.disabled = false;
-      }
-    });
-    actions.append(retry); elements.detail.append(actions);
+    elements.detail.append(actions);
   }
 
   function render() { renderList(); renderDetail(); }

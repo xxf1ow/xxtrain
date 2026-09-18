@@ -50,12 +50,6 @@ class _LoginBody(BaseModel):
     password: str
 
 
-class _TrainingBody(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
-    request_id: UUID
-
-
 def create_app(
     config: WorkspaceConfig,
     service: AnnotationService,
@@ -397,11 +391,11 @@ def create_app(
     if training_service is not None:
 
         @app.post('/platform/api/targets/{target}/train', dependencies=[Depends(write_request)])
-        def submit_training(request: Request, target: str, body: _TrainingBody) -> dict[str, object]:
+        def submit_training(request: Request, target: str, body: _EmptyBody) -> dict[str, object]:
             user_id = authenticated_user(request)
             target = target_id(target)
             try:
-                view = training_service.submit(user_id, target, str(body.request_id))
+                view = training_service.submit(user_id, target)
             except PlatformAccessError as error:
                 raise training_access(error) from None
             except (OSError, ValueError, PlatformError) as error:
@@ -434,17 +428,6 @@ def create_app(
         def cancel_training(request: Request, run_id: UUID, body: _EmptyBody) -> dict[str, object]:
             try:
                 return training_payload(training_service.cancel(authenticated_user(request), str(run_id)))
-            except PlatformAccessError as error:
-                raise training_access(error) from None
-            except (OSError, ValueError, PlatformError) as error:
-                raise training_failure(error) from None
-
-        @app.post('/platform/api/training-runs/{run_id}/retry', dependencies=[Depends(write_request)])
-        def retry_training(request: Request, run_id: UUID, body: _TrainingBody) -> dict[str, object]:
-            try:
-                return training_payload(
-                    training_service.retry(authenticated_user(request), str(run_id), str(body.request_id))
-                )
             except PlatformAccessError as error:
                 raise training_access(error) from None
             except (OSError, ValueError, PlatformError) as error:

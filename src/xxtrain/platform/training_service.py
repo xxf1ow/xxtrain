@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import uuid4
 
 from xxtrain.platform.config import WorkspaceConfig
 from xxtrain.platform.contracts import PlatformAccessError, PlatformConflictError, PlatformError
@@ -21,40 +21,21 @@ class TrainingService:
         self.clearml = clearml
         self.shared_root = Path(shared_root).resolve()
 
-    def submit(self, user_id: int, target: str, request_id: str) -> TrainingRunView:
-        """Prepare and enqueue one current input, idempotently keyed by ``request_id``."""
-        _validate_request_id(request_id)
+    def submit(self, user_id: int, target: str) -> TrainingRunView:
+        """Return the canonical run for the user's current target input, creating it when absent."""
         with self.annotations.mutation(user_id):
-            existing = self._find_user_run(user_id, request_id)
-            if existing is not None:
-                if existing.target != target or existing.workspace_id != self.config.workspace_id:
-                    raise PlatformError('Training request conflicts with its recorded input')
-                return self._resume_submission(existing)
-
             fingerprint = (
                 self.annotations.data.detection_fingerprint()
                 if target == 'detect'
                 else self.annotations.data.target_fingerprint(target)
             )
-            workspace_runs = self.store.list_workspace(self.config.workspace_id)
-            for run in reversed(workspace_runs):
-                if run.target != target or run.fingerprint != fingerprint:
-                    continue
-                view = self._view(run)
-                if view.execution is not None and view.execution.active:
-                    return view
-            referenced = next(
-                (run for run in workspace_runs if run.target == target and run.fingerprint == fingerprint), None
-            )
-            if referenced is not None:
-                try:
-                    cache_path = self.annotations.runtime.cache_path(target, fingerprint)
-                except ValueError as error:
-                    raise PlatformError('Referenced training cache is unavailable and cannot be replaced') from error
-            else:
-                cache_path = self.annotations.ensure_target_cache(user_id, target)
+            existing = self.store.find_input(user_id, self.config.workspace_id, target, fingerprint)
+            if existing is not None:
+                return self._resume_submission(existing)
+
+            cache_path = self.annotations.ensure_target_cache(user_id, target)
             run = TrainingRun(
-                request_id,
+                str(uuid4()),
                 user_id,
                 self.config.workspace_id,
                 self.config.display_name,
@@ -65,8 +46,7 @@ class TrainingService:
                 None,
                 None,
             )
-            self.store.create(run)
-            return self._resume_submission(run)
+            return self._resume_submission(self.store.create(run))
 
     def list_runs(self, user_id: int) -> tuple[TrainingRunView, ...]:
         return tuple(self._view(run) for run in self.store.list_user(user_id))
@@ -83,36 +63,6 @@ class TrainingService:
         except Exception:
             execution = _unknown(run.clearml_task_id, 'Training cancellation could not be confirmed')
         return TrainingRunView(run, execution)
-
-    def retry(self, user_id: int, run_id: str, request_id: str) -> TrainingRunView:
-        """Enqueue a new run against the retained immutable input of a historical run."""
-        original = self._get(user_id, run_id)
-        _validate_request_id(request_id)
-        with self.annotations.mutation(user_id):
-            existing = self._find_user_run(user_id, request_id)
-            if existing is not None:
-                if (existing.target, existing.fingerprint, existing.cache_relative_path) != (
-                    original.target,
-                    original.fingerprint,
-                    original.cache_relative_path,
-                ):
-                    raise PlatformError('Training request conflicts with its recorded input')
-                return self._resume_submission(existing)
-            self._retained_cache(original)
-            run = TrainingRun(
-                request_id,
-                user_id,
-                original.workspace_id,
-                original.workspace_name,
-                original.target,
-                original.fingerprint,
-                original.cache_relative_path,
-                _now(),
-                None,
-                None,
-            )
-            self.store.create(run)
-            return self._resume_submission(run)
 
     def download(self, user_id: int, run_id: str) -> DownloadFile:
         run = self._get(user_id, run_id)
@@ -195,9 +145,6 @@ class TrainingService:
         except ValueError as error:
             raise PlatformAccessError('Training run access denied') from error
 
-    def _find_user_run(self, user_id: int, run_id: str) -> TrainingRun | None:
-        return next((run for run in self.store.list_user(user_id) if run.id == run_id), None)
-
     def _find_remote(self, run_id: str) -> str | None:
         try:
             return self.clearml.find(run_id)
@@ -210,29 +157,9 @@ class TrainingService:
         except ValueError as error:
             raise PlatformError('Training cache is outside the configured shared root') from error
 
-    def _retained_cache(self, run: TrainingRun) -> Path:
-        path = (self.shared_root / run.cache_relative_path).resolve()
-        try:
-            path.relative_to(self.shared_root)
-        except ValueError as error:
-            raise PlatformError('Retained training cache is unavailable') from error
-        expected = self.annotations.runtime.cache_path(run.target, run.fingerprint).resolve()
-        if path != expected:
-            raise PlatformError('Retained training cache is unavailable')
-        return path
-
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _validate_request_id(request_id: str) -> None:
-    try:
-        valid = str(UUID(request_id)) == request_id
-    except (TypeError, ValueError, AttributeError):
-        valid = False
-    if not valid:
-        raise ValueError('Training request id must be a canonical UUID')
 
 
 def _unknown(task_id: str, detail: str) -> ExecutionView:

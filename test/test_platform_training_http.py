@@ -69,8 +69,8 @@ class TrainingStub:
         self.download_file = download
         self.calls: list[tuple[object, ...]] = []
 
-    def submit(self, user_id: int, target: str, request_id: str) -> TrainingRunView:
-        self.calls.append(('submit', user_id, target, request_id))
+    def submit(self, user_id: int, target: str) -> TrainingRunView:
+        self.calls.append(('submit', user_id, target))
         return self.view
 
     def list_runs(self, user_id: int) -> tuple[TrainingRunView, ...]:
@@ -85,10 +85,6 @@ class TrainingStub:
 
     def cancel(self, user_id: int, run_id: str) -> TrainingRunView:
         self.calls.append(('cancel', user_id, run_id))
-        return self.get_run(user_id, run_id)
-
-    def retry(self, user_id: int, run_id: str, request_id: str) -> TrainingRunView:
-        self.calls.append(('retry', user_id, run_id, request_id))
         return self.get_run(user_id, run_id)
 
     def download(self, user_id: int, run_id: str) -> DownloadFile:
@@ -114,30 +110,20 @@ class PlatformTrainingHttpTest(unittest.TestCase):
         token = self.client.client.cookies.get('xxtrain_csrf')
         self.write_headers = {'origin': 'http://testserver', 'x-xtrain-csrf': token}
 
-    def test_submit_uses_real_auth_csrf_and_strict_uuid_body(self) -> None:
-        request_id = str(uuid4())
+    def test_submit_uses_real_auth_csrf_and_strict_empty_body(self) -> None:
         self.client.client.cookies.delete('sessionid')
         self.assertEqual(
-            401,
-            self.client.post(
-                '/platform/api/targets/detect/train', json={'request_id': request_id}, headers=self.write_headers
-            ).status_code,
+            401, self.client.post('/platform/api/targets/detect/train', json={}, headers=self.write_headers).status_code
         )
         self.client.client.cookies.set('sessionid', 'active')
-        self.assertEqual(
-            403, self.client.post('/platform/api/targets/detect/train', json={'request_id': request_id}).status_code
-        )
+        self.assertEqual(403, self.client.post('/platform/api/targets/detect/train', json={}).status_code)
         response = self.client.post(
-            '/platform/api/targets/detect/train',
-            json={'request_id': request_id, 'cache_path': '/tmp/foreign'},
-            headers=self.write_headers,
+            '/platform/api/targets/detect/train', json={'request_id': str(uuid4())}, headers=self.write_headers
         )
         self.assertEqual(422, response.status_code)
-        response = self.client.post(
-            '/platform/api/targets/detect/train', json={'request_id': request_id}, headers=self.write_headers
-        )
+        response = self.client.post('/platform/api/targets/detect/train', json={}, headers=self.write_headers)
         self.assertEqual(200, response.status_code)
-        self.assertEqual(('submit', 17, 'detect', request_id), self.training.calls[-1])
+        self.assertEqual(('submit', 17, 'detect'), self.training.calls[-1])
         self.assertEqual(self.training.view.run.id, response.json()['run_id'])
 
     def test_list_and_detail_return_only_safe_projection(self) -> None:
@@ -164,17 +150,15 @@ class PlatformTrainingHttpTest(unittest.TestCase):
         foreign = self.client.get(f'/platform/api/training-runs/{self.training.view.run.id}')
         self.assertEqual((403, unknown.json()), (foreign.status_code, foreign.json()))
 
-    def test_cancel_retry_and_download_use_server_owned_run(self) -> None:
+    def test_cancel_and_download_use_server_owned_run_and_retry_is_removed(self) -> None:
         run_id = self.training.view.run.id
         cancelled = self.client.post(
             f'/platform/api/training-runs/{run_id}/cancel', json={}, headers=self.write_headers
         )
-        retried = self.client.post(
-            f'/platform/api/training-runs/{run_id}/retry', json={'request_id': str(uuid4())}, headers=self.write_headers
-        )
+        retried = self.client.post(f'/platform/api/training-runs/{run_id}/retry', json={}, headers=self.write_headers)
         downloaded = self.client.get(f'/platform/api/training-runs/{run_id}/download')
         self.assertEqual(200, cancelled.status_code)
-        self.assertEqual(200, retried.status_code)
+        self.assertIn(retried.status_code, (404, 405))
         self.assertEqual(b'onnx', downloaded.content)
         self.assertEqual('attachment; filename="model.onnx"', downloaded.headers['content-disposition'])
 
@@ -207,9 +191,7 @@ class PlatformTrainingHttpTest(unittest.TestCase):
             raise PlatformConflictError('private lock details')
 
         self.training.submit = fail  # type: ignore[method-assign]
-        response = self.client.post(
-            '/platform/api/targets/detect/train', json={'request_id': str(uuid4())}, headers=self.write_headers
-        )
+        response = self.client.post('/platform/api/targets/detect/train', json={}, headers=self.write_headers)
         self.assertEqual(409, response.status_code)
         self.assertEqual({'detail': '现场当前有操作或训练任务正在进行，请稍后重试。'}, response.json())
 

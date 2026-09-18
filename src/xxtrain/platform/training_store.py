@@ -33,8 +33,9 @@ ON training_runs(user_id, workspace_id, target, fingerprint)
 class TrainingRunStore:
     """Persist immutable training associations outside workspace annotation storage.
 
-    ``get`` enforces user ownership. Creation accepts an exact retry only; task binding cannot change a recorded
-    ClearML task identity. The creation-attempt timestamp is diagnostic data and does not represent execution state.
+    ``get`` enforces user ownership. Creation returns the canonical row for the same input; task binding cannot
+    change a recorded ClearML task identity. The creation-attempt timestamp is diagnostic data and does not represent
+    execution state.
     """
 
     def __init__(self, path: Path) -> None:

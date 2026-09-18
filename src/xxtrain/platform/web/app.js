@@ -4,7 +4,6 @@
   const apiRoot = '/platform/api';
   const targetIds = ['detect', 'classify', 'segment'];
   const returnTargetKey = 'xxtrain-return-target';
-  const trainingRequestPrefix = 'xxtrain-training-request-';
   const trainingStatuses = {queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
   const elements = {
     loginPanel: document.getElementById('login-panel'), loginForm: document.getElementById('login-form'),
@@ -170,16 +169,6 @@
       ? `/platform/training/?run=${runId}` : null;
   }
 
-  function trainingRequestId(target) {
-    const key = `${trainingRequestPrefix}${target}`;
-    let requestId = sessionStorage.getItem(key);
-    if (!requestId) {
-      requestId = crypto.randomUUID();
-      sessionStorage.setItem(key, requestId);
-    }
-    return {key, requestId};
-  }
-
   async function trainTarget(target) {
     const run = workspace?.training?.[target];
     if (run) {
@@ -189,18 +178,23 @@
     const facts = targetView(target);
     if (busy || !workspace?.training_enabled || !facts?.can_generate_cache) return;
     const row = targetElements[target];
-    const request = trainingRequestId(target);
     clearError(row.error);
     setBusy(true, '正在加入训练队列…', target);
+    let submitted = null;
+    let submissionError = null;
     try {
-      const submitted = await platformPost(`/targets/${target}/train`, {request_id: request.requestId});
-      const next = await requestApiWorkspace();
-      if (next.training?.[target]?.id !== submitted.run_id) throw new Error('训练任务状态尚未确认，请重试。');
-      renderWorkspace(next);
-      sessionStorage.removeItem(request.key);
-      notify('已加入训练队列');
+      submitted = await platformPost(`/targets/${target}/train`, {});
     } catch (error) {
-      if (error.status && error.status < 500) sessionStorage.removeItem(request.key);
+      submissionError = error;
+    }
+    try {
+      const next = await requestApiWorkspace();
+      renderWorkspace(next);
+      if (submissionError) showError(row.error, submissionError.message);
+      else if (next.training?.[target]?.id !== submitted.run_id) showError(row.error, '训练任务状态尚未确认，请重试。');
+      else if (submitted.run.execution?.status === 'queued') notify('已加入训练队列');
+    } catch (error) {
+      workspace = null;
       showError(row.error, error.message);
     } finally {
       setBusy(false);

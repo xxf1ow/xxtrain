@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -45,6 +46,8 @@ class ControlledClearML:
         return task_id
 
     def enqueue(self, task_id):
+        if self.tasks[task_id]['status'] != 'created':
+            return
         self.enqueue_calls += 1
         self.tasks[task_id]['status'] = 'queued'
         if self.enqueue_failure is not None:
@@ -106,7 +109,7 @@ class TrainingServiceTests(unittest.TestCase):
         )
 
     def test_lock_depends_on_all_runs_not_last_clicked_target(self):
-        runs = [self.service.submit(self.owner, target, str(uuid4())) for target in ('detect', 'classify', 'segment')]
+        runs = [self.service.submit(self.owner, target) for target in ('detect', 'classify', 'segment')]
         self.backend.complete(runs[0].run.clearml_task_id)
         self.backend.complete(runs[1].run.clearml_task_id)
         with self.assertRaises(PlatformError):
@@ -115,7 +118,7 @@ class TrainingServiceTests(unittest.TestCase):
         self.service.require_editable(self.workspace_id)
 
     def test_cancel_keeps_lock_across_restart_until_worker_release(self):
-        run = self.service.submit(self.owner, 'detect', str(uuid4()))
+        run = self.service.submit(self.owner, 'detect')
         cancelled = self.service.cancel(self.owner, run.run.id)
         self.assertEqual('unknown', cancelled.execution.status)
 
@@ -145,12 +148,12 @@ class TrainingServiceTests(unittest.TestCase):
             )
         )
 
-        recovered = self._service().submit(self.owner, 'detect', request_id)
+        recovered = self._service().submit(self.owner, 'detect')
 
         self.assertEqual('queued', recovered.execution.status)
         self.assertEqual(1, self.backend.create_calls)
 
-    def test_restart_ignores_unattempted_same_input_for_a_new_request(self):
+    def test_restart_reuses_unattempted_same_input(self):
         fingerprint = self.data.detection_fingerprint()
         TrainingRunStore(self.store_path).create(
             TrainingRun(
@@ -167,49 +170,45 @@ class TrainingServiceTests(unittest.TestCase):
             )
         )
 
-        submitted = self._service().submit(self.owner, 'detect', str(uuid4()))
+        submitted = self._service().submit(self.owner, 'detect')
 
         self.assertEqual('queued', submitted.execution.status)
         self.assertEqual(1, self.backend.create_calls)
 
-    def test_same_request_recovers_task_when_create_return_was_lost(self):
-        request_id = str(uuid4())
+    def test_same_input_recovers_task_when_create_return_was_lost(self):
         self.backend.create_failure = ConnectionError('response lost')
 
-        recovered = self.service.submit(self.owner, 'detect', request_id)
-        repeated = self.service.submit(self.owner, 'detect', request_id)
+        recovered = self.service.submit(self.owner, 'detect')
+        repeated = self.service.submit(self.owner, 'detect')
 
         self.assertEqual(recovered.run, repeated.run)
         self.assertEqual(1, self.backend.create_calls)
         self.assertEqual('queued', repeated.execution.status)
 
     def test_uncertain_create_without_remote_match_is_not_retried_blindly(self):
-        request_id = str(uuid4())
-
         def missing_create(run):
             self.backend.create_calls += 1
             raise ConnectionError('request state unknown')
 
         self.backend.create = missing_create
         with self.assertRaisesRegex(PlatformError, 'not confirmed'):
-            self.service.submit(self.owner, 'detect', request_id)
+            self.service.submit(self.owner, 'detect')
         with self.assertRaisesRegex(PlatformError, 'not confirmed'):
-            self.service.submit(self.owner, 'detect', request_id)
+            self.service.submit(self.owner, 'detect')
         self.assertEqual(1, self.backend.create_calls)
 
     def test_uncertain_enqueue_reuses_bound_task(self):
-        request_id = str(uuid4())
         self.backend.enqueue_failure = ConnectionError('response lost')
         with self.assertRaisesRegex(PlatformError, 'queue'):
-            self.service.submit(self.owner, 'detect', request_id)
+            self.service.submit(self.owner, 'detect')
 
-        recovered = self.service.submit(self.owner, 'detect', request_id)
+        recovered = self.service.submit(self.owner, 'detect')
 
         self.assertEqual('task-1', recovered.run.clearml_task_id)
         self.assertEqual(1, self.backend.create_calls)
 
     def test_unknown_remote_status_keeps_workspace_locked(self):
-        run = self.service.submit(self.owner, 'detect', str(uuid4()))
+        run = self.service.submit(self.owner, 'detect')
 
         def unavailable(task_id):
             raise ConnectionError('offline')
@@ -220,12 +219,11 @@ class TrainingServiceTests(unittest.TestCase):
             self.service.require_editable(self.workspace_id)
 
     def test_foreign_user_cannot_access_runs_or_trigger_external_operations(self):
-        run = self.service.submit(self.owner, 'detect', str(uuid4()))
+        run = self.service.submit(self.owner, 'detect')
         before = (self.backend.create_calls, self.backend.cancel_calls, self.backend.download_calls)
         operations = (
             ('get', lambda: self.service.get_run(99, run.run.id)),
             ('cancel', lambda: self.service.cancel(99, run.run.id)),
-            ('retry', lambda: self.service.retry(99, run.run.id, str(uuid4()))),
             ('download', lambda: self.service.download(99, run.run.id)),
         )
         self.assertEqual((), self.service.list_runs(99))
@@ -234,28 +232,40 @@ class TrainingServiceTests(unittest.TestCase):
                 operation()
         self.assertEqual(before, (self.backend.create_calls, self.backend.cancel_calls, self.backend.download_calls))
 
-    def test_retry_uses_retained_original_cache_after_current_annotations_change(self):
-        original = self.service.submit(self.owner, 'classify', str(uuid4()))
+    def test_changed_input_creates_new_run_and_restored_input_reuses_original(self):
+        original = self.service.submit(self.owner, 'classify')
         self.backend.complete(original.run.clearml_task_id)
         repository = AnnotationRepository(self.config.workspace_dir / 'annotations.db', point_task_definition())
-        removed = repository.annotations(step_key='classify')[0]
-        repository.apply_changes(AnnotationChanges((), frozenset({removed.id}), frozenset()))
+        original_annotation = repository.annotations(step_key='classify')[0]
+        changed_annotation = replace(original_annotation, label='tc' if original_annotation.label != 'tc' else 'tl')
+        repository.apply_changes(AnnotationChanges((changed_annotation,), frozenset(), frozenset()))
 
-        retried = self.service.retry(self.owner, original.run.id, str(uuid4()))
+        changed = self.service.submit(self.owner, 'classify')
+        repository.apply_changes(AnnotationChanges((original_annotation,), frozenset(), frozenset()))
+        restored = self.service.submit(self.owner, 'classify')
 
-        self.assertEqual(original.run.fingerprint, retried.run.fingerprint)
-        self.assertEqual(original.run.cache_relative_path, retried.run.cache_relative_path)
-        self.assertNotEqual(original.run.id, retried.run.id)
+        self.assertNotEqual(original.run.id, changed.run.id)
+        self.assertEqual(original.run.id, restored.run.id)
+        self.assertEqual(2, self.backend.create_calls)
+
+    def test_same_input_terminal_run_is_not_retrained(self):
+        original = self.service.submit(self.owner, 'detect')
+        self.backend.complete(original.run.clearml_task_id)
+
+        repeated = self._service().submit(self.owner, 'detect')
+
+        self.assertEqual(original.run.id, repeated.run.id)
+        self.assertEqual(1, self.backend.create_calls)
 
     def test_referenced_cache_damage_is_not_rebuilt_over_historical_input(self):
-        original = self.service.submit(self.owner, 'detect', str(uuid4()))
+        original = self.service.submit(self.owner, 'detect')
         self.backend.complete(original.run.clearml_task_id)
         cache = self.config.runtime_dir / 'cache' / original.run.cache_relative_path
         (cache / 'dataset.yaml').unlink()
 
-        with self.assertRaisesRegex(PlatformError, 'cannot be replaced'):
-            self.service.submit(self.owner, 'detect', str(uuid4()))
+        repeated = self.service.submit(self.owner, 'detect')
 
+        self.assertEqual(original.run.id, repeated.run.id)
         self.assertFalse((cache / 'dataset.yaml').exists())
 
 
