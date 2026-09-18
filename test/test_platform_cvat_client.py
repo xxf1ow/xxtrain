@@ -1,3 +1,4 @@
+import inspect
 import json
 import subprocess
 import sys
@@ -16,7 +17,7 @@ except ModuleNotFoundError as error:
 
 from xxtrain.business_tasks import POINT_BOX_LABELS
 from xxtrain.data import Bbox
-from xxtrain.integrations.cvat import CvatClient, PreparationState
+from xxtrain.integrations.cvat import CvatClient
 from xxtrain.platform.contracts import (
     CvatBinding,
     DetectionBox,
@@ -29,7 +30,6 @@ from xxtrain.platform.contracts import (
     JobRef,
     PlatformAccessError,
     PlatformError,
-    PreparedJob,
 )
 
 LABELS = [
@@ -64,7 +64,7 @@ class CvatClientTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'username or password'):
                     CvatClient(base_url, 'private-token', http)
 
-    def test_codec_and_preparation_values_import_without_httpx(self):
+    def test_codec_imports_without_httpx(self):
         script = textwrap.dedent(
             """
             import builtins
@@ -77,10 +77,8 @@ class CvatClientTest(unittest.TestCase):
                 return original_import(name, *args, **kwargs)
 
             builtins.__import__ = import_without_httpx
-            from xxtrain.integrations.cvat import PreparationState
             from xxtrain.integrations.cvat.codec import encode_annotations
 
-            assert PreparationState().stage == 'new'
             assert callable(encode_annotations)
             """
         )
@@ -88,6 +86,12 @@ class CvatClientTest(unittest.TestCase):
         completed = subprocess.run([sys.executable, '-c', script], text=True, capture_output=True, check=False)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_prepare_task_has_no_recovery_parameters(self):
+        parameters = inspect.signature(CvatClient.prepare_task).parameters
+
+        self.assertNotIn('preparation', parameters)
+        self.assertNotIn('checkpoint', parameters)
 
     def test_create_task_uses_service_token_and_exact_point_label_schema(self):
         seen = []
@@ -157,7 +161,6 @@ class CvatClientTest(unittest.TestCase):
         self.assertEqual(client.create_edit_task('Point classification', ('tl',), 'tag'), 17)
 
     def test_prepare_uploads_numbered_images_initializes_annotations_and_assigns_job(self):
-        checkpoints = []
         requests = []
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -191,7 +194,7 @@ class CvatClientTest(unittest.TestCase):
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path, request.url.query, request.content))
                 if request.url.path == '/api/tasks/7':
-                    return httpx.Response(200, json={'id': 7})
+                    return httpx.Response(200, json={'id': 7, 'size': 0})
                 if request.url.path == '/api/tasks/7/data':
                     body = request.content
                     self.assertIn(b'name="client_files[0]"; filename="00000000.jpg"', body)
@@ -256,7 +259,7 @@ class CvatClientTest(unittest.TestCase):
             http = httpx.Client(transport=httpx.MockTransport(respond))
             client = CvatClient('http://cvat.test', 'private-token', http)
 
-            prepared = client.prepare_task(7, images, 23, checkpoint=checkpoints.append)
+            prepared = client.prepare_task(7, images, 23)
 
         self.assertEqual(JobRef(7, 8, ('sample-b', 'sample-a')), prepared.ref)
         self.assertEqual(
@@ -265,16 +268,6 @@ class CvatClientTest(unittest.TestCase):
                 CvatBinding('sample-a', 'shape', 92, second_annotation),
             },
             set(prepared.bindings),
-        )
-        self.assertEqual(
-            checkpoints,
-            [
-                PreparationState('uploading'),
-                PreparationState('uploading', 'upload-7'),
-                PreparationState('uploaded'),
-                PreparationState('initializing'),
-                PreparationState('initialized'),
-            ],
         )
         self.assertEqual(
             [(method, path) for method, path, _, _ in requests],
@@ -289,64 +282,6 @@ class CvatClientTest(unittest.TestCase):
                 ('PATCH', '/api/jobs/8'),
             ],
         )
-
-    def test_prepare_resumes_known_upload_request_without_uploading_again(self):
-        checkpoints = []
-        requests = []
-        with tempfile.TemporaryDirectory() as directory:
-            image_path = Path(directory) / 'a.jpg'
-            image_path.write_bytes(b'image')
-            images = (ImageInput('a', image_path, 10, 20, ()),)
-
-            def respond(request: httpx.Request) -> httpx.Response:
-                requests.append((request.method, request.url.path))
-                responses = {
-                    ('GET', '/api/tasks/7'): httpx.Response(200, json={'id': 7, 'size': 0}),
-                    ('GET', '/api/requests/saved-rq'): httpx.Response(
-                        200, json={'id': 'saved-rq', 'status': 'finished'}
-                    ),
-                    ('GET', '/api/tasks/7/data/meta'): httpx.Response(
-                        200,
-                        json={
-                            'size': 1,
-                            'start_frame': 0,
-                            'stop_frame': 0,
-                            'deleted_frames': [],
-                            'included_frames': None,
-                            'frames': [{'name': '00000000.jpg', 'width': 10, 'height': 20, 'related_files': 0}],
-                        },
-                    ),
-                    ('GET', '/api/jobs'): httpx.Response(
-                        200,
-                        json=page(
-                            [
-                                {
-                                    'id': 8,
-                                    'task_id': 7,
-                                    'type': 'annotation',
-                                    'start_frame': 0,
-                                    'stop_frame': 0,
-                                    'frame_count': 1,
-                                }
-                            ]
-                        ),
-                    ),
-                    ('GET', '/api/labels'): httpx.Response(200, json=page(LABELS)),
-                    ('PUT', '/api/jobs/8/annotations'): httpx.Response(200, json={}),
-                    ('PATCH', '/api/jobs/8'): httpx.Response(200, json={'id': 8}),
-                }
-                return responses.get((request.method, request.url.path), httpx.Response(404))
-
-            client = CvatClient(
-                'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
-            )
-            ref = client.prepare_task(
-                7, images, 23, preparation=PreparationState('uploading', 'saved-rq'), checkpoint=checkpoints.append
-            )
-
-        self.assertEqual(ref, PreparedJob(JobRef(7, 8, ('a',)), ()))
-        self.assertNotIn(('POST', '/api/tasks/7/data'), requests)
-        self.assertEqual(checkpoints[0], PreparationState('uploaded'))
 
     def test_prepare_edit_task_uploads_crop_frames_and_returns_original_identity_bindings(self):
         requests = []
@@ -397,7 +332,7 @@ class CvatClientTest(unittest.TestCase):
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path))
                 if request.url.path == '/api/tasks/7':
-                    return httpx.Response(200, json={'id': 7})
+                    return httpx.Response(200, json={'id': 7, 'size': 0})
                 if request.url.path == '/api/tasks/7/data':
                     self.assertIn(b'filename="00000000.png"', request.content)
                     self.assertIn(b'filename="00000001.png"', request.content)
@@ -458,92 +393,26 @@ class CvatClientTest(unittest.TestCase):
         self.assertEqual(prepared.bindings, (CvatBinding(original_id, 'tag', 91, first_annotation),))
         self.assertEqual(requests[-1], ('PATCH', '/api/jobs/8'))
 
-    def test_prepare_does_not_repeat_initialized_annotations(self):
+    def test_prepare_rejects_task_that_already_contains_images(self):
         requests = []
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / 'a.jpg'
             image_path.write_bytes(b'image')
-            annotation_id = UUID('12345678-1234-5678-1234-567812345678')
-            images = (
-                ImageInput(
-                    'a',
-                    image_path,
-                    10,
-                    20,
-                    (DetectionBox(Bbox(id=annotation_id, label='Point', x1=1, y1=2, x2=8, y2=9)),),
-                ),
-            )
+            images = (ImageInput('a', image_path, 10, 20, ()),)
 
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path))
                 if request.url.path == '/api/tasks/7':
                     return httpx.Response(200, json={'id': 7, 'size': 1})
-                if request.url.path == '/api/tasks/7/data/meta':
-                    return httpx.Response(
-                        200,
-                        json={
-                            'size': 1,
-                            'start_frame': 0,
-                            'stop_frame': 0,
-                            'deleted_frames': [],
-                            'included_frames': None,
-                            'frames': [{'name': '00000000.jpg', 'width': 10, 'height': 20, 'related_files': 0}],
-                        },
-                    )
-                if request.url.path == '/api/jobs':
-                    return httpx.Response(
-                        200,
-                        json=page(
-                            [
-                                {
-                                    'id': 8,
-                                    'task_id': 7,
-                                    'type': 'annotation',
-                                    'start_frame': 0,
-                                    'stop_frame': 0,
-                                    'frame_count': 1,
-                                }
-                            ]
-                        ),
-                    )
-                if request.url.path == '/api/labels':
-                    return httpx.Response(200, json=page(LABELS))
-                if request.url.path == '/api/jobs/8/annotations':
-                    return httpx.Response(
-                        200,
-                        json={
-                            'version': 0,
-                            'tracks': [],
-                            'tags': [],
-                            'shapes': [
-                                {
-                                    'id': 91,
-                                    'type': 'rectangle',
-                                    'frame': 0,
-                                    'label_id': 41,
-                                    'points': [1, 2, 8, 9],
-                                    'attributes': [
-                                        {
-                                            'spec_id': 71,
-                                            'value': json.dumps({'xxtrain_annotation_id': str(annotation_id)}),
-                                        }
-                                    ],
-                                }
-                            ],
-                        },
-                    )
-                if request.url.path == '/api/jobs/8':
-                    return httpx.Response(200, json={'id': 8})
                 return httpx.Response(404)
 
             client = CvatClient(
                 'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
             )
-            prepared = client.prepare_task(7, images, 23, preparation=PreparationState('initialized'))
+            with self.assertRaisesRegex(PlatformError, 'task 7.*fresh'):
+                client.prepare_task(7, images, 23)
 
-        self.assertEqual(PreparedJob(JobRef(7, 8, ('a',)), (CvatBinding('a', 'shape', 91, annotation_id),)), prepared)
-        self.assertNotIn(('PUT', '/api/jobs/8/annotations'), requests)
-        self.assertIn(('GET', '/api/jobs/8/annotations'), requests)
+        self.assertEqual(requests, [('GET', '/api/tasks/7')])
 
     def test_prepare_missing_initialization_token_does_not_assign_job(self):
         requests = []
@@ -566,7 +435,7 @@ class CvatClientTest(unittest.TestCase):
         def request(method, path, **kwargs):
             requests.append((method, path))
             if path == '/api/tasks/7':
-                return httpx.Response(200, json={'id': 7, 'size': 1})
+                return httpx.Response(200, json={'id': 7, 'size': 0})
             if path == '/api/jobs/8/annotations':
                 payload = json.loads(json.dumps(kwargs['json']))
                 payload['shapes'][0]['id'] = 91
@@ -578,6 +447,8 @@ class CvatClientTest(unittest.TestCase):
 
         with (
             patch.object(client, '_service_request', side_effect=request),
+            patch.object(client, '_upload_images', return_value='upload-7'),
+            patch.object(client, '_wait_for_request'),
             patch.object(client, '_verify_frames'),
             patch.object(client, '_wait_for_job', return_value=8),
             patch.object(client, '_labels', return_value=LABELS),
@@ -587,45 +458,21 @@ class CvatClientTest(unittest.TestCase):
 
         self.assertNotIn(('PATCH', '/api/jobs/8'), requests)
 
-    def test_prepare_stops_ambiguous_initialization_without_an_http_write(self):
-        requests = []
+    def test_prepare_timeout_is_bounded_and_names_the_task(self):
         client = CvatClient(
             'http://cvat.test',
             'private-token',
-            httpx.Client(
-                transport=httpx.MockTransport(lambda request: requests.append(request) or httpx.Response(500))
-            ),
+            httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(500))),
         )
-
-        with self.assertRaisesRegex(PlatformError, 'task 7.*administrator'):
-            client.prepare_task(7, (), 23, preparation=PreparationState('initializing'))
-
-        self.assertEqual(requests, [])
-
-    def test_prepare_stops_unknown_inflight_upload_when_server_has_no_data(self):
-        requests = []
-
-        def respond(request: httpx.Request) -> httpx.Response:
-            requests.append((request.method, request.url.path))
-            return httpx.Response(200, json={'id': 7, 'size': 0})
-
-        client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
-        with self.assertRaisesRegex(PlatformError, 'task 7.*upload.*administrator'):
-            client.prepare_task(7, (), 23, preparation=PreparationState('uploading'))
-        self.assertEqual(requests, [('GET', '/api/tasks/7')])
-
-    def test_prepare_timeout_is_bounded_and_names_the_task(self):
-        def respond(request: httpx.Request) -> httpx.Response:
-            if request.url.path == '/api/tasks/7':
-                return httpx.Response(200, json={'id': 7, 'size': 0})
-            if request.url.path == '/api/requests/saved-rq':
-                return httpx.Response(200, json={'id': 'saved-rq', 'status': 'queued'})
-            return httpx.Response(404)
-
-        client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
-        with patch('xxtrain.integrations.cvat.client.time.monotonic', side_effect=[0.0, 0.0, 121.0]):
+        with (
+            patch.object(client, '_service_request', return_value=httpx.Response(200, json={'id': 7, 'size': 0})),
+            patch.object(client, '_upload_images', return_value='upload-7'),
+            patch.object(client, '_wait_for_request') as wait,
+            patch('xxtrain.integrations.cvat.client.time.monotonic', side_effect=[0.0, 121.0]),
+        ):
+            wait.side_effect = lambda task_id, request_id, deadline: client._remaining(task_id, deadline)
             with self.assertRaisesRegex(PlatformError, 'task 7.*120 seconds'):
-                client.prepare_task(7, (), 23, preparation=PreparationState('uploading', 'saved-rq'))
+                client.prepare_task(7, (), 23)
 
     def test_fetch_uses_server_frame_mapping(self):
         def respond(request: httpx.Request) -> httpx.Response:

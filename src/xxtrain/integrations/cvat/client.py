@@ -23,7 +23,6 @@ from xxtrain.platform.contracts import (
 
 from .codec import NEGATIVE_LABEL, decode_annotations, decode_initial_bindings, encode_mapped_annotations
 from .edit_codec import decode_edit_annotations, decode_edit_bindings, encode_edit_annotations
-from .preparation import PreparationCheckpoint, PreparationState
 
 _EXTRA_ATTRIBUTE = 'xxtrain_labelme_extra'
 _PREPARE_TIMEOUT_SECONDS = 120.0
@@ -102,21 +101,12 @@ class CvatClient:
         task_id = self._integer_field(self._json(response), 'id', '/api/tasks')
         return task_id
 
-    def prepare_task(
-        self,
-        task_id: int,
-        images: tuple[ImageInput, ...],
-        user_id: int,
-        *,
-        preparation: PreparationState = PreparationState(),
-        checkpoint: PreparationCheckpoint | None = None,
-    ) -> PreparedJob:
+    def prepare_task(self, task_id: int, images: tuple[ImageInput, ...], user_id: int) -> PreparedJob:
         """Attach frames, establish native annotation bindings, assign the Job, and return the prepared job.
 
-        The complete operation, including polling, has a 120-second deadline. Callers may supply a preparation
-        checkpoint when resuming a task. Ambiguous in-flight writes raise ``PlatformError`` and require
-        administrator reconciliation; the adapter never guesses whether it is safe to repeat them. Initialization
-        and recovery require every platform token and native CVAT ID before the Job is assigned.
+        The complete operation, including polling, has a 120-second deadline. The task must be fresh; existing
+        images are rejected before annotations can be initialized. Every platform token and native CVAT ID must be
+        decoded before the Job is assigned.
         """
 
         return self._prepare_frames(
@@ -126,8 +116,6 @@ class CvatClient:
             tuple(image.sample_id for image in images),
             lambda labels: encode_mapped_annotations(images, labels),
             lambda payload, ref, labels: decode_initial_bindings(payload, images, ref, labels),
-            preparation=preparation,
-            checkpoint=checkpoint,
         )
 
     def prepare_edit_task(self, task_id: int, frames: tuple[EditFrame, ...], user_id: int) -> PreparedJob:
@@ -225,15 +213,7 @@ class CvatClient:
         sample_ids: tuple[str, ...],
         encode: Callable[[list[dict]], dict],
         decode_bindings: _BindingDecoder,
-        *,
-        preparation: PreparationState = PreparationState(),
-        checkpoint: PreparationCheckpoint | None = None,
     ) -> PreparedJob:
-        if preparation.stage == 'initializing':
-            raise PlatformError(
-                f'CVAT task {task_id} has ambiguous annotation initialization; administrator reconciliation is required'
-            )
-
         deadline = time.monotonic() + _PREPARE_TIMEOUT_SECONDS
         filenames = self._upload_filenames(frames)
         task = self._json(
@@ -244,47 +224,19 @@ class CvatClient:
         size = task.get('size')
         if size is not None:
             size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
+        if size not in (None, 0):
+            raise PlatformError(f'CVAT task {task_id} is not fresh and cannot be prepared')
 
-        current = preparation
-        if size in (None, 0):
-            if current.stage == 'uploading':
-                if current.request_id is None:
-                    raise PlatformError(
-                        f'CVAT task {task_id} has an upload without a request ID; '
-                        'administrator reconciliation is required'
-                    )
-                self._wait_for_request(task_id, current.request_id, deadline)
-            elif current.stage == 'new':
-                current = PreparationState('uploading')
-                self._checkpoint(checkpoint, current)
-                request_id = self._upload_images(task_id, frames, filenames, deadline)
-                current = PreparationState('uploading', request_id)
-                self._checkpoint(checkpoint, current)
-                self._wait_for_request(task_id, request_id, deadline)
-            else:
-                raise PlatformError(f'CVAT task {task_id} has no uploaded data for preparation stage {current.stage!r}')
-
+        request_id = self._upload_images(task_id, frames, filenames, deadline)
+        self._wait_for_request(task_id, request_id, deadline)
         self._verify_frames(task_id, frames, filenames, deadline)
-        if current.stage in {'new', 'uploading'}:
-            current = PreparationState('uploaded')
-            self._checkpoint(checkpoint, current)
-
         job_id = self._wait_for_job(task_id, len(frames), deadline)
         ref = JobRef(task_id, job_id, sample_ids)
         labels = self._labels(task_id, deadline=deadline)
-        if current.stage != 'initialized':
-            annotations = encode(labels)
-            current = PreparationState('initializing')
-            self._checkpoint(checkpoint, current)
-            response = self._service_request(
-                'PUT', f'/api/jobs/{job_id}/annotations', json=annotations, deadline=deadline, deadline_task_id=task_id
-            )
-            current = PreparationState('initialized')
-            self._checkpoint(checkpoint, current)
-        else:
-            response = self._service_request(
-                'GET', f'/api/jobs/{job_id}/annotations', deadline=deadline, deadline_task_id=task_id
-            )
+        annotations = encode(labels)
+        response = self._service_request(
+            'PUT', f'/api/jobs/{job_id}/annotations', json=annotations, deadline=deadline, deadline_task_id=task_id
+        )
         payload = self._json(response)
         bindings = decode_bindings(payload, ref, labels)
         self._service_request(
@@ -507,8 +459,3 @@ class CvatClient:
             for value in response.headers.get_list('set-cookie')
             if value.partition('=')[0].strip().casefold() in allowed
         )
-
-    @staticmethod
-    def _checkpoint(checkpoint: PreparationCheckpoint | None, state: PreparationState) -> None:
-        if checkpoint is not None:
-            checkpoint(state)
