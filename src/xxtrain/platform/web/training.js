@@ -2,7 +2,7 @@
   'use strict';
 
   const apiRoot = '/platform/api';
-  const statusNames = {queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
+  const statusNames = {pending: '等待确认', queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
   const targetNames = {detect: '检测模型', classify: '分类模型', segment: '指针分割模型'};
   const elements = {
     list: document.getElementById('training-list'), detail: document.getElementById('training-detail'),
@@ -42,7 +42,11 @@
     const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node;
   }
 
-  function status(run) { return statusNames[run.execution?.status] || '等待状态'; }
+  function status(run) {
+    if (run.execution?.active && run.cancellation_requested) return '取消请求已保存，等待停止';
+    if (run.execution?.status === 'completed' && !run.execution.download_ready) return '训练已结束，部署产物不可用';
+    return statusNames[run.execution?.status] || '等待状态';
+  }
 
   function renderList() {
     elements.list.replaceChildren();
@@ -76,7 +80,7 @@
     const download = text('a', '下载部署产物', 'primary-button'); download.href = execution?.download_ready ? `${apiRoot}/training-runs/${run.id}/download` : '#';
     download.setAttribute('aria-disabled', String(!execution?.download_ready)); if (!execution?.download_ready) download.addEventListener('click', (event) => event.preventDefault());
     actions.append(download);
-    const cancel = text('button', '取消训练', 'primary-button'); cancel.type = 'button'; cancel.disabled = !execution?.active;
+    const cancel = text('button', run.cancellation_requested && execution?.active ? '等待停止' : '取消训练', 'primary-button'); cancel.type = 'button'; cancel.disabled = !execution?.active || Boolean(run.cancellation_requested);
     cancel.addEventListener('click', async () => { cancel.disabled = true; cancel.textContent = '正在取消'; try { await post(`/training-runs/${run.id}/cancel`, {}); await load(); } catch (error) { showError(error.message); cancel.disabled = false; cancel.textContent = '取消训练'; } });
     actions.append(cancel);
     elements.detail.append(actions);

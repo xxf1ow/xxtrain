@@ -113,7 +113,8 @@ class TrainingService:
     def workspace_view(self, user_id: int) -> dict[str, object]:
         with self.annotations.mutation(user_id):
             workspace = self.annotations.view(user_id)
-            stored_runs = self.store.list_user(user_id)
+            user_runs = self.store.list_user(user_id)
+            workspace_runs = self.store.list_workspace(self.config.workspace_id)
             fingerprints = {}
             for target in ('detect', 'classify', 'segment'):
                 fingerprints[target] = (
@@ -121,19 +122,22 @@ class TrainingService:
                     if target == 'detect'
                     else self.annotations.data.target_fingerprint(target)
                 )
-        runs = tuple(self._view(run) for run in stored_runs)
+        visible_runs = tuple(self._view(run) for run in user_runs)
+        active_runs = tuple(self._view(run) for run in workspace_runs)
         latest = {
             target: next(
                 (
                     view
-                    for view in reversed(runs)
-                    if view.run.target == target and view.run.fingerprint == fingerprints[target]
+                    for view in reversed(visible_runs)
+                    if view.run.workspace_id == self.config.workspace_id
+                    and view.run.target == target
+                    and view.run.fingerprint == fingerprints[target]
                 ),
                 None,
             )
             for target in ('detect', 'classify', 'segment')
         }
-        return {'workspace': workspace, 'editable': not any(map(_is_active, runs)), 'training': latest}
+        return {'workspace': workspace, 'editable': not any(map(_is_active, active_runs)), 'training': latest}
 
     def _reconcile_run(self, run: TrainingRun) -> None:
         with self.annotations.mutation(run.user_id):

@@ -46,8 +46,10 @@ uv run --locked --extra platform python -m unittest test.test_platform_browser -
 训练 HTTP、严格运行配置和组合根使用 `platform` 与 `clearml` 可选依赖；该检查通过真实 ASGI 认证与 CSRF 路径覆盖严格空提交、安全投影、用户归属、取消、已删除的重训路由和下载，并验证仅标注启动保持可用：
 
 ```powershell
-uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_http test.test_platform_training_config test.test_platform_http -v
+uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_coordinator test.test_platform_training_http test.test_platform_training_config test.test_platform_http -v
 ```
+
+协调器测试使用受控 Event 推进轮次并验证关闭等待；HTTP 生命周期断言必须进入 `app.router.lifespan_context(app)`，因为裸 `ASGITransport` 不运行 ASGI lifespan。
 
 训练页面与工作区反馈使用 Node.js DOM 适配器和真实 ASGI 资源入口，覆盖独立页面、提交反馈、任务状态入口与训练期间编辑禁用：
 

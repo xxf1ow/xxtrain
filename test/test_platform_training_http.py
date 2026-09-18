@@ -1,8 +1,11 @@
 import asyncio
 import tempfile
+import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import httpx
@@ -42,6 +45,12 @@ class AnnotationStub:
         return self.view(user_id)
 
     def sync_target(self, user_id: int, target: str) -> WorkspaceView:
+        return self.view(user_id)
+
+    def sync_detection(self, user_id: int) -> WorkspaceView:
+        return self.view(user_id)
+
+    def generate_detection_cache(self, user_id: int) -> WorkspaceView:
         return self.view(user_id)
 
     def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
@@ -161,6 +170,21 @@ class PlatformTrainingHttpTest(unittest.TestCase):
             self.assertNotIn(secret, serialized)
         self.assertEqual('running', detail.json()['execution']['status'])
         self.assertEqual('检测效果：mAP50-95', detail.json()['metric_name'])
+        self.assertIs(detail.json()['cancellation_requested'], False)
+
+    def test_pending_and_cancellation_facts_are_public_without_internal_intent(self) -> None:
+        self.training.view = TrainingRunView(
+            replace(self.training.view.run, desired_action='cancel'),
+            ExecutionView('', 'pending', True, None, None, None, None, False, None),
+            True,
+        )
+
+        response = self.client.get(f'/platform/api/training-runs/{self.training.view.run.id}')
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('pending', response.json()['execution']['status'])
+        self.assertIs(response.json()['cancellation_requested'], True)
+        self.assertNotIn('desired_action', response.json())
 
     def test_annotation_mutations_return_full_training_workspace_projection(self) -> None:
         responses = (
@@ -231,6 +255,69 @@ class PlatformTrainingHttpTest(unittest.TestCase):
         response = self.client.post('/platform/api/targets/detect/train', json={}, headers=self.write_headers)
         self.assertEqual(409, response.status_code)
         self.assertEqual({'detail': '现场当前有操作或训练任务正在进行，请稍后重试。'}, response.json())
+
+    def test_projection_failures_after_annotation_mutations_are_safely_reported(self) -> None:
+        routes = (
+            '/platform/api/detection/sync',
+            '/platform/api/detection/cache',
+            '/platform/api/targets/classify/sync',
+            '/platform/api/targets/classify/cache',
+        )
+        for error, expected in ((PlatformConflictError('busy'), 409), (PlatformError('offline'), 502)):
+            for route in routes:
+                with self.subTest(route=route, error=type(error).__name__):
+
+                    def fail(user_id: int) -> dict[str, object]:
+                        raise error
+
+                    self.training.workspace_view = fail  # type: ignore[method-assign]
+                    response = self.client.post(route, json={}, headers=self.write_headers)
+                    self.assertEqual(expected, response.status_code)
+
+    def test_real_asgi_lifespan_starts_training_coordination_without_a_request(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class LifecycleTraining(TrainingStub):
+            def reconcile_pending(self) -> None:
+                entered.set()
+                release.wait()
+
+        async def consume() -> None:
+            training = LifecycleTraining(self.training.download_file)
+            app = create_app(
+                WorkspaceConfig(
+                    'line-3',
+                    'Line 3',
+                    17,
+                    Path(self.training.download_file.path).parent,
+                    Path(self.training.download_file.path).parent / 'runtime',
+                    'http://cvat.test',
+                ),
+                AnnotationStub(),
+                self.cvat,
+                training_service=training,
+            )
+            async with app.router.lifespan_context(app):
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                release.set()
+
+        try:
+            asyncio.run(consume())
+        finally:
+            release.set()
+
+    def test_annotation_only_lifespan_does_not_construct_a_coordinator(self) -> None:
+        async def consume() -> None:
+            config = WorkspaceConfig('line-3', 'Line 3', 17, Path('.'), Path('runtime'), 'http://cvat.test')
+            with patch(
+                'xxtrain.platform.app.TrainingCoordinator', side_effect=AssertionError('unexpected coordinator')
+            ):
+                app = create_app(config, AnnotationStub(), self.cvat)
+                async with app.router.lifespan_context(app):
+                    pass
+
+        asyncio.run(consume())
 
 
 if __name__ == '__main__':

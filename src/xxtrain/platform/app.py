@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import shutil
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from hmac import compare_digest
 from importlib import resources
@@ -30,6 +31,7 @@ from xxtrain.platform.contracts import (
 )
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import TrainingRunView
+from xxtrain.platform.training_coordinator import TrainingCoordinator
 from xxtrain.platform.training_service import TrainingService
 
 _CSRF_COOKIE = 'xxtrain_csrf'
@@ -61,10 +63,24 @@ def create_app(
 
     Authentication delegates to the supplied CVAT browser-session adapter. Routes distinguish missing or rejected
     sessions (401), authenticated workspace-owner denial (403), invalid request objects (422), and operational
-    workflow or backend failures (502). The caller owns ``service``, ``cvat``, and the optional ``training_service``
-    and must close their external resources.
+    workflow or backend failures (502). When training is configured, the application lifespan owns and joins its
+    coordinator. The caller owns ``service``, ``cvat``, and ``training_service`` resources and closes them after the
+    lifespan exits.
     """
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if training_service is None:
+            yield
+            return
+        coordinator = TrainingCoordinator(training_service)
+        coordinator.start()
+        try:
+            yield
+        finally:
+            coordinator.close()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     web = resources.files('xxtrain.platform').joinpath('web')
     page = web.joinpath('index.html').read_text(encoding='utf-8')
     training_page = web.joinpath('training.html').read_text(encoding='utf-8')
@@ -162,6 +178,7 @@ def create_app(
             'target': run.target,
             'metric_name': training.metric_name,
             'submitted_at': run.submitted_at,
+            'cancellation_requested': view.cancellation_requested,
             'execution': None
             if execution is None
             else {
@@ -328,6 +345,7 @@ def create_app(
         user_id = authenticated_user(request)
         try:
             view = service.sync_detection(user_id)
+            return JSONResponse(content=full_workspace_payload(user_id, view))
         except TargetValidationError as error:
             return validation_response(error)
         except PlatformAccessError:
@@ -336,20 +354,19 @@ def create_app(
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return JSONResponse(content=full_workspace_payload(user_id, view))
 
     @app.post('/platform/api/detection/cache', dependencies=[Depends(write_request)])
     def generate_detection_cache(request: Request, body: _EmptyBody) -> dict[str, object]:
         user_id = authenticated_user(request)
         try:
             view = service.generate_detection_cache(user_id)
+            return full_workspace_payload(user_id, view)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except PlatformConflictError:
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return full_workspace_payload(user_id, view)
 
     @app.post('/platform/api/targets/{target}/start', dependencies=[Depends(write_request)])
     def start_target(request: Request, target: str, body: _EmptyBody) -> dict[str, str]:
@@ -371,6 +388,7 @@ def create_app(
         target = target_id(target)
         try:
             view = service.sync_target(user_id, target)
+            return JSONResponse(content=full_workspace_payload(user_id, view))
         except TargetValidationError as error:
             return validation_response(error)
         except PlatformAccessError:
@@ -379,7 +397,6 @@ def create_app(
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return JSONResponse(content=full_workspace_payload(user_id, view))
 
     @app.post('/platform/api/targets/{target}/cache', dependencies=[Depends(write_request)])
     def generate_target_cache(request: Request, target: str, body: _EmptyBody) -> dict[str, object]:
@@ -387,13 +404,13 @@ def create_app(
         target = target_id(target)
         try:
             view = service.generate_target_cache(user_id, target)
+            return full_workspace_payload(user_id, view)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except PlatformConflictError:
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return full_workspace_payload(user_id, view)
 
     if training_service is not None:
 
@@ -403,15 +420,15 @@ def create_app(
             target = target_id(target)
             try:
                 view = training_service.submit(user_id, target)
+                return {
+                    'run_id': view.run.id,
+                    'training_url': f'/platform/training/?run={view.run.id}',
+                    'run': training_payload(view),
+                }
             except PlatformAccessError as error:
                 raise training_access(error) from None
             except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
-            return {
-                'run_id': view.run.id,
-                'training_url': f'/platform/training/?run={view.run.id}',
-                'run': training_payload(view),
-            }
 
         @app.get('/platform/api/training-runs')
         def list_training(request: Request) -> list[dict[str, object]]:

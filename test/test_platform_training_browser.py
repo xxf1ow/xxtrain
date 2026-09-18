@@ -205,6 +205,8 @@ process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled
         run_id = self.training.view.run.id
         completed_id = str(uuid4())
         missing_id = str(uuid4())
+        cancelling_id = str(uuid4())
+        unavailable_id = str(uuid4())
         harness = f"""
 (async () => {{
 class Element {{
@@ -233,9 +235,13 @@ const active={{id:'{run_id}',workspace_id:'line-3',workspace_name:'三号现场'
   submitted_at:'2026-09-17T00:01:00+00:00',execution:{{status:'unknown',active:true,epoch:null,
     total_epochs:null,elapsed_seconds:null,metric:null,download_ready:false,detail:'暂时不可用'}}}};
 const completed={{id:'{completed_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'classify',
-  metric_name:'分类准确率：Top-1',submitted_at:'2026-09-17T00:02:00+00:00',execution:{{status:'completed',active:false,epoch:10,
+  metric_name:'分类准确率：Top-1',submitted_at:'2026-09-17T00:02:00+00:00',cancellation_requested:true,execution:{{status:'completed',active:false,epoch:10,
     total_epochs:10,elapsed_seconds:30,metric:0.8,download_ready:true,detail:null}}}};
-let runs=[missing,active,completed]; let failList=false; let authFail=false; const calls=[];
+const cancelling={{...active,id:'{cancelling_id}',target:'segment',cancellation_requested:true,
+  execution:{{...active.execution,status:'running'}}}};
+const unavailable={{...completed,id:'{unavailable_id}',target:'detect',cancellation_requested:false,
+  execution:{{...completed.execution,download_ready:false}}}};
+let runs=[missing,active,completed,cancelling,unavailable]; let failList=false; let authFail=false; const calls=[];
 globalThis.fetch=async(url,options={{}})=>{{calls.push({{url,method:options.method||'GET',body:options.body||null,csrf:options.headers?.['X-XTrain-CSRF']||null}});
   if(authFail&&url.endsWith('/training-runs')) return {{ok:false,status:401,json:async()=>({{detail:'expired'}})}};
   if(url.endsWith('/cancel')) return {{ok:true,status:200,json:async()=>active}};
@@ -250,12 +256,18 @@ const detail=elements.get('training-detail');
 const missingState={{cancel:byText(detail,'取消训练').disabled,
   download:byText(detail,'下载部署产物').attributes['aria-disabled'],retry:Boolean(byText(detail,'重新训练'))}};
 const taskButtons=elements.get('training-list').children;
+await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='指针分割模型')).fire('click');
+const cancellationWaiting=all(detail).some((node)=>node.textContent==='取消请求已保存，等待停止');
+const cancellationDisabled=byText(detail,'等待停止').disabled;
+await taskButtons.filter((item)=>all(item).some((node)=>node.textContent==='检测模型'))[0].fire('click');
+const outputUnavailable=all(detail).some((node)=>node.textContent==='训练已结束，部署产物不可用');
+const unavailableDownload=byText(detail,'下载部署产物').attributes['aria-disabled'];
 await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='分类模型')).fire('click');
 const downloadHref=byText(detail,'下载部署产物').href;
 const metricText=Boolean(byText(detail,'本次验证集结果 · 分类准确率：Top-1：80.0%'));
 failList=true; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
 const retainedAfterFailure=all(detail).some((node)=>node.textContent==='分类模型'); failList=false;
-await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='检测模型')).fire('click');
+await taskButtons.filter((item)=>all(item).some((node)=>node.textContent==='检测模型'))[1].fire('click');
 const unknownState={{cancel:byText(detail,'取消训练').disabled,
   download:byText(detail,'下载部署产物').attributes['aria-disabled'],retry:Boolean(byText(detail,'重新训练'))}};
 await byText(detail,'取消训练').fire('click');
@@ -265,7 +277,8 @@ document.hidden=true; await documentListeners.visibilitychange(); const paused=t
 document.hidden=false; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
 const resumed=[...timers.values()].some((timer)=>timer.ms===5000);
 authFail=true; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
-process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,metricText,retainedAfterFailure,cancelCall,
+process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,metricText,cancellationWaiting,cancellationDisabled,
+  outputUnavailable,unavailableDownload,retainedAfterFailure,cancelCall,
   scheduledWhileAnotherActive,paused,resumed,assigned,retryCallCount:calls.filter((call)=>call.url.endsWith('/retry')).length}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
 """
@@ -276,6 +289,10 @@ process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,met
         self.assertEqual({'cancel': False, 'retry': False, 'download': 'true'}, result['unknownState'])
         self.assertEqual(f'/platform/api/training-runs/{completed_id}/download', result['downloadHref'])
         self.assertTrue(result['metricText'])
+        self.assertTrue(result['cancellationWaiting'])
+        self.assertTrue(result['cancellationDisabled'])
+        self.assertTrue(result['outputUnavailable'])
+        self.assertEqual('true', result['unavailableDownload'])
         self.assertTrue(result['retainedAfterFailure'])
         self.assertEqual('task-token', result['cancelCall']['csrf'])
         self.assertTrue(result['scheduledWhileAnotherActive'])
@@ -283,6 +300,59 @@ process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,met
         self.assertTrue(result['resumed'])
         self.assertEqual(f'/platform/?return_run={run_id}', result['assigned'])
         self.assertEqual(0, result['retryCallCount'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_workspace_submission_feedback_matches_observed_execution(self) -> None:
+        page = self.client.get('/platform/').text
+        script = self.client.get('/platform/app.js').text
+        ids = re.findall(r'id="([^"]+)"', page)
+        expectations = {
+            'pending': '提交已保存，等待确认',
+            'queued': '已加入训练队列',
+            'running': '训练中',
+            'completed': '训练已结束，部署产物不可用',
+        }
+        for execution_status, expected in expectations.items():
+            with self.subTest(status=execution_status):
+                harness = f"""
+(async () => {{
+const ids={json.dumps(ids)}; const elements=new Map();
+function element(id) {{return {{id,hidden:false,disabled:false,textContent:'',value:'',files:[],dataset:{{}},
+  listeners:{{}},
+  classList:{{toggle(){{}}}},addEventListener(n,f){{(this.listeners[n]||=[]).push(f)}},setAttribute(){{}},
+  removeAttribute(){{}},reset(){{}}}}}}
+ids.forEach((id)=>elements.set(id,element(id))); let loaded;
+globalThis.document={{cookie:'xxtrain_csrf=token',getElementById:(id)=>elements.get(id),querySelectorAll:()=>[],
+  addEventListener:(name,fn)=>{{if(name==='DOMContentLoaded')loaded=fn}}}};
+globalThis.location={{search:'',assign(){{}}}}; globalThis.history={{replaceState(){{}}}};
+globalThis.sessionStorage={{getItem:()=>null,setItem(){{}},removeItem(){{}}}};
+globalThis.FormData=class{{append(){{}}}}; globalThis.setTimeout=()=>1; globalThis.clearTimeout=()=>{{}};
+const targets=['detect','classify','segment'].map((id)=>({{id,name:id,available:true,sample_count:50,
+  annotated_sample_count:50,can_annotate:true,can_generate_cache:true,cache_ready:false}}));
+const execution={{status:{json.dumps(execution_status)},
+  active:{str(execution_status in {'pending', 'queued', 'running'}).lower()},
+  epoch:null,total_epochs:null,elapsed_seconds:null,metric:null,download_ready:false,detail:null}};
+const run={{id:'55555555-5555-4555-8555-555555555555',workspace_id:'line-3',workspace_name:'三号现场',
+  target:'detect',submitted_at:'2026-09-17T00:00:00+00:00',execution,cancellation_requested:false}};
+const base={{workspace_id:'line-3',name:'三号现场',image_count:50,task:{{id:'point',name:'Point'}},targets,
+  editing_locked:false,training_enabled:true,training:{{detect:null,classify:null,segment:null}}}};
+let submitted=false;
+globalThis.fetch=async(url)=>{{
+  if(url.endsWith('/session'))return{{ok:true,status:200,json:async()=>({{authenticated:true,user_id:17}})}};
+  if(url.endsWith('/train')){{submitted=true;return{{ok:true,status:200,json:async()=>({{run_id:run.id,run}})}}}}
+  if(url.endsWith('/workspace'))return{{ok:true,status:200,json:async()=>submitted?{{...base,training:{{...base.training,detect:run}}}}:base}};
+  throw new Error(`unexpected ${{url}}`);
+}};
+eval({json.dumps(script)}); await loaded(); await elements.get('cache-action').listeners.click[0]();
+process.stdout.write(JSON.stringify({{message:elements.get('workspace-message').textContent}}));
+}})().catch((error)=>{{console.error(error);process.exitCode=1}});
+"""
+                completed = subprocess.run(['node', '-e', harness], text=True, encoding='utf-8', capture_output=True)
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                message = json.loads(completed.stdout)['message']
+                self.assertEqual(expected, message)
+                if execution_status != 'queued':
+                    self.assertNotEqual('已加入训练队列', message)
 
 
 if __name__ == '__main__':

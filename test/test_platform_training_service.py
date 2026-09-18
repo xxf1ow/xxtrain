@@ -194,6 +194,48 @@ class TrainingServiceTests(unittest.TestCase):
         self.backend.complete(runs[2].run.clearml_task_id)
         self.service.require_editable(self.workspace_id)
 
+    def test_workspace_view_uses_workspace_runs_for_lock_and_user_runs_for_visibility(self):
+        fingerprint = self.data.detection_fingerprint()
+        store = TrainingRunStore(self.store_path)
+        other_workspace = store.create(
+            TrainingRun(
+                str(uuid4()),
+                self.owner,
+                'line-other',
+                'Other line',
+                'detect',
+                fingerprint,
+                f'{fingerprint}/detect',
+                '2026-09-17T12:01:00+00:00',
+                None,
+                None,
+                'execute',
+            )
+        )
+        other_owner = store.create(
+            TrainingRun(
+                str(uuid4()),
+                99,
+                self.workspace_id,
+                self.config.display_name,
+                'detect',
+                fingerprint,
+                f'{fingerprint}/detect',
+                '2026-09-17T12:02:00+00:00',
+                None,
+                None,
+                'execute',
+            )
+        )
+
+        state = self.service.workspace_view(self.owner)
+
+        self.assertFalse(state['editable'])
+        self.assertIsNone(state['training']['detect'])
+        self.assertEqual((other_workspace,), tuple(view.run for view in self.service.list_runs(self.owner)))
+        with self.assertRaises(PlatformAccessError):
+            self.service.get_run(self.owner, other_owner.id)
+
     def test_cancel_keeps_lock_across_restart_until_worker_release(self):
         run = self.service.submit(self.owner, 'detect')
         cancelled = self.service.cancel(self.owner, run.run.id)

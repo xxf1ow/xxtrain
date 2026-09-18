@@ -4,7 +4,7 @@
   const apiRoot = '/platform/api';
   const targetIds = ['detect', 'classify', 'segment'];
   const returnTargetKey = 'xxtrain-return-target';
-  const trainingStatuses = {queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
+  const trainingStatuses = {pending: '等待确认', queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
   const elements = {
     loginPanel: document.getElementById('login-panel'), loginForm: document.getElementById('login-form'),
     loginButton: document.getElementById('login-button'), loginError: document.getElementById('login-error'),
@@ -157,10 +157,27 @@
       row.annotated.textContent = String(facts?.annotated_sample_count ?? 0);
       row.total.textContent = String(facts?.sample_count ?? 0);
       const run = workspace?.training?.[target];
-      row.cache.textContent = run ? (trainingStatuses[run.execution?.status] || '查看训练任务')
+      row.cache.textContent = run ? trainingLabel(run)
         : facts?.cache_ready && !workspace?.training_enabled ? '训练缓存已生成' : '开始训练';
       row.cache.dataset.runId = run?.id || '';
     }
+  }
+
+  function trainingLabel(run) {
+    if (run.execution?.status === 'completed' && !run.execution.download_ready) return '训练已结束，产物不可用';
+    return trainingStatuses[run.execution?.status] || '查看训练任务';
+  }
+
+  function submissionFeedback(run) {
+    const execution = run.execution;
+    if (!execution || execution.status === 'pending' || execution.status === 'unknown') return '提交已保存，等待确认';
+    if (execution.status === 'queued') return '已加入训练队列';
+    if (execution.status === 'running') return '训练中';
+    if (execution.status === 'completed') {
+      return execution.download_ready ? '训练已完成，可下载部署产物' : '训练已结束，部署产物不可用';
+    }
+    if (execution.status === 'failed') return '训练已结束：训练失败';
+    return '训练已取消';
   }
 
   function trainingReturnTarget() {
@@ -192,7 +209,7 @@
       renderWorkspace(next);
       if (submissionError) showError(row.error, submissionError.message);
       else if (next.training?.[target]?.id !== submitted.run_id) showError(row.error, '训练任务状态尚未确认，请重试。');
-      else if (submitted.run.execution?.status === 'queued') notify('已加入训练队列');
+      else notify(submissionFeedback(submitted.run));
     } catch (error) {
       workspace = null;
       showError(row.error, error.message);
@@ -307,7 +324,7 @@
     };
     const restoreTaskLabel = () => {
       const run = workspace?.training?.[target];
-      if (run) targetElements[target].cache.textContent = trainingStatuses[run.execution?.status] || '查看训练任务';
+      if (run) targetElements[target].cache.textContent = trainingLabel(run);
     };
     targetElements[target].cache.addEventListener('mouseenter', showTaskLabel);
     targetElements[target].cache.addEventListener('mouseleave', restoreTaskLabel);
