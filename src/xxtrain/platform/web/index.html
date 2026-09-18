@@ -16,6 +16,10 @@
       <p class="product-name">Point 标注台</p>
     </div>
     <div id="session-tools" class="session-tools" hidden>
+      <nav class="page-nav" aria-label="平台页面">
+        <a aria-current="page" href="/platform/">现场工作区</a>
+        <a href="/platform/training/">我的训练任务</a>
+      </nav>
       <span id="session-user" class="session-user"></span>
       <button id="logout-button" class="text-button" type="button">退出登录</button>
     </div>
@@ -72,7 +76,7 @@
             <button id="primary-action" class="primary-button" type="button" disabled>开始标注</button>
             <button id="cache-action" class="primary-button" type="button" disabled>开始训练</button>
           </div>
-          <p class="target-help">有图片即可标注；全部标注完成且至少 50 张图片含框后可训练。本阶段“开始训练”仅生成训练缓存。</p>
+          <p class="target-help">有图片即可标注；全部标注完成且至少 50 张图片含框后可训练。</p>
           <p id="detect-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
           <p id="workspace-error" class="error-message operation-error" role="alert" hidden></p>
           <a id="detect-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>

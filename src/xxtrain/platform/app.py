@@ -73,8 +73,10 @@ def create_app(
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     web = resources.files('xxtrain.platform').joinpath('web')
     page = web.joinpath('index.html').read_text(encoding='utf-8')
+    training_page = web.joinpath('training.html').read_text(encoding='utf-8')
     style = web.joinpath('style.css').read_text(encoding='utf-8')
     script = web.joinpath('app.js').read_text(encoding='utf-8')
+    training_script = web.joinpath('training.js').read_text(encoding='utf-8')
 
     def operational_error() -> HTTPException:
         return HTTPException(status.HTTP_502_BAD_GATEWAY, _OPERATIONAL_ERROR)
@@ -193,6 +195,15 @@ def create_app(
             )
         return response
 
+    @app.get('/platform/training/', response_class=HTMLResponse)
+    def training_page_route(request: Request) -> Response:
+        response = HTMLResponse(training_page)
+        if not request.cookies.get(_CSRF_COOKIE):
+            response.set_cookie(
+                _CSRF_COOKIE, secrets.token_urlsafe(32), httponly=False, samesite='strict', path='/platform/'
+            )
+        return response
+
     @app.get('/platform/style.css', response_class=PlainTextResponse)
     def platform_style() -> Response:
         return Response(style, media_type='text/css')
@@ -200,6 +211,10 @@ def create_app(
     @app.get('/platform/app.js', response_class=PlainTextResponse)
     def platform_script() -> Response:
         return Response(script, media_type='text/javascript')
+
+    @app.get('/platform/training.js', response_class=PlainTextResponse)
+    def training_page_script() -> Response:
+        return Response(training_script, media_type='text/javascript')
 
     @app.post('/platform/api/login', status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(write_request)])
     def login(body: _LoginBody) -> Response:
@@ -237,7 +252,22 @@ def create_app(
 
     @app.get('/platform/api/workspace')
     def workspace(request: Request) -> dict[str, object]:
-        return workspace_payload(view_for(authenticated_user(request)))
+        user_id = authenticated_user(request)
+        if training_service is None:
+            return workspace_payload(view_for(user_id))
+        try:
+            state = training_service.workspace_view(user_id)
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
+        payload = workspace_payload(state['workspace'])
+        payload['editing_locked'] = not state['editable']
+        payload['training_enabled'] = True
+        payload['training'] = {
+            target: None if view is None else training_payload(view) for target, view in state['training'].items()
+        }
+        return payload
 
     def stage_uploads(user_id: int, images: list[UploadFile]) -> WorkspaceView:
         staging = config.runtime_dir / 'staging'

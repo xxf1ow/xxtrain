@@ -4,6 +4,8 @@
   const apiRoot = '/platform/api';
   const targetIds = ['detect', 'classify', 'segment'];
   const returnTargetKey = 'xxtrain-return-target';
+  const trainingRequestPrefix = 'xxtrain-training-request-';
+  const trainingStatuses = {queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
   const elements = {
     loginPanel: document.getElementById('login-panel'), loginForm: document.getElementById('login-form'),
     loginButton: document.getElementById('login-button'), loginError: document.getElementById('login-error'),
@@ -109,14 +111,16 @@
     busy = value;
     busyTarget = value ? area : null;
     const blocked = value || returnedAnnotationsPending();
-    elements.imageFiles.disabled = blocked;
+    const editingLocked = Boolean(workspace?.editing_locked);
+    elements.imageFiles.disabled = blocked || editingLocked;
     elements.loginButton.disabled = value;
     elements.logoutButton.disabled = value;
     for (const target of targetIds) {
       const facts = targetView(target);
       const row = targetElements[target];
-      row.annotate.disabled = blocked || !facts?.can_annotate;
-      row.cache.disabled = blocked || !facts?.can_generate_cache || facts?.cache_ready;
+      const run = workspace?.training?.[target];
+      row.annotate.disabled = blocked || editingLocked || !facts?.can_annotate;
+      row.cache.disabled = blocked || (!run && (!facts?.can_generate_cache || (!workspace?.training_enabled && facts?.cache_ready)));
       row.progress.textContent = value && target === area ? message : '';
       row.progress.hidden = !row.progress.textContent;
       row.annotate.textContent = value && target === area && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
@@ -153,8 +157,56 @@
       const row = targetElements[target];
       row.annotated.textContent = String(facts?.annotated_sample_count ?? 0);
       row.total.textContent = String(facts?.sample_count ?? 0);
-      row.cache.textContent = facts?.cache_ready ? '训练缓存已生成' : '开始训练';
+      const run = workspace?.training?.[target];
+      row.cache.textContent = run ? (trainingStatuses[run.execution?.status] || '查看训练任务')
+        : facts?.cache_ready && !workspace?.training_enabled ? '训练缓存已生成' : '开始训练';
+      row.cache.dataset.runId = run?.id || '';
     }
+  }
+
+  function trainingReturnTarget() {
+    const runId = new URLSearchParams(location.search).get('return_run');
+    return runId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)
+      ? `/platform/training/?run=${runId}` : null;
+  }
+
+  function trainingRequestId(target) {
+    const key = `${trainingRequestPrefix}${target}`;
+    let requestId = sessionStorage.getItem(key);
+    if (!requestId) {
+      requestId = crypto.randomUUID();
+      sessionStorage.setItem(key, requestId);
+    }
+    return {key, requestId};
+  }
+
+  async function trainTarget(target) {
+    const run = workspace?.training?.[target];
+    if (run) {
+      location.assign(`/platform/training/?run=${run.id}`);
+      return;
+    }
+    const facts = targetView(target);
+    if (busy || !workspace?.training_enabled || !facts?.can_generate_cache) return;
+    const row = targetElements[target];
+    const request = trainingRequestId(target);
+    clearError(row.error);
+    setBusy(true, '正在加入训练队列…', target);
+    try {
+      await platformPost(`/targets/${target}/train`, {request_id: request.requestId});
+      sessionStorage.removeItem(request.key);
+      renderWorkspace(await requestApiWorkspace());
+      notify('已加入训练队列');
+    } catch (error) {
+      if (error.status && error.status < 500) sessionStorage.removeItem(request.key);
+      showError(row.error, error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function requestApiWorkspace() {
+    return request('/workspace');
   }
 
   function renderWorkspace(next) {
@@ -242,6 +294,8 @@
       await platformPost('/login', {username: elements.username.value, password: elements.password.value});
       elements.loginForm.reset();
       await loadWorkspace();
+      const returnTarget = trainingReturnTarget();
+      if (returnTarget) location.assign(returnTarget);
     } catch (error) {
       showLogin(error.message);
     } finally {
@@ -251,7 +305,18 @@
 
   for (const target of targetIds) {
     targetElements[target].annotate.addEventListener('click', () => beginTarget(target));
-    targetElements[target].cache.addEventListener('click', () => generateCache(target));
+    targetElements[target].cache.addEventListener('click', () => workspace?.training_enabled ? trainTarget(target) : generateCache(target));
+    const showTaskLabel = () => {
+      if (targetElements[target].cache.dataset.runId) targetElements[target].cache.textContent = '查看训练任务';
+    };
+    const restoreTaskLabel = () => {
+      const run = workspace?.training?.[target];
+      if (run) targetElements[target].cache.textContent = trainingStatuses[run.execution?.status] || '查看训练任务';
+    };
+    targetElements[target].cache.addEventListener('mouseenter', showTaskLabel);
+    targetElements[target].cache.addEventListener('mouseleave', restoreTaskLabel);
+    targetElements[target].cache.addEventListener('focus', showTaskLabel);
+    targetElements[target].cache.addEventListener('blur', restoreTaskLabel);
   }
 
   elements.imageFiles.addEventListener('change', async () => {

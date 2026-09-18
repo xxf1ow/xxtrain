@@ -49,6 +49,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_browser -
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_http test.test_platform_training_config test.test_platform_http -v
 ```
 
+训练页面与工作区反馈使用 Node.js DOM 适配器和真实 ASGI 资源入口，覆盖独立页面、提交反馈、任务状态入口与训练期间编辑禁用：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_browser test.test_platform_browser -v
+```
+
 Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQLite 数据层和训练缓存运行，覆盖原生身份、对象级失效、重启、回滚重试和缓存可读性：
 
 ```powershell

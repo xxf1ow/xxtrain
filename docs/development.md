@@ -77,6 +77,8 @@ $env:CLEARML_API_SECRET_KEY = '<secret-key>'
 xxtrain-platform --config '<workspace.json>' --training-config '<training.json>' --host 127.0.0.1 --port 8000
 ```
 
+现场工作区位于 `/platform/`，用户训练历史位于 `/platform/training/`。训练页只显示当前 CVAT 会话用户的安全运行摘要；机器、队列和 ClearML 内部任务身份不在平台页面展示。
+
 正式 CVAT UI 镜像固定使用 2.51.0，并在构建时把导航隐藏样式和返回插件插入 `index.html`。基础 HTML 缺少唯一的 `head` 插入点时构建失败：
 
 ```powershell
