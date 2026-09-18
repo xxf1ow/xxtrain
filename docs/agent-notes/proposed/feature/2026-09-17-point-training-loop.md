@@ -123,6 +123,8 @@ ClearML 暂时不可访问时显示状态查询失败，不把未知状态推断
 
 ## Implementation progress
 
+取消协调、只读查询及执行结束与产物可用性分离由[训练意图协调与 CVAT 准备简化](../simplification/2026-09-18-authoritative-state-coordination.md)部分替代。下文保留已有实现事实，不代表这些修正已完成；训练默认值、交付内容和真实验收要求保持有效。
+
 训练核心已提供已准备数据集入口和部署交付打包。入口在每个本地运行目录复制标签和图片，防止 Ultralytics 图片修复或 cache 写入到达只读发布树；这个一次性隔离会增加每次运行的传输和磁盘用量，但不建立持久从机缓存。训练使用仓库既有默认权重和参数，从实际 best checkpoint 验证并导出固定 `model.onnx`。分类 ZIP 要求模型输出索引从零开始连续，再按该索引还原索引目录中的业务标签，并要求每个输出类别都有参考图。
 
 `TrainingRunStore` 已在调用者指定的平台元数据路径创建独立的 `training-runs.db`。该单表只保存运行 UUID、用户与工作区归属、目标、输入指纹、相对缓存路径、提交时间、创建尝试时间和唯一 ClearML 任务 ID；它不保存执行状态、阶段或计数，也不使用 `annotations.db` 或可丢弃的 CVAT `jobs.json`。运行查询按用户归属限制，同一用户、工作区、目标和指纹只返回一条规范记录，任务绑定只接受相同事实；SQLite 写入事务串行化并发创建。`TrainingRunView`、`ExecutionView` 和 `DownloadFile` 只提供任务页面所需的数据合同，不执行 ClearML 操作。
