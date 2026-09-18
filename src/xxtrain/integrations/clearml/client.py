@@ -10,6 +10,9 @@ from typing import Any
 
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun
 
+QUEUED_CANCELLATION_PARAMETER = 'xxtrain/queued_cancellation'
+QUEUED_CANCELLATION_VALUE = 'dequeued-v1'
+
 
 class ClearMLConflictError(RuntimeError):
     """Raised when one run UUID resolves to multiple ClearML tasks."""
@@ -81,22 +84,18 @@ class ClearMLClient:
 
     def cancel(self, task_id: str) -> ExecutionView:
         before = self.sdk.get(task_id)
-        dequeued_never_started = False
         if before.get('status') == 'queued':
             self.sdk.cancel_queued(task_id)
-            dequeued_never_started = not before.get('last_worker')
         elif before.get('status') == 'in_progress':
             self.sdk.request_stop(task_id)
         facts = self.sdk.get(task_id)
         artifact_ready = self.sdk.has_artifact(task_id, 'deployment', project_name=self._project)
         if facts.get('status') == 'stopped':
-            return self._stopped_view(facts, artifact_ready, dequeued_never_started=dequeued_never_started)
+            return self._stopped_view(facts, artifact_ready)
         return parse_execution(facts, artifact_ready=artifact_ready)
 
-    def _stopped_view(
-        self, facts: dict[str, object], artifact_ready: bool, *, dequeued_never_started: bool = False
-    ) -> ExecutionView:
-        if dequeued_never_started and not facts.get('last_worker'):
+    def _stopped_view(self, facts: dict[str, object], artifact_ready: bool) -> ExecutionView:
+        if _has_queued_cancellation_proof(facts):
             return parse_execution(facts, artifact_ready=artifact_ready, worker_released=True)
         try:
             released = self.sdk.worker_released(
@@ -197,6 +196,7 @@ class _ClearMLSDK:
         if getattr(response, 'dequeued', None) != 1:
             raise RuntimeError('ClearML task left the queue before cancellation')
         task = self._task.get_task(task_id=task_id)
+        task.set_parameter(QUEUED_CANCELLATION_PARAMETER, QUEUED_CANCELLATION_VALUE)
         task.stopped(ignore_errors=False, force=True, status_reason='cancelled before execution')
 
     def request_stop(self, task_id: str) -> None:
@@ -251,3 +251,12 @@ def _timestamp(value: object) -> datetime | None:
     else:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _has_queued_cancellation_proof(facts: dict[str, object]) -> bool:
+    parameters = facts.get('parameters')
+    return (
+        not facts.get('last_worker')
+        and isinstance(parameters, dict)
+        and parameters.get(QUEUED_CANCELLATION_PARAMETER) == QUEUED_CANCELLATION_VALUE
+    )

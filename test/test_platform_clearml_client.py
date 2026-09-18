@@ -7,7 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from xxtrain.integrations.clearml.client import ClearMLClient, ClearMLConflictError, _ClearMLSDK, parse_execution
+from xxtrain.integrations.clearml.client import (
+    QUEUED_CANCELLATION_PARAMETER,
+    QUEUED_CANCELLATION_VALUE,
+    ClearMLClient,
+    ClearMLConflictError,
+    _ClearMLSDK,
+    parse_execution,
+)
 from xxtrain.platform.training_contracts import TrainingRun
 
 
@@ -161,7 +168,12 @@ class ClearMLClientTests(unittest.TestCase):
     def test_queued_never_started_task_cancels_after_atomic_dequeue(self):
         self.sdk.get.side_effect = [
             {'id': 'task-1', 'status': 'queued', 'last_worker': None},
-            {'id': 'task-1', 'status': 'stopped', 'last_worker': None},
+            {
+                'id': 'task-1',
+                'status': 'stopped',
+                'last_worker': None,
+                'parameters': {QUEUED_CANCELLATION_PARAMETER: QUEUED_CANCELLATION_VALUE},
+            },
         ]
 
         view = self.client.cancel('task-1')
@@ -170,6 +182,36 @@ class ClearMLClientTests(unittest.TestCase):
         self.sdk.worker_released.assert_not_called()
         self.assertEqual(view.status, 'cancelled')
         self.assertFalse(view.active)
+
+    def test_queued_cancellation_is_stable_across_observe_retry_and_new_client(self):
+        facts = {'id': 'task-1', 'status': 'queued', 'last_worker': None, 'parameters': {}}
+        sdk = Mock()
+        sdk.get.side_effect = lambda task_id: dict(facts, parameters=dict(facts['parameters']))
+        sdk.has_artifact.return_value = False
+
+        def cancel_queued(task_id):
+            facts['status'] = 'stopped'
+            facts['parameters'][QUEUED_CANCELLATION_PARAMETER] = QUEUED_CANCELLATION_VALUE
+
+        sdk.cancel_queued.side_effect = cancel_queued
+        client = ClearMLClient('xxtrain', 'training', Path('/worker.py'), Path('/shared'), sdk=sdk)
+
+        cancelled = client.cancel('task-1')
+        observed = client.observe('task-1')
+        retried = client.cancel('task-1')
+        restarted = ClearMLClient('xxtrain', 'training', Path('/worker.py'), Path('/shared'), sdk=sdk).observe('task-1')
+
+        self.assertEqual([cancelled.status, observed.status, retried.status, restarted.status], ['cancelled'] * 4)
+        self.assertTrue(all(not view.active for view in (cancelled, observed, retried, restarted)))
+        sdk.cancel_queued.assert_called_once_with('task-1')
+
+    def test_manual_stopped_task_without_dequeue_proof_remains_active(self):
+        self.sdk.get.return_value = {'id': 'task-1', 'status': 'stopped', 'last_worker': None, 'parameters': {}}
+
+        view = self.client.observe('task-1')
+
+        self.assertEqual(view.status, 'unknown')
+        self.assertTrue(view.active)
 
     def test_sdk_requires_fresh_report_from_the_specific_worker(self):
         sdk = object.__new__(_ClearMLSDK)
@@ -200,6 +242,19 @@ class ClearMLClientTests(unittest.TestCase):
             sdk.cancel_queued('task-1')
 
         sdk._task.get_task.assert_not_called()
+
+    def test_sdk_does_not_stop_when_dequeue_proof_publication_fails(self):
+        sdk = object.__new__(_ClearMLSDK)
+        sdk._task = Mock()
+        sdk._task.dequeue.return_value = SimpleNamespace(dequeued=1)
+        task = sdk._task.get_task.return_value
+        task.set_parameter.side_effect = RuntimeError('edit failed')
+
+        with self.assertRaises(RuntimeError):
+            sdk.cancel_queued('task-1')
+
+        task.set_parameter.assert_called_once_with(QUEUED_CANCELLATION_PARAMETER, QUEUED_CANCELLATION_VALUE)
+        task.stopped.assert_not_called()
 
     def test_download_copies_only_the_fixed_owned_deployment_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
