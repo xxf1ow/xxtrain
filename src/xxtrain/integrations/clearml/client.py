@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import mimetypes
+import re
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun
+
+
+class ClearMLConflictError(RuntimeError):
+    """Raised when one run UUID resolves to multiple ClearML tasks."""
+
+
+class ClearMLClient:
+    """Submit and observe xxtrain tasks without importing ClearML until first use."""
+
+    def __init__(
+        self,
+        project: str,
+        queue: str,
+        worker_script: Path,
+        shared_root: Path,
+        *,
+        run_root: Path | None = None,
+        sdk: Any | None = None,
+    ) -> None:
+        self._project = project
+        self._queue = queue
+        self._worker_script = Path(worker_script).resolve()
+        self._shared_root = Path(shared_root).resolve()
+        self._run_root = Path(run_root).resolve() if run_root is not None else self._shared_root.parent / 'runs'
+        self._sdk = sdk
+
+    @property
+    def sdk(self) -> Any:
+        if self._sdk is None:
+            self._sdk = _ClearMLSDK()
+        return self._sdk
+
+    def find(self, run_id: str) -> str | None:
+        tasks = self.sdk.find(project_name=self._project, task_name=f'^{re.escape(run_id)}$')
+        if len(tasks) > 1:
+            raise ClearMLConflictError(f'Multiple ClearML tasks match training run {run_id}')
+        return tasks[0].id if tasks else None
+
+    def create(self, run: TrainingRun) -> str:
+        task = self.sdk.create(
+            project_name=self._project,
+            task_name=run.id,
+            task_type='training',
+            script=str(self._worker_script),
+            working_directory=str(self._worker_script.parent),
+            packages=False,
+            argparse_args=[
+                ('task', 'point'),
+                ('target', run.target),
+                ('cache-relative-path', run.cache_relative_path),
+                ('shared-root', str(self._shared_root)),
+                ('run-id', run.id),
+                ('run-root', str(self._run_root)),
+            ],
+            add_task_init_call=False,
+        )
+        return task.id
+
+    def enqueue(self, task_id: str) -> None:
+        if self.sdk.get(task_id).get('status') != 'created':
+            return
+        self.sdk.enqueue(task_id, queue_name=self._queue, force=False)
+
+    def observe(self, task_id: str) -> ExecutionView:
+        facts = self.sdk.get(task_id)
+        artifact_ready = self.sdk.has_artifact(task_id, 'deployment', project_name=self._project)
+        if facts.get('status') == 'stopped':
+            return self._stopped_view(facts, artifact_ready)
+        return parse_execution(facts, artifact_ready=artifact_ready)
+
+    def cancel(self, task_id: str) -> ExecutionView:
+        before = self.sdk.get(task_id)
+        if before.get('status') == 'queued':
+            self.sdk.cancel_queued(task_id)
+        elif before.get('status') == 'in_progress':
+            self.sdk.request_stop(task_id)
+        facts = self.sdk.get(task_id)
+        artifact_ready = self.sdk.has_artifact(task_id, 'deployment', project_name=self._project)
+        if facts.get('status') == 'stopped':
+            return self._stopped_view(facts, artifact_ready)
+        return parse_execution(facts, artifact_ready=artifact_ready)
+
+    def _stopped_view(self, facts: dict[str, object], artifact_ready: bool) -> ExecutionView:
+        try:
+            occupied = self.sdk.worker_occupancy(str(facts['id']))
+        except Exception:
+            occupied = None
+        if occupied is False:
+            return parse_execution(facts, artifact_ready=artifact_ready, worker_released=True)
+        detail = 'ClearML worker still reports this task' if occupied else 'Worker release could not be confirmed'
+        return parse_execution(facts, artifact_ready=artifact_ready, detail=detail)
+
+    def download(self, task_id: str, destination: Path) -> DownloadFile:
+        artifact = self.sdk.artifact(task_id, 'deployment', project_name=self._project)
+        source = Path(artifact.local_path).resolve()
+        if not source.is_file():
+            raise FileNotFoundError('ClearML deployment artifact is unavailable')
+        destination = Path(destination).resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        suffix = source.suffix.lower()
+        filename = f'model{suffix}'
+        target = destination / filename
+        shutil.copy2(source, target)
+        media_type = (
+            'application/zip' if suffix == '.zip' else mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        )
+        return DownloadFile(target, filename, media_type)
+
+
+def parse_execution(
+    facts: dict[str, object], *, artifact_ready: bool, worker_released: bool = False, detail: str | None = None
+) -> ExecutionView:
+    remote_status = str(facts.get('status', 'unknown'))
+    if remote_status == 'queued':
+        status, active = 'queued', True
+    elif remote_status == 'in_progress':
+        status, active = 'running', True
+    elif remote_status == 'failed':
+        status, active = 'failed', False
+    elif remote_status == 'stopped' and worker_released:
+        status, active = 'cancelled', False
+    elif remote_status == 'completed' and artifact_ready:
+        status, active = 'completed', False
+    else:
+        status, active = 'unknown', True
+    parameters = facts.get('parameters') if isinstance(facts.get('parameters'), dict) else {}
+    return ExecutionView(
+        task_id=str(facts.get('id', '')),
+        status=status,
+        active=active,
+        epoch=_optional_int(parameters.get('xxtrain/epoch')),
+        total_epochs=_optional_int(parameters.get('xxtrain/total_epochs')),
+        elapsed_seconds=_optional_float(facts.get('elapsed_seconds')),
+        metric=_optional_float(parameters.get('xxtrain/metric')),
+        download_ready=status == 'completed' and artifact_ready,
+        detail=detail,
+    )
+
+
+def _optional_int(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float, str)) and str(value).isdigit() else None
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+class _ClearMLSDK:
+    def __init__(self) -> None:
+        from clearml import Task
+
+        self._task = Task
+
+    def create(self, **kwargs: object) -> Any:
+        return self._task.create(**kwargs)
+
+    def find(self, **kwargs: object) -> list[Any]:
+        return self._task.get_tasks(**kwargs)
+
+    def enqueue(self, task_id: str, **kwargs: object) -> None:
+        self._task.enqueue(task_id, **kwargs)
+
+    def get(self, task_id: str) -> dict[str, object]:
+        task = self._task.get_task(task_id=task_id)
+        data = task.data.to_dict()
+        data['id'] = task.id
+        data['parameters'] = task.get_parameters(cast=True)
+        return data
+
+    def cancel_queued(self, task_id: str) -> None:
+        self._task.dequeue(task_id)
+        task = self._task.get_task(task_id=task_id)
+        task.stopped(ignore_errors=False, force=True, status_reason='cancelled before execution')
+
+    def request_stop(self, task_id: str) -> None:
+        task = self._task.get_task(task_id=task_id)
+        task.stop_request(ignore_errors=False, force=False, status_message='Cancellation requested by xxtrain')
+
+    def worker_occupancy(self, task_id: str) -> bool:
+        from clearml.backend_api.services.v2_20 import workers
+
+        session = self._task._get_default_session()
+        response = session.send(workers.GetAllRequest(last_seen=None))
+        if not response.ok():
+            raise RuntimeError('ClearML worker query failed')
+        for worker in response.response.workers or ():
+            current = getattr(worker, 'task', None)
+            if current is not None and getattr(current, 'id', None) == task_id:
+                return True
+        return False
+
+    def has_artifact(self, task_id: str, name: str, *, project_name: str) -> bool:
+        try:
+            self.artifact(task_id, name, project_name=project_name)
+        except (KeyError, ValueError):
+            return False
+        return True
+
+    def artifact(self, task_id: str, name: str, *, project_name: str) -> Any:
+        task = self._task.get_task(task_id=task_id)
+        if task.get_project_name() != project_name:
+            raise ValueError('ClearML task does not belong to the configured project')
+        artifact = task.artifacts[name]
+        return SimpleNamespace(name=name, url=artifact.url, local_path=artifact.get_local_copy())

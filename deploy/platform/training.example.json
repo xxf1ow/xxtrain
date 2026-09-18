@@ -1,0 +1,7 @@
+{
+  "project": "xxtrain",
+  "queue": "training",
+  "worker_script": "/opt/xxtrain/lib/python3.12/site-packages/xxtrain/integrations/clearml/worker.py",
+  "shared_root": "/srv/xxtrain/training-cache",
+  "run_root": "/var/lib/xxtrain/runs"
+}

@@ -20,10 +20,12 @@ dependencies = [
 dev = ["PyYAML>=6.0.3", "pycocotools>=2.0.11", "ruff>=0.15.22"]
 platform = ["fastapi>=0.116.1", "httpx>=0.28.1", "python-multipart>=0.0.20", "uvicorn>=0.35.0"]
 platform-test = ["playwright>=1.62.0"]
+clearml = ["clearml==1.18.0"]
 
 [project.scripts]
 xxtrain = "xxtrain.cli:main"
 xxtrain-platform = "xxtrain.platform.__main__:main"
+xxtrain-worker = "xxtrain.integrations.clearml.worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

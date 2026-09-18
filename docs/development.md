@@ -21,6 +21,14 @@ uv sync --extra dev
 uv sync --extra dev --extra platform
 ```
 
+开发或部署 ClearML 训练适配时安装 `clearml` 可选依赖；服务地址和凭据使用 ClearML 支持的环境配置，不写入仓库配置：
+
+```powershell
+uv sync --extra dev --extra clearml
+```
+
+训练机的普通 ClearML Agent 环境安装当前构建 wheel，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 只展示项目、队列和本地路径，不保存服务凭据。
+
 ## Repository layout
 
 ```text
