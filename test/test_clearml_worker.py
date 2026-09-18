@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,9 @@ from xxtrain.training.settings import TrainingProgress, TrainingResult
 
 class ClearMLWorkerTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
