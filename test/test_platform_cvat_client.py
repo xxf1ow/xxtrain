@@ -414,6 +414,30 @@ class CvatClientTest(unittest.TestCase):
 
         self.assertEqual(requests, [('GET', '/api/tasks/7')])
 
+    def test_prepare_rejects_task_without_proven_integer_zero_size(self):
+        for payload in (
+            {'id': 7},
+            {'id': 7, 'size': None},
+            {'id': 7, 'size': False},
+            {'id': 7, 'size': '0'},
+            {'id': 7, 'size': 0.0},
+        ):
+            with self.subTest(payload=payload):
+                requests = []
+
+                def respond(request: httpx.Request) -> httpx.Response:
+                    requests.append((request.method, request.url.path))
+                    return httpx.Response(200, json=payload)
+
+                client = CvatClient(
+                    'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
+                )
+
+                with self.assertRaisesRegex(PlatformError, 'invalid size'):
+                    client.prepare_task(7, (), 23)
+
+                self.assertEqual(requests, [('GET', '/api/tasks/7')])
+
     def test_prepare_missing_initialization_token_does_not_assign_job(self):
         requests = []
         annotation_id = UUID('12345678-1234-5678-1234-567812345678')

@@ -221,10 +221,8 @@ class CvatClient:
         )
         if not isinstance(task, dict):
             raise PlatformError(f'CVAT /api/tasks/{task_id} returned an invalid size')
-        size = task.get('size')
-        if size is not None:
-            size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
-        if size not in (None, 0):
+        size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
+        if size != 0:
             raise PlatformError(f'CVAT task {task_id} is not fresh and cannot be prepared')
 
         request_id = self._upload_images(task_id, frames, filenames, deadline)

@@ -121,7 +121,7 @@ class HttpxCvatFixture:
         if path.startswith('/api/tasks/') and request.method == 'GET':
             task_id = int(path.split('/')[3])
             frames = self.tasks[task_id]['frames']
-            return httpx.Response(200, json={'id': task_id, 'size': None if frames is None else len(frames)})
+            return httpx.Response(200, json={'id': task_id, 'size': 0 if frames is None else len(frames)})
         if path == '/api/jobs' and request.method == 'GET':
             task_id = int(request.url.params['task_id'])
             task = self.tasks[task_id]
