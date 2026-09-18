@@ -193,9 +193,11 @@
     clearError(row.error);
     setBusy(true, '正在加入训练队列…', target);
     try {
-      await platformPost(`/targets/${target}/train`, {request_id: request.requestId});
+      const submitted = await platformPost(`/targets/${target}/train`, {request_id: request.requestId});
+      const next = await requestApiWorkspace();
+      if (next.training?.[target]?.id !== submitted.run_id) throw new Error('训练任务状态尚未确认，请重试。');
+      renderWorkspace(next);
       sessionStorage.removeItem(request.key);
-      renderWorkspace(await requestApiWorkspace());
       notify('已加入训练队列');
     } catch (error) {
       if (error.status && error.status < 500) sessionStorage.removeItem(request.key);

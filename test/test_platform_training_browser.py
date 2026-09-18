@@ -111,7 +111,8 @@ globalThis.location = {{search:'', assign:(url)=>{{assigned=url}}}};
 globalThis.history = {{replaceState(){{}}}};
 globalThis.sessionStorage = (()=>{{const values=new Map(); return {{getItem:(k)=>values.get(k)||null,
   setItem:(k,v)=>values.set(k,String(v)), removeItem:(k)=>values.delete(k)}}}})();
-globalThis.crypto = {{randomUUID:()=> '11111111-1111-4111-8111-111111111111'}};
+let uuidCounter = 0;
+globalThis.crypto = {{randomUUID:()=> `11111111-1111-4111-8111-${{String(++uuidCounter).padStart(12, '0')}}`}};
 globalThis.setTimeout = ()=>1; globalThis.clearTimeout = ()=>{{}};
 const baseTargets = [
   {{id:'detect', name:'检测', available:true, sample_count:50, annotated_sample_count:50,
@@ -129,10 +130,15 @@ const workspace = {{workspace_id:'line-3', name:'三号现场', image_count:50,
   task:{{id:'point',name:'Point'}}, targets:baseTargets,
   editing_locked:true, training_enabled:true, training:{{detect:run, classify:null, segment:null}}}};
 const calls=[];
+let failRefresh = false;
+let submittedRun = null;
 globalThis.fetch = async (url, options={{}}) => {{ calls.push({{url, body:options.body||null}});
+  if (url.endsWith('/train')) submittedRun = {{...run, id:JSON.parse(options.body).request_id, target:'classify'}};
+  if (failRefresh && url.endsWith('/workspace')) return {{ok:false,status:502,json:async()=>({{detail:'刷新失败'}})}};
   const body = url.endsWith('/session') ? {{authenticated:true,user_id:17}}
-    : url.endsWith('/train') ? {{run_id:{json.dumps(run_id)}, training_url:'/platform/training/?run={run_id}', run}}
-    : workspace;
+    : url.endsWith('/train') ? {{run_id:submittedRun.id,
+        training_url:`/platform/training/?run=${{submittedRun.id}}`, run:submittedRun}}
+    : submittedRun ? {{...workspace, training:{{...workspace.training, classify:submittedRun}}}} : workspace;
   return {{ok:true,status:200,json:async()=>body}};
 }};
 eval({json.dumps(script)}); await loaded();
@@ -140,9 +146,14 @@ const get=(id)=>elements.get(id); const detect=get('cache-action');
 const queued=detect.textContent; detect.dispatchEvent(new Event('mouseenter')); const hovered=detect.textContent;
 detect.dispatchEvent(new Event('mouseleave')); const restored=detect.textContent;
 const annotationDisabled=get('primary-action').disabled;
+failRefresh = true;
 await get('classify-cache-action').listeners.click[0]();
+failRefresh = false;
+await get('classify-cache-action').listeners.click[0]();
+const trainingBodies = calls.filter((call)=>call.url.endsWith('/train')).map((call)=>call.body);
 process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled,classifyDisabled:get('classify-cache-action').disabled,
-  notification:get('workspace-message').textContent,assigned,calls, trainingEnabled:workspace.training_enabled}}));
+  notification:get('workspace-message').textContent,assigned,calls,trainingBodies,
+  pendingRequest:sessionStorage.getItem('xxtrain-training-request-classify'),trainingEnabled:workspace.training_enabled}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
 """
         completed = subprocess.run(['node', '-e', harness], text=True, encoding='utf-8', capture_output=True)
@@ -157,8 +168,112 @@ process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled
         self.assertTrue(
             any(call['url'].endswith('/targets/classify/train') for call in result['calls']), result['calls']
         )
+        self.assertEqual(2, len(result['trainingBodies']))
+        self.assertEqual(result['trainingBodies'][0], result['trainingBodies'][1])
+        self.assertIsNone(result['pendingRequest'])
         self.assertEqual('已加入训练队列', result['notification'])
         self.assertIsNone(result['assigned'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_training_page_executes_actions_and_polling_lifecycle(self) -> None:
+        script = self.client.get('/platform/training.js').text
+        run_id = self.training.view.run.id
+        completed_id = str(uuid4())
+        missing_id = str(uuid4())
+        harness = f"""
+(async () => {{
+class Element {{
+  constructor(tag, id='') {{ this.tagName=tag; this.id=id; this.children=[]; this.listeners={{}}; this.attributes={{}};
+    this.hidden=false; this.disabled=false; this.textContent=''; this.className=''; this.href=''; this.type=''; }}
+  append(...nodes) {{ this.children.push(...nodes); }}
+  replaceChildren(...nodes) {{ this.children=[...nodes]; }}
+  addEventListener(name, fn) {{ (this.listeners[name] ||= []).push(fn); }}
+  async fire(name, event={{preventDefault(){{}}}}) {{ for (const fn of this.listeners[name] || []) await fn(event); }}
+  setAttribute(name, value) {{ this.attributes[name]=String(value); }}
+}}
+const elementIds=['training-list','training-detail','training-error','training-message'];
+const elements=new Map(elementIds.map((id)=>[id,new Element('div',id)]));
+const documentListeners={{}}; const windowListeners={{}};
+globalThis.document={{cookie:'xxtrain_csrf=task-token',hidden:false,getElementById:(id)=>elements.get(id),
+  createElement:(tag)=>new Element(tag),addEventListener:(name,fn)=>{{documentListeners[name]=fn}}}};
+globalThis.window={{addEventListener:(name,fn)=>{{windowListeners[name]=fn}}}};
+let assigned=null; globalThis.location={{search:'?run={missing_id}',assign:(url)=>{{assigned=url}}}};
+globalThis.history={{replaceState(){{}}}};
+const stored=new Map(); globalThis.sessionStorage={{getItem:(k)=>stored.get(k)||null,
+  setItem:(k,v)=>stored.set(k,String(v)),removeItem:(k)=>stored.delete(k)}};
+let uuidCounter=0;
+globalThis.crypto={{randomUUID:()=>`22222222-2222-4222-8222-${{String(++uuidCounter).padStart(12,'0')}}`}};
+const timers=new Map(); let timerCounter=0;
+globalThis.setTimeout=(fn,ms)=>{{timers.set(++timerCounter,{{fn,ms}});return timerCounter}};
+globalThis.clearTimeout=(id)=>timers.delete(id);
+const missing={{id:'{missing_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'segment',
+  submitted_at:'2026-09-17T00:00:00+00:00',execution:null}};
+const active={{id:'{run_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'detect',
+  submitted_at:'2026-09-17T00:01:00+00:00',execution:{{status:'unknown',active:true,epoch:null,
+    total_epochs:null,elapsed_seconds:null,metric:null,download_ready:false,detail:'暂时不可用'}}}};
+const completed={{id:'{completed_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'classify',
+  submitted_at:'2026-09-17T00:02:00+00:00',execution:{{status:'completed',active:false,epoch:10,
+    total_epochs:10,elapsed_seconds:30,metric:0.8,download_ready:true,detail:null}}}};
+let runs=[missing,active,completed]; let failList=false; let authFail=false; let retryRun=null; const calls=[];
+globalThis.fetch=async(url,options={{}})=>{{calls.push({{url,method:options.method||'GET',body:options.body||null,csrf:options.headers?.['X-XTrain-CSRF']||null}});
+  if(authFail&&url.endsWith('/training-runs')) return {{ok:false,status:401,json:async()=>({{detail:'expired'}})}};
+  if(url.endsWith('/retry')) {{
+    const requestId=JSON.parse(options.body).request_id;
+    retryRun={{...completed,id:requestId,execution:{{...active.execution,status:'queued'}}}};
+    return {{ok:true,status:200,json:async()=>retryRun}};
+  }}
+  if(url.endsWith('/cancel')) return {{ok:true,status:200,json:async()=>active}};
+  if(url.endsWith('/training-runs')&&failList) return {{ok:false,status:502,json:async()=>({{detail:'轮询失败'}})}};
+  if(url.endsWith('/training-runs')) return {{ok:true,status:200,json:async()=>retryRun?[...runs,retryRun]:runs}};
+  throw new Error(`unexpected ${{url}}`);
+}};
+function all(node) {{return [node,...node.children.flatMap(all)]}}
+function byText(root,value) {{return all(root).find((node)=>node.textContent===value)}}
+eval({json.dumps(script)}); await documentListeners.DOMContentLoaded();
+const detail=elements.get('training-detail');
+const missingState={{cancel:byText(detail,'取消训练').disabled,retry:byText(detail,'重新训练').disabled,
+  download:byText(detail,'下载部署产物').attributes['aria-disabled']}};
+const taskButtons=elements.get('training-list').children;
+await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='分类模型')).fire('click');
+const downloadHref=byText(detail,'下载部署产物').href;
+failList=true; await byText(detail,'重新训练').fire('click');
+const retainedAfterFailure=all(detail).some((node)=>node.textContent==='分类模型');
+await byText(detail,'重新训练').fire('click');
+const retryBodies=calls.filter((call)=>call.url.endsWith('/retry')).map((call)=>call.body);
+const retryCsrf=calls.find((call)=>call.url.endsWith('/retry')).csrf;
+failList=false; await byText(detail,'重新训练').fire('click');
+await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='检测模型')).fire('click');
+const unknownState={{cancel:byText(detail,'取消训练').disabled,retry:byText(detail,'重新训练').disabled,
+  download:byText(detail,'下载部署产物').attributes['aria-disabled']}};
+await byText(detail,'取消训练').fire('click');
+const cancelCall=calls.find((call)=>call.url.endsWith('/cancel'));
+const scheduledWhileAnotherActive=[...timers.values()].some((timer)=>timer.ms===5000);
+document.hidden=true; await documentListeners.visibilitychange(); const paused=timers.size===0;
+document.hidden=false; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
+const resumed=[...timers.values()].some((timer)=>timer.ms===5000);
+authFail=true; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
+process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,retainedAfterFailure,retryBodies,retryCsrf,cancelCall,
+  scheduledWhileAnotherActive,paused,resumed,assigned,storedEntries:[...stored.entries()],
+  retryCallCount:calls.filter((call)=>call.url.endsWith('/retry')).length,
+  pendingRetry:stored.get('xxtrain-training-retry-{completed_id}')||null}}));
+}})().catch((error)=>{{console.error(error);process.exitCode=1}});
+"""
+        completed = subprocess.run(['node', '-e', harness], text=True, encoding='utf-8', capture_output=True)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual({'cancel': True, 'retry': True, 'download': 'true'}, result['missingState'])
+        self.assertEqual({'cancel': False, 'retry': True, 'download': 'true'}, result['unknownState'])
+        self.assertEqual(f'/platform/api/training-runs/{completed_id}/download', result['downloadHref'])
+        self.assertTrue(result['retainedAfterFailure'])
+        self.assertEqual(result['retryBodies'][0], result['retryBodies'][1])
+        self.assertEqual('task-token', result['retryCsrf'])
+        self.assertEqual('task-token', result['cancelCall']['csrf'])
+        self.assertTrue(result['scheduledWhileAnotherActive'])
+        self.assertTrue(result['paused'])
+        self.assertTrue(result['resumed'])
+        self.assertEqual(f'/platform/?return_run={run_id}', result['assigned'])
+        self.assertEqual(3, result['retryCallCount'])
+        self.assertIsNone(result['pendingRetry'], result['storedEntries'])
 
 
 if __name__ == '__main__':
