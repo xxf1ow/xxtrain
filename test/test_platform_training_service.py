@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -6,8 +7,9 @@ from uuid import uuid4
 
 from test.platform_fixture import create_fixture
 from xxtrain.business_tasks.point import point_task_definition
+from xxtrain.integrations.clearml.client import QUEUED_CANCELLATION_PARAMETER, QUEUED_CANCELLATION_VALUE, ClearMLClient
 from xxtrain.platform.config import load_config
-from xxtrain.platform.contracts import AnnotationChanges, PlatformAccessError, PlatformError
+from xxtrain.platform.contracts import AnnotationChanges, PlatformAccessError, PlatformConflictError, PlatformError
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun
@@ -30,6 +32,7 @@ class ControlledClearML:
         self.download_calls = 0
         self.create_failure = None
         self.enqueue_failure = None
+        self.write_calls = []
 
     def find(self, run_id):
         matches = [task_id for task_id, task in self.tasks.items() if task['run_id'] == run_id]
@@ -37,6 +40,7 @@ class ControlledClearML:
 
     def create(self, run):
         self.create_calls += 1
+        self.write_calls.append(('create', run.id))
         task_id = f'task-{self.create_calls}'
         self.tasks[task_id] = {'run_id': run.id, 'status': 'created'}
         if self.create_failure is not None:
@@ -49,6 +53,7 @@ class ControlledClearML:
         if self.tasks[task_id]['status'] != 'created':
             return
         self.enqueue_calls += 1
+        self.write_calls.append(('enqueue', task_id))
         self.tasks[task_id]['status'] = 'queued'
         if self.enqueue_failure is not None:
             error = self.enqueue_failure
@@ -62,8 +67,10 @@ class ControlledClearML:
         return ExecutionView(task_id, public_status, active, None, None, None, None, status == 'completed', None)
 
     def cancel(self, task_id):
-        self.cancel_calls += 1
-        self.tasks[task_id]['status'] = 'unknown'
+        if self.tasks[task_id]['status'] not in {'completed', 'failed', 'cancelled'}:
+            self.cancel_calls += 1
+            self.write_calls.append(('cancel', task_id))
+            self.tasks[task_id]['status'] = 'unknown'
         return self.observe(task_id)
 
     def download(self, task_id, destination):
@@ -78,6 +85,46 @@ class ControlledClearML:
 
     def release(self, task_id):
         self.tasks[task_id]['status'] = 'cancelled'
+
+
+class DequeueProofFailureSDK:
+    def __init__(self) -> None:
+        self.task = None
+        self.enqueue_calls = 0
+        self.proof_failure = True
+
+    def find(self, **kwargs):
+        return [] if self.task is None else [type('Task', (), {'id': 'task-1'})()]
+
+    def create(self, **kwargs):
+        self.task = {'id': 'task-1', 'status': 'created', 'last_worker': None, 'parameters': {}}
+        return type('Task', (), {'id': 'task-1'})()
+
+    def enqueue(self, task_id, **kwargs):
+        self.enqueue_calls += 1
+        self.task['status'] = 'queued'
+
+    def get(self, task_id):
+        return dict(self.task, parameters=dict(self.task['parameters']))
+
+    def has_artifact(self, task_id, name, **kwargs):
+        return False
+
+    def cancel_queued(self, task_id):
+        self.task['status'] = 'created'
+        if self.proof_failure:
+            self.proof_failure = False
+            raise RuntimeError('proof write failed')
+
+    def cancel_created(self, task_id):
+        self.task['parameters'][QUEUED_CANCELLATION_PARAMETER] = QUEUED_CANCELLATION_VALUE
+        self.task['status'] = 'stopped'
+
+    def request_stop(self, task_id):
+        raise AssertionError('created task must not use running cancellation')
+
+    def worker_released(self, task_id, **kwargs):
+        return None
 
 
 class TrainingServiceTests(unittest.TestCase):
@@ -108,6 +155,32 @@ class TrainingServiceTests(unittest.TestCase):
             self.config.runtime_dir / 'cache',
         )
 
+    def _store_run(
+        self,
+        target='detect',
+        *,
+        desired_action,
+        create_attempted_at=None,
+        clearml_task_id=None,
+        submitted_at='2026-09-17T12:00:00+00:00',
+    ):
+        fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
+        return TrainingRunStore(self.store_path).create(
+            TrainingRun(
+                str(uuid4()),
+                self.owner,
+                self.workspace_id,
+                self.config.display_name,
+                target,
+                fingerprint,
+                f'{fingerprint}/{target}',
+                submitted_at,
+                create_attempted_at,
+                clearml_task_id,
+                desired_action,
+            )
+        )
+
     def test_lock_depends_on_all_runs_not_last_clicked_target(self):
         runs = [self.service.submit(self.owner, target) for target in ('detect', 'classify', 'segment')]
         self.backend.complete(runs[0].run.clearml_task_id)
@@ -130,50 +203,15 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual('cancelled', restarted.get_run(self.owner, run.run.id).execution.status)
         restarted.require_editable(self.workspace_id)
 
-    def test_restart_recovers_durable_run_before_create_attempt_for_same_request(self):
-        request_id = str(uuid4())
-        fingerprint = self.data.detection_fingerprint()
-        TrainingRunStore(self.store_path).create(
-            TrainingRun(
-                request_id,
-                self.owner,
-                self.workspace_id,
-                self.config.display_name,
-                'detect',
-                fingerprint,
-                f'{fingerprint}/detect',
-                '2026-09-17T12:00:00+00:00',
-                None,
-                None,
-            )
-        )
-
-        recovered = self._service().submit(self.owner, 'detect')
-
-        self.assertEqual('queued', recovered.execution.status)
-        self.assertEqual(1, self.backend.create_calls)
-
-    def test_restart_reuses_unattempted_same_input(self):
-        fingerprint = self.data.detection_fingerprint()
-        TrainingRunStore(self.store_path).create(
-            TrainingRun(
-                str(uuid4()),
-                self.owner,
-                self.workspace_id,
-                self.config.display_name,
-                'detect',
-                fingerprint,
-                f'{fingerprint}/detect',
-                '2026-09-17T12:00:00+00:00',
-                None,
-                None,
-            )
-        )
+    def test_legacy_unattempted_same_input_remains_observation_only(self):
+        run = self._store_run(desired_action=None)
 
         submitted = self._service().submit(self.owner, 'detect')
+        self._service().reconcile_pending()
 
-        self.assertEqual('queued', submitted.execution.status)
-        self.assertEqual(1, self.backend.create_calls)
+        self.assertEqual(run, submitted.run)
+        self.assertIsNone(submitted.execution)
+        self.assertEqual([], self.backend.write_calls)
 
     def test_same_input_recovers_task_when_create_return_was_lost(self):
         self.backend.create_failure = ConnectionError('response lost')
@@ -207,25 +245,31 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual('task-1', recovered.run.clearml_task_id)
         self.assertEqual(1, self.backend.create_calls)
 
-    def test_authenticated_reads_reconcile_one_bound_created_task_without_recreating_it(self):
-        original_enqueue = self.backend.enqueue
+    def test_queries_do_not_resume_created_task(self):
+        view = self.service.submit(self.owner, 'detect')
+        self.backend.tasks[view.run.clearml_task_id]['status'] = 'created'
+        before = list(self.backend.write_calls)
 
-        def fail_before_enqueue(task_id):
-            raise ConnectionError('queue unavailable before enqueue')
+        self.service.list_runs(self.owner)
+        self.service.get_run(self.owner, view.run.id)
+        self.service.workspace_view(self.owner)
 
-        self.backend.enqueue = fail_before_enqueue
-        with self.assertRaisesRegex(PlatformError, 'queue'):
-            self.service.submit(self.owner, 'detect')
-        stored = TrainingRunStore(self.store_path).list_user(self.owner)[0]
-        self.backend.enqueue = original_enqueue
+        self.assertEqual(before, self.backend.write_calls)
 
-        listed = self.service.list_runs(self.owner)
-        detailed = self.service.get_run(self.owner, stored.id)
+    def test_unattempted_execute_locks_then_cancel_survives_restart_without_remote_writes(self):
+        run = self._store_run(desired_action='execute')
+        with self.assertRaises(PlatformConflictError):
+            self.service.require_editable(self.workspace_id)
 
-        self.assertEqual('queued', listed[0].execution.status)
-        self.assertEqual('queued', detailed.execution.status)
-        self.assertEqual(1, self.backend.create_calls)
-        self.assertEqual(1, self.backend.enqueue_calls)
+        cancelled = self.service.cancel(self.owner, run.id)
+        restarted = self._service()
+        restarted.reconcile_pending()
+
+        self.assertEqual('cancel', TrainingRunStore(self.store_path).get(self.owner, run.id).desired_action)
+        self.assertEqual('cancelled', cancelled.execution.status)
+        self.assertTrue(cancelled.cancellation_requested)
+        self.assertEqual([], self.backend.write_calls)
+        restarted.require_editable(self.workspace_id)
 
     def test_read_reconciliation_never_reenqueues_terminal_tasks(self):
         run = self.service.submit(self.owner, 'detect')
@@ -237,6 +281,30 @@ class TrainingServiceTests(unittest.TestCase):
                 view = self.service.get_run(self.owner, run.run.id)
                 self.assertEqual(status, view.execution.status)
                 self.assertEqual(enqueue_calls, self.backend.enqueue_calls)
+
+    def test_reconcile_pending_never_restarts_terminal_tasks(self):
+        run = self.service.submit(self.owner, 'detect')
+        writes = list(self.backend.write_calls)
+
+        for status in ('completed', 'failed', 'cancelled'):
+            with self.subTest(status=status):
+                self.backend.tasks[run.run.clearml_task_id]['status'] = status
+                self.service.reconcile_pending()
+                self.assertEqual(writes, self.backend.write_calls)
+
+    def test_reconcile_pending_uses_durable_submission_order(self):
+        runs = [
+            self._store_run(target, desired_action='execute', submitted_at=timestamp)
+            for target, timestamp in (
+                ('segment', '2026-09-17T12:03:00+00:00'),
+                ('detect', '2026-09-17T12:01:00+00:00'),
+                ('classify', '2026-09-17T12:02:00+00:00'),
+            )
+        ]
+
+        self.service.reconcile_pending()
+
+        self.assertEqual([('create', run.id) for run in runs], self.backend.write_calls[::2])
 
     def test_read_reconciliation_keeps_unconfirmed_creation_unknown_and_locked(self):
         def missing_create(run):
@@ -253,6 +321,64 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual(1, self.backend.create_calls)
         with self.assertRaises(PlatformError):
             self.service.require_editable(self.workspace_id)
+
+    def test_cancel_attempted_missing_association_finds_and_cancels_only_original_task(self):
+        run = self._store_run(desired_action='execute', create_attempted_at='2026-09-17T12:01:00+00:00')
+        self.backend.tasks['remote-original'] = {'run_id': run.id, 'status': 'created'}
+
+        cancelled = self.service.cancel(self.owner, run.id)
+
+        stored = TrainingRunStore(self.store_path).get(self.owner, run.id)
+        self.assertEqual('cancel', stored.desired_action)
+        self.assertEqual('remote-original', stored.clearml_task_id)
+        self.assertEqual([('cancel', 'remote-original')], self.backend.write_calls)
+        self.assertEqual('unknown', cancelled.execution.status)
+
+    def test_cancel_attempted_missing_association_never_creates_replacement(self):
+        run = self._store_run(desired_action='execute', create_attempted_at='2026-09-17T12:01:00+00:00')
+
+        cancelled = self.service.cancel(self.owner, run.id)
+
+        self.assertEqual('cancel', TrainingRunStore(self.store_path).get(self.owner, run.id).desired_action)
+        self.assertTrue(cancelled.cancellation_requested)
+        self.assertEqual('unknown', cancelled.execution.status)
+        self.assertEqual([], self.backend.write_calls)
+
+    def test_cancelled_input_repeat_submission_does_not_restore_execute_intent(self):
+        original = self.service.submit(self.owner, 'detect')
+        self.service.cancel(self.owner, original.run.id)
+        before = list(self.backend.write_calls)
+
+        repeated = self.service.submit(self.owner, 'detect')
+
+        self.assertEqual(original.run.id, repeated.run.id)
+        self.assertEqual('cancel', repeated.run.desired_action)
+        self.assertTrue(repeated.cancellation_requested)
+        self.assertNotIn(('enqueue', original.run.clearml_task_id), self.backend.write_calls[len(before) :])
+
+    def test_durable_cancel_prevents_reenqueue_after_dequeue_proof_write_failure(self):
+        sdk = DequeueProofFailureSDK()
+        clearml = ClearMLClient(
+            'xxtrain', 'training', Path('/opt/xxtrain/worker.py'), self.config.runtime_dir / 'cache', sdk=sdk
+        )
+        service = TrainingService(
+            self.config, self.annotations, TrainingRunStore(self.store_path), clearml, self.config.runtime_dir / 'cache'
+        )
+        run = service.submit(self.owner, 'detect')
+
+        interrupted = service.cancel(self.owner, run.run.id)
+        reads_before = sdk.enqueue_calls
+        restarted = TrainingService(
+            self.config, self.annotations, TrainingRunStore(self.store_path), clearml, self.config.runtime_dir / 'cache'
+        )
+        restarted.get_run(self.owner, run.run.id)
+        restarted.list_runs(self.owner)
+        restarted.workspace_view(self.owner)
+        restarted.reconcile_pending()
+
+        self.assertTrue(interrupted.cancellation_requested)
+        self.assertEqual(reads_before, sdk.enqueue_calls)
+        self.assertEqual('cancelled', restarted.get_run(self.owner, run.run.id).execution.status)
 
     def test_unknown_remote_status_keeps_workspace_locked(self):
         run = self.service.submit(self.owner, 'detect')
@@ -310,6 +436,52 @@ class TrainingServiceTests(unittest.TestCase):
                 self.assertEqual(1, self.backend.create_calls)
                 self.assertEqual(enqueue_calls + (status == 'created'), self.backend.enqueue_calls)
                 self.assertEqual('queued' if status == 'created' else status, repeated.execution.status)
+
+    def test_different_target_submission_remains_available_while_another_target_is_active(self):
+        detect = self.service.submit(self.owner, 'detect')
+
+        classify = self.service.submit(self.owner, 'classify')
+
+        self.assertNotEqual(detect.run.id, classify.run.id)
+        self.assertEqual('queued', classify.execution.status)
+
+    def test_workspace_projection_and_write_guard_share_active_rule(self):
+        run = self._store_run(desired_action='execute')
+
+        self.assertFalse(self.service.workspace_view(self.owner)['editable'])
+        with self.assertRaises(PlatformConflictError):
+            self.service.require_editable(self.workspace_id)
+
+        self.service.cancel(self.owner, run.id)
+        self.assertTrue(self.service.workspace_view(self.owner)['editable'])
+        self.service.require_editable(self.workspace_id)
+
+    def test_cancel_conflicts_with_inflight_coordination_and_no_enqueue_follows_saved_cancel(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_create = self.backend.create
+
+        def held_create(run):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return original_create(run)
+
+        self.backend.create = held_create
+        run = self._store_run(desired_action='execute')
+        worker = threading.Thread(target=self.service.reconcile_pending)
+        worker.start()
+        self.assertTrue(entered.wait(5))
+        with self.assertRaises(PlatformConflictError):
+            self.service.cancel(self.owner, run.id)
+        release.set()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+
+        self.service.cancel(self.owner, run.id)
+        writes_after_cancel = len(self.backend.write_calls)
+        self.service.reconcile_pending()
+
+        self.assertNotIn(('enqueue', 'task-1'), self.backend.write_calls[writes_after_cancel:])
 
     def test_referenced_cache_damage_is_not_rebuilt_over_historical_input(self):
         original = self.service.submit(self.owner, 'detect')

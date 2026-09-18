@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import requests
+
+import xxtrain.integrations.clearml.client as clearml_client_module
 from xxtrain.integrations.clearml.client import (
+    CREATED_CANCELLATION_VALUE,
     QUEUED_CANCELLATION_PARAMETER,
     QUEUED_CANCELLATION_VALUE,
     ClearMLClient,
@@ -35,11 +39,12 @@ class ClearMLClientTests(unittest.TestCase):
         self.assertTrue(view.active)
         self.assertFalse(view.download_ready)
 
-    def test_completed_requires_published_deployment_artifact(self):
+    def test_completed_without_artifact_is_not_active(self):
         without_artifact = parse_execution({'id': 't1', 'status': 'completed'}, artifact_ready=False)
         with_artifact = parse_execution({'id': 't1', 'status': 'completed'}, artifact_ready=True)
-        self.assertEqual(without_artifact.status, 'unknown')
-        self.assertTrue(without_artifact.active)
+        self.assertEqual(without_artifact.status, 'completed')
+        self.assertFalse(without_artifact.active)
+        self.assertFalse(without_artifact.download_ready)
         self.assertEqual(with_artifact.status, 'completed')
         self.assertFalse(with_artifact.active)
         self.assertTrue(with_artifact.download_ready)
@@ -88,7 +93,10 @@ class ClearMLClientTests(unittest.TestCase):
     def test_create_arguments_match_installed_clearml_sdk_signature(self):
         from clearml import Task
 
-        with patch.object(Task, 'create', autospec=True, return_value=SimpleNamespace(id='task-1')) as create:
+        with (
+            patch.object(Task, 'create', autospec=True, return_value=SimpleNamespace(id='task-1')) as create,
+            patch.object(_ClearMLSDK, '__init__', lambda sdk: setattr(sdk, '_task', Task)),
+        ):
             client = ClearMLClient('xxtrain', 'training', Path('/opt/xxtrain/worker.py'), Path('/shared'))
             self.assertEqual(client.create(training_run()), 'task-1')
             create.assert_called_once()
@@ -101,6 +109,12 @@ class ClearMLClientTests(unittest.TestCase):
             self.client.find(run_id)
 
         self.sdk.find.assert_called_once_with(project_name='xxtrain', task_name=f'^{re.escape(run_id)}$')
+
+    def test_programming_errors_from_sdk_remain_distinguishable(self):
+        self.sdk.find.side_effect = TypeError('bad adapter call')
+
+        with self.assertRaisesRegex(TypeError, 'bad adapter call'):
+            self.client.find(training_run().id)
 
     def test_ordinary_package_import_does_not_import_clearml_sdk(self):
         result = subprocess.run(
@@ -122,6 +136,17 @@ class ClearMLClientTests(unittest.TestCase):
         self.sdk.get.return_value = {'id': 'task-1', 'status': 'queued'}
         self.client.enqueue('task-1')
         self.sdk.enqueue.assert_not_called()
+
+    def test_artifact_query_failure_keeps_completed_execution_inactive(self):
+        self.sdk.get.return_value = {'id': 'task-1', 'status': 'completed'}
+        self.sdk.has_artifact.side_effect = ConnectionError('artifact store offline')
+
+        view = self.client.observe('task-1')
+
+        self.assertEqual('completed', view.status)
+        self.assertFalse(view.active)
+        self.assertFalse(view.download_ready)
+        self.assertIn('artifact', view.detail.lower())
 
     def test_cancelled_task_remains_active_while_worker_owns_it(self):
         self.sdk.get.return_value = {
@@ -198,6 +223,24 @@ class ClearMLClientTests(unittest.TestCase):
         self.assertEqual(view.status, 'cancelled')
         self.assertFalse(view.active)
 
+    def test_created_never_started_task_is_stopped_without_enqueue(self):
+        self.sdk.get.side_effect = [
+            {'id': 'task-1', 'status': 'created', 'last_worker': None},
+            {
+                'id': 'task-1',
+                'status': 'stopped',
+                'last_worker': None,
+                'parameters': {QUEUED_CANCELLATION_PARAMETER: CREATED_CANCELLATION_VALUE},
+            },
+        ]
+
+        view = self.client.cancel('task-1')
+
+        self.sdk.cancel_created.assert_called_once_with('task-1')
+        self.sdk.enqueue.assert_not_called()
+        self.assertEqual('cancelled', view.status)
+        self.assertFalse(view.active)
+
     def test_queued_cancellation_is_stable_across_observe_retry_and_new_client(self):
         facts = {'id': 'task-1', 'status': 'queued', 'last_worker': None, 'parameters': {}}
         sdk = Mock()
@@ -270,6 +313,99 @@ class ClearMLClientTests(unittest.TestCase):
 
         task.set_parameter.assert_called_once_with(QUEUED_CANCELLATION_PARAMETER, QUEUED_CANCELLATION_VALUE)
         task.stopped.assert_not_called()
+
+    def test_sdk_created_cancellation_records_distinct_never_started_proof(self):
+        sdk = object.__new__(_ClearMLSDK)
+        sdk._task = Mock()
+        task = sdk._task.get_task.return_value
+        task.data.status = 'created'
+        task.last_worker = None
+
+        sdk.cancel_created('task-1')
+
+        task.set_parameter.assert_called_once_with(QUEUED_CANCELLATION_PARAMETER, CREATED_CANCELLATION_VALUE)
+        task.stopped.assert_called_once_with(
+            ignore_errors=False, force=False, status_reason='cancelled before execution'
+        )
+
+    def test_sdk_owned_session_has_finite_request_configuration(self):
+        sdk = object.__new__(_ClearMLSDK)
+        sdk._task = Mock()
+        sdk._session = Mock()
+
+        self.assertTrue(hasattr(clearml_client_module, '_BoundedSession'))
+        self.assertEqual((3.0, 10.0), clearml_client_module._BoundedSession._session_timeout)
+        self.assertEqual((3.0, 10.0), clearml_client_module._BoundedSession._session_initial_timeout)
+        self.assertEqual((3.0, 10.0), clearml_client_module._BoundedSession._write_session_timeout)
+
+    def test_bounded_session_stops_after_finite_ssl_failures(self):
+        from clearml.backend_api.session.session import Session
+
+        bounded_mixin = getattr(clearml_client_module, '_BoundedSession', None)
+        self.assertIsNotNone(bounded_mixin)
+        session_type = type('TestBoundedSession', (bounded_mixin, Session), {})
+        session = object.__new__(session_type)
+        session._offline_mode = False
+        session._verbose = False
+        session._logger = None
+        session._session_requests = 1
+        session._ssl_error_count_verbosity = 999
+        session._Session__worker = 'worker'
+        session.client = 'client'
+        session._Session__host = 'https://clearml.test'
+        session.config = Mock()
+        session.config.get.return_value = False
+        transport = Mock()
+        transport.request.side_effect = requests.exceptions.SSLError('certificate failure')
+        session._Session__http_session = transport
+
+        with self.assertRaises(requests.exceptions.SSLError):
+            session._send_request('tasks', 'get_all', version='2.20', method='post')
+
+        self.assertEqual(3, transport.request.call_count)
+
+    def test_bounded_session_converts_server_failure_to_finite_sdk_error(self):
+        from clearml import Task
+        from clearml.backend_api.services.v2_20.tasks import GetAllRequest
+        from clearml.backend_interface.session import SendError
+
+        class ParentSession:
+            def send(self, req_obj, async_enable=False, headers=None):
+                return SimpleNamespace(meta=SimpleNamespace(result_code=503))
+
+        class Session(clearml_client_module._BoundedSession, ParentSession):
+            pass
+
+        session = object.__new__(Session)
+        request = GetAllRequest()
+        session._logger = None
+
+        result = session.send(request)
+
+        self.assertEqual(500, result.meta.result_code)
+        with self.assertRaises(SendError):
+            Task._send(session, GetAllRequest())
+
+    def test_bounded_session_converts_sdk_decoding_failure_to_finite_error(self):
+        from clearml import Task
+        from clearml.backend_api.services.v2_20.tasks import GetAllRequest
+        from clearml.backend_interface.session import SendError
+
+        class ParentSession:
+            def send(self, req_obj, async_enable=False, headers=None):
+                raise ValueError('response decoding failed')
+
+        class Session(clearml_client_module._BoundedSession, ParentSession):
+            pass
+
+        session = object.__new__(Session)
+        session._logger = None
+
+        result = session.send(GetAllRequest())
+
+        self.assertEqual(500, result.meta.result_code)
+        with self.assertRaises(SendError):
+            Task._send(session, GetAllRequest())
 
     def test_sdk_artifact_readiness_uses_metadata_without_downloading(self):
         sdk = object.__new__(_ClearMLSDK)

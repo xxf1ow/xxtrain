@@ -182,7 +182,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertEqual(original, restored)
         self.assertEqual(2, len(self.store.list_user(self.owner)))
 
-    def test_refresh_list_detail_and_new_session_recover_bound_created_task(self) -> None:
+    def test_refreshes_are_read_only_and_coordinator_recovers_bound_created_task(self) -> None:
         original_enqueue = self.clearml.enqueue
 
         def fail_before_enqueue(task_id):
@@ -203,10 +203,20 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         finally:
             new_session.close()
 
+        self.assertEqual('unknown', workspace.json()['training']['detect']['execution']['status'])
+        self.assertEqual('unknown', listed.json()[0]['execution']['status'])
+        self.assertEqual('unknown', detailed.json()['execution']['status'])
+        self.assertEqual('unknown', restarted.json()['training']['detect']['execution']['status'])
+        self.assertEqual([], self.clearml.enqueued)
+
+        self.training.reconcile_pending()
+        workspace = self.client.get('/platform/api/workspace')
+        listed = self.client.get('/platform/api/training-runs')
+        detailed = self.client.get(f'/platform/api/training-runs/{run.id}')
+
         self.assertEqual('queued', workspace.json()['training']['detect']['execution']['status'])
         self.assertEqual('queued', listed.json()[0]['execution']['status'])
         self.assertEqual('queued', detailed.json()['execution']['status'])
-        self.assertEqual('queued', restarted.json()['training']['detect']['execution']['status'])
         self.assertEqual(1, self.clearml.create_calls)
         self.assertEqual(['task-1'], self.clearml.enqueued)
 

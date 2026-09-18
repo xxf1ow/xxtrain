@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-EXECUTION_STATUSES = frozenset({'queued', 'running', 'completed', 'failed', 'cancelled', 'unknown'})
+EXECUTION_STATUSES = frozenset({'pending', 'queued', 'running', 'completed', 'failed', 'cancelled', 'unknown'})
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class TrainingRunView:
 
     run: TrainingRun
     execution: ExecutionView | None
+    cancellation_requested: bool = False
 
 
 @dataclass(frozen=True)
