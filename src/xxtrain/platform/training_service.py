@@ -38,8 +38,11 @@ class TrainingService:
             )
             workspace_runs = self.store.list_workspace(self.config.workspace_id)
             for run in reversed(workspace_runs):
-                if run.target == target and run.fingerprint == fingerprint and self._view(run).execution.active:
-                    return self._view(run)
+                if run.target != target or run.fingerprint != fingerprint:
+                    continue
+                view = self._view(run)
+                if view.execution is not None and view.execution.active:
+                    return view
             referenced = next(
                 (run for run in workspace_runs if run.target == target and run.fingerprint == fingerprint), None
             )

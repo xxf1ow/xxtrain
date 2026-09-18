@@ -6,10 +6,10 @@ from uuid import uuid4
 from test.platform_fixture import create_fixture
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.platform.config import load_config
-from xxtrain.platform.contracts import AnnotationChanges, PlatformError
+from xxtrain.platform.contracts import AnnotationChanges, PlatformAccessError, PlatformError
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
-from xxtrain.platform.training_contracts import DownloadFile, ExecutionView
+from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun
 from xxtrain.platform.training_service import TrainingService
 from xxtrain.platform.training_store import TrainingRunStore
 from xxtrain.workspace_data import WorkspaceData
@@ -25,6 +25,8 @@ class ControlledClearML:
         self.tasks = {}
         self.create_calls = 0
         self.enqueue_calls = 0
+        self.cancel_calls = 0
+        self.download_calls = 0
         self.create_failure = None
         self.enqueue_failure = None
 
@@ -57,10 +59,12 @@ class ControlledClearML:
         return ExecutionView(task_id, public_status, active, None, None, None, None, status == 'completed', None)
 
     def cancel(self, task_id):
-        self.tasks[task_id]['status'] = 'cancelled'
+        self.cancel_calls += 1
+        self.tasks[task_id]['status'] = 'unknown'
         return self.observe(task_id)
 
     def download(self, task_id, destination):
+        self.download_calls += 1
         destination.mkdir(parents=True, exist_ok=True)
         path = destination / 'model.onnx'
         path.write_bytes(b'model')
@@ -68,6 +72,9 @@ class ControlledClearML:
 
     def complete(self, task_id):
         self.tasks[task_id]['status'] = 'completed'
+
+    def release(self, task_id):
+        self.tasks[task_id]['status'] = 'cancelled'
 
 
 class TrainingServiceTests(unittest.TestCase):
@@ -107,14 +114,63 @@ class TrainingServiceTests(unittest.TestCase):
         self.backend.complete(runs[2].run.clearml_task_id)
         self.service.require_editable(self.workspace_id)
 
-    def test_cancelled_run_is_unlocked_after_query_and_fresh_service(self):
+    def test_cancel_keeps_lock_across_restart_until_worker_release(self):
         run = self.service.submit(self.owner, 'detect', str(uuid4()))
         cancelled = self.service.cancel(self.owner, run.run.id)
-        self.assertEqual('cancelled', cancelled.execution.status)
+        self.assertEqual('unknown', cancelled.execution.status)
 
         restarted = self._service()
+        self.assertEqual('unknown', restarted.get_run(self.owner, run.run.id).execution.status)
+        with self.assertRaises(PlatformError):
+            restarted.require_editable(self.workspace_id)
+        self.backend.release(run.run.clearml_task_id)
         self.assertEqual('cancelled', restarted.get_run(self.owner, run.run.id).execution.status)
         restarted.require_editable(self.workspace_id)
+
+    def test_restart_recovers_durable_run_before_create_attempt_for_same_request(self):
+        request_id = str(uuid4())
+        fingerprint = self.data.detection_fingerprint()
+        TrainingRunStore(self.store_path).create(
+            TrainingRun(
+                request_id,
+                self.owner,
+                self.workspace_id,
+                self.config.display_name,
+                'detect',
+                fingerprint,
+                f'{fingerprint}/detect',
+                '2026-09-17T12:00:00+00:00',
+                None,
+                None,
+            )
+        )
+
+        recovered = self._service().submit(self.owner, 'detect', request_id)
+
+        self.assertEqual('queued', recovered.execution.status)
+        self.assertEqual(1, self.backend.create_calls)
+
+    def test_restart_ignores_unattempted_same_input_for_a_new_request(self):
+        fingerprint = self.data.detection_fingerprint()
+        TrainingRunStore(self.store_path).create(
+            TrainingRun(
+                str(uuid4()),
+                self.owner,
+                self.workspace_id,
+                self.config.display_name,
+                'detect',
+                fingerprint,
+                f'{fingerprint}/detect',
+                '2026-09-17T12:00:00+00:00',
+                None,
+                None,
+            )
+        )
+
+        submitted = self._service().submit(self.owner, 'detect', str(uuid4()))
+
+        self.assertEqual('queued', submitted.execution.status)
+        self.assertEqual(1, self.backend.create_calls)
 
     def test_same_request_recovers_task_when_create_return_was_lost(self):
         request_id = str(uuid4())
@@ -162,6 +218,21 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual('unknown', self.service.get_run(self.owner, run.run.id).execution.status)
         with self.assertRaises(PlatformError):
             self.service.require_editable(self.workspace_id)
+
+    def test_foreign_user_cannot_access_runs_or_trigger_external_operations(self):
+        run = self.service.submit(self.owner, 'detect', str(uuid4()))
+        before = (self.backend.create_calls, self.backend.cancel_calls, self.backend.download_calls)
+        operations = (
+            ('get', lambda: self.service.get_run(99, run.run.id)),
+            ('cancel', lambda: self.service.cancel(99, run.run.id)),
+            ('retry', lambda: self.service.retry(99, run.run.id, str(uuid4()))),
+            ('download', lambda: self.service.download(99, run.run.id)),
+        )
+        self.assertEqual((), self.service.list_runs(99))
+        for name, operation in operations:
+            with self.subTest(name=name), self.assertRaises(PlatformAccessError):
+                operation()
+        self.assertEqual(before, (self.backend.create_calls, self.backend.cancel_calls, self.backend.download_calls))
 
     def test_retry_uses_retained_original_cache_after_current_annotations_change(self):
         original = self.service.submit(self.owner, 'classify', str(uuid4()))
