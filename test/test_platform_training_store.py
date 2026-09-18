@@ -142,6 +142,27 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'complete'):
             runtime.cache_path('detect', fingerprint)
 
+    def test_cache_path_rejects_a_listed_file_symlink_escaping_its_publication(self) -> None:
+        runtime = RuntimeCache(self.root / 'runtime')
+        target = self._complete_detection_cache('b' * 64)
+        outside = self.root / 'outside.png'
+        outside.touch()
+        (target / 'workspace' / 'train.png').unlink()
+        (target / 'workspace' / 'train.png').symlink_to(outside)
+
+        with self.assertRaisesRegex(ValueError, 'complete'):
+            runtime.cache_path('detect', 'b' * 64)
+
+    def test_cache_path_accepts_a_listed_detection_file_symlink_inside_its_publication(self) -> None:
+        runtime = RuntimeCache(self.root / 'runtime')
+        target = self._complete_detection_cache('c' * 64)
+        workspace = target / 'workspace'
+        (workspace / 'source.png').touch()
+        (workspace / 'train.png').unlink()
+        (workspace / 'train.png').symlink_to('source.png')
+
+        self.assertEqual(target, runtime.cache_path('detect', 'c' * 64))
+
     def test_execution_contracts_carry_only_view_data(self) -> None:
         execution = ExecutionView('task-1', 'unknown', True, None, None, None, None, False, 'Unavailable')
 
@@ -149,6 +170,20 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         self.assertEqual(
             DownloadFile(self.root / 'model.onnx', 'model.onnx', 'application/octet-stream').filename, 'model.onnx'
         )
+
+    def _complete_detection_cache(self, fingerprint: str) -> Path:
+        publication = self.root / 'runtime' / 'cache' / fingerprint
+        target = publication / 'detect'
+        workspace = target / 'workspace'
+        workspace.mkdir(parents=True)
+        (target / 'dataset.yaml').write_text(
+            f'path: {publication}\ntrain: detect/train.txt\nval: detect/val.txt\n', encoding='utf-8'
+        )
+        (target / 'train.txt').write_text('detect/workspace/train.png\n', encoding='utf-8')
+        (target / 'val.txt').write_text('detect/workspace/val.png\n', encoding='utf-8')
+        (workspace / 'train.png').touch()
+        (workspace / 'val.png').touch()
+        return target
 
 
 if __name__ == '__main__':

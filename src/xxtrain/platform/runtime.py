@@ -227,11 +227,7 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _has_referenced_file(path: Path, publication: Path) -> bool:
-    try:
-        path.absolute().relative_to(publication.absolute())
-    except ValueError:
-        return False
-    return path.is_file()
+    return _is_within(path, publication) and path.is_file()
 
 
 def _decode_frames(value: object) -> tuple[FrameMapping, ...]:
