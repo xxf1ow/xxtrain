@@ -1,5 +1,5 @@
-from xxtrain.data import LabelCatalog
 from xxtrain.business_tasks.point import POINT_CLASSIFY_OVERRIDES
+from xxtrain.data import LabelCatalog
 from xxtrain.pipeline import DatasetRecipe, Pipeline
 from xxtrain.pipeline.processors import CropDetectionBoxes, FilterLabels, ReadImageInfo, ReadLabelImg
 from xxtrain.pipeline.sinks import ClassificationDatasetSink
