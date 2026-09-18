@@ -248,14 +248,21 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual(original.run.id, restored.run.id)
         self.assertEqual(2, self.backend.create_calls)
 
-    def test_same_input_terminal_run_is_not_retrained(self):
+    def test_same_input_execution_states_reuse_original_run(self):
         original = self.service.submit(self.owner, 'detect')
-        self.backend.complete(original.run.clearml_task_id)
+        task_id = original.run.clearml_task_id
 
-        repeated = self._service().submit(self.owner, 'detect')
+        for status in ('created', 'queued', 'running', 'completed', 'failed', 'cancelled', 'unknown'):
+            with self.subTest(status=status):
+                self.backend.tasks[task_id]['status'] = status
+                enqueue_calls = self.backend.enqueue_calls
 
-        self.assertEqual(original.run.id, repeated.run.id)
-        self.assertEqual(1, self.backend.create_calls)
+                repeated = self._service().submit(self.owner, 'detect')
+
+                self.assertEqual(original.run.id, repeated.run.id)
+                self.assertEqual(1, self.backend.create_calls)
+                self.assertEqual(enqueue_calls + (status == 'created'), self.backend.enqueue_calls)
+                self.assertEqual('queued' if status == 'created' else status, repeated.execution.status)
 
     def test_referenced_cache_damage_is_not_rebuilt_over_historical_input(self):
         original = self.service.submit(self.owner, 'detect')

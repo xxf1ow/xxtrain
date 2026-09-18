@@ -121,7 +121,7 @@ const baseTargets = [
   {{id:'classify', name:'分类', available:true, sample_count:40, annotated_sample_count:40,
     can_annotate:true, can_generate_cache:true, cache_ready:false}},
   {{id:'segment', name:'分割', available:true, sample_count:40, annotated_sample_count:0,
-    can_annotate:false, can_generate_cache:false, cache_ready:false}},
+    can_annotate:false, can_generate_cache:true, cache_ready:false}},
 ];
 const execution = {{status:'queued', active:true, epoch:null, total_epochs:null, elapsed_seconds:3,
   metric:null, download_ready:false, detail:null}};
@@ -132,12 +132,22 @@ const workspace = {{workspace_id:'line-3', name:'三号现场', image_count:50,
   editing_locked:true, training_enabled:true, training:{{detect:run, classify:null, segment:null}}}};
 const calls=[];
 let submittedRun = null;
+let failWorkspace = false;
+let failTrain = true;
 globalThis.fetch = async (url, options={{}}) => {{ calls.push({{url, body:options.body||null}});
-  if (url.endsWith('/train')) submittedRun = {{...run, id:'33333333-3333-4333-8333-333333333333', target:'classify'}};
+  if (url.endsWith('/train')) {{
+    const target = url.includes('/classify/') ? 'classify' : 'segment';
+    submittedRun = {{...run, id:target === 'classify' ? '33333333-3333-4333-8333-333333333333'
+      : '44444444-4444-4444-8444-444444444444', target}};
+    if (failTrain) return {{ok:false,status:502,json:async()=>({{detail:'提交结果未知'}})}};
+  }}
+  if (failWorkspace && url.endsWith('/workspace')) return {{ok:false,status:502,json:async()=>({{detail:'读取失败'}})}};
   const body = url.endsWith('/session') ? {{authenticated:true,user_id:17}}
     : url.endsWith('/train') ? {{run_id:submittedRun.id,
         training_url:`/platform/training/?run=${{submittedRun.id}}`, run:submittedRun}}
-    : submittedRun ? {{...workspace, training:{{...workspace.training, classify:submittedRun}}}} : workspace;
+    : submittedRun
+      ? {{...workspace, training:{{...workspace.training, [submittedRun.target]:submittedRun}}}}
+      : workspace;
   return {{ok:true,status:200,json:async()=>body}};
 }};
 eval({json.dumps(script)}); await loaded();
@@ -146,9 +156,18 @@ const queued=detect.textContent; detect.dispatchEvent(new Event('mouseenter')); 
 detect.dispatchEvent(new Event('mouseleave')); const restored=detect.textContent;
 const annotationDisabled=get('primary-action').disabled;
 await get('classify-cache-action').listeners.click[0]();
+const recoveredRunId=get('classify-cache-action').dataset.runId;
+const recoveredText=get('classify-cache-action').textContent;
+failWorkspace = true;
+await get('segment-cache-action').listeners.click[0]();
+const disabledAfterReadFailure=get('segment-cache-action').disabled;
+failWorkspace = false;
+failTrain = false;
+await loaded();
+const reconstructedRunId=get('segment-cache-action').dataset.runId;
 const trainingBodies = calls.filter((call)=>call.url.endsWith('/train')).map((call)=>call.body);
 process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled,classifyDisabled:get('classify-cache-action').disabled,
-  notification:get('workspace-message').textContent,assigned,calls,trainingBodies,
+  recoveredRunId,recoveredText,disabledAfterReadFailure,reconstructedRunId,assigned,calls,trainingBodies,
   cryptoCalls,trainingStorageWrites,trainingEnabled:workspace.training_enabled}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
 """
@@ -164,10 +183,13 @@ process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled
         self.assertTrue(
             any(call['url'].endswith('/targets/classify/train') for call in result['calls']), result['calls']
         )
-        self.assertEqual([{}], [json.loads(body) for body in result['trainingBodies']])
+        self.assertEqual([{}, {}], [json.loads(body) for body in result['trainingBodies']])
         self.assertEqual(0, result['cryptoCalls'])
         self.assertEqual([], result['trainingStorageWrites'])
-        self.assertEqual('已加入训练队列', result['notification'])
+        self.assertEqual('33333333-3333-4333-8333-333333333333', result['recoveredRunId'])
+        self.assertEqual('排队中', result['recoveredText'])
+        self.assertTrue(result['disabledAfterReadFailure'])
+        self.assertEqual('44444444-4444-4444-8444-444444444444', result['reconstructedRunId'])
         self.assertIsNone(result['assigned'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
