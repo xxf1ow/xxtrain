@@ -2,7 +2,7 @@
 
 ## Scope
 
-xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射，以及供现场人员完成检测、分类和指针分割标注的可恢复业务流程。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)和 [Point 三模型数据准备](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md)均已通过离线回归和真实人工验收。完整自助训练平台、ClearML 服务连接及训练快照尚未实现。
+xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射，以及供现场人员完成检测、分类和指针分割标注的可恢复业务流程。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)和 [Point 三模型数据准备](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md)均已通过离线回归和真实人工验收。训练提交协调和工作区编辑保护已有离线实现；用户任务页面、正式组合根配置及真实 ClearML 服务验收尚未实现。
 
 项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测、分类和指针分割标注入口。
 
@@ -30,6 +30,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；摘要、输入指纹和 CVAT 输入只读取已登记图片及数据库标注。分类和分割投影共用检测框裁剪与实际边界，数据层从数据库派生目标计数和包含上游关联的输入指纹。对象级同步通过稳定 UUID 和当前 Job 的 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响的下游对象，并在同一事务内提交标注和映射。检测缓存从数据库生成可丢弃的 LabelMe 输入，不回写权威 JSON；
 - `xxtrain.business_tasks` 定义 Point 的五种框标签、检测、分类和分割步骤规则、目标开放状态、训练设置、主要指标与交付内容；
 - `xxtrain.platform.training_contracts` 定义训练运行关联事实；`xxtrain.platform.training_store` 在调用者指定的平台元数据路径保存独立 SQLite 账本，按用户限制读取，并不存执行状态、计数或标注；`xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，并只为包含数据集元数据、训练和验证输入的完整已发布缓存返回目标目录；`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存，`xxtrain.platform.target_cache` 使用共享裁剪图生成分类和指针分割训练缓存；
+- `xxtrain.platform.training_service` 在标注写互斥内校验资格、准备缓存并持久关联 ClearML 任务；相同请求恢复既有任务，未知远端状态继续锁定编辑，历史重试只使用原运行保留的缓存。`AnnotationService` 的上传、开始标注和同步入口调用组合根提供的编辑保护，但缓存准备和其他已合格目标的提交不受该保护阻断；
 - `xxtrain.integrations.clearml` 通过可选 ClearML SDK 创建、入队、观察和取消训练任务，并提供普通 Agent 执行入口；任务使用运行 UUID 作为初始名称恢复关联，Agent 从共享发布缓存调用训练核心，只上传固定名称的部署产物；
 - `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换检测矩形与图片级负样本 Tag；负样本按原图映射回收，删除 Tag 撤销确认，框与负样本冲突时返回修正链接且不写入。`xxtrain.integrations.cvat.edit_codec` 按 `EditJob.frames` 的精确顺序转换分类 tag 和指针 polyline。需要对象身份的标注只在初始化时用临时 UUID 令牌关联 CVAT 原生 ID，常规回收只返回原生 ID；
 - `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并以共享流程完成检测或编辑图片的上传、frame 核对、Job 分配、初始化和读取；只有完整对象映射建立后才返回可发布的 Job，浏览器会话与服务令牌隔离。平台依据运行目录中当前输入指纹对应的 Job 和 frame 来源映射回收分类及指针结果；同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；

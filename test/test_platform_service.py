@@ -449,6 +449,28 @@ class AnnotationServiceTest(unittest.TestCase):
                     operation(17)
         self.assertEqual(0, self.cvat.create_task_calls)
 
+    def test_server_side_edit_guard_covers_upload_begin_and_sync_but_not_cache_generation(self):
+        guarded = AnnotationService(
+            self.config,
+            self.data,
+            self.cvat,
+            self.runtime,
+            require_editable=lambda workspace_id: (_ for _ in ()).throw(PlatformError('training active')),
+        )
+        operations = (
+            ('upload', lambda: guarded.upload(17, ())),
+            ('legacy begin', lambda: guarded.begin_detection(17)),
+            ('target begin', lambda: guarded.begin_target(17, 'classify')),
+            ('legacy sync', lambda: guarded.sync_detection(17)),
+            ('target sync', lambda: guarded.sync_target(17, 'segment')),
+        )
+        for name, operation in operations:
+            with self.subTest(name=name), self.assertRaisesRegex(PlatformError, 'training active'):
+                operation()
+
+        self.create_workspace(boxed=50)
+        guarded.generate_target_cache(17, 'detect')
+
 
 if __name__ == '__main__':
     unittest.main()
