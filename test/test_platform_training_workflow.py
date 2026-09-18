@@ -62,6 +62,9 @@ class _LifecycleSDK:
         self.tasks: dict[str, dict[str, object]] = {}
         self.create_calls = 0
         self.enqueue_calls = 0
+        self.cancel_queued_calls = 0
+        self.cancel_created_calls = 0
+        self.request_stop_calls = 0
         self.find_failures = 0
         self.create_response_lost = False
         self.dequeue_proof_failures = 0
@@ -107,6 +110,7 @@ class _LifecycleSDK:
         return False
 
     def cancel_queued(self, task_id):
+        self.cancel_queued_calls += 1
         task = self.tasks[task_id]
         task['status'] = 'created'
         if self.dequeue_proof_failures:
@@ -117,12 +121,14 @@ class _LifecycleSDK:
         self.cancelled.set()
 
     def cancel_created(self, task_id):
+        self.cancel_created_calls += 1
         task = self.tasks[task_id]
         task['parameters'][QUEUED_CANCELLATION_PARAMETER] = CREATED_CANCELLATION_VALUE
         task['status'] = 'stopped'
         self.cancelled.set()
 
     def request_stop(self, task_id):
+        self.request_stop_calls += 1
         raise AssertionError('workflow fixture does not run workers')
 
     def worker_released(self, task_id, **kwargs):
@@ -189,7 +195,15 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
     def _submit(self, target: str):
         return self.client.post(f'/platform/api/targets/{target}/train', json={}, headers=self._headers(self.client))
 
-    def _stored_run(self, target: str, desired_action: str | None, *, user_id: int | None = None) -> TrainingRun:
+    def _stored_run(
+        self,
+        target: str,
+        desired_action: str | None,
+        *,
+        user_id: int | None = None,
+        create_attempted_at: str | None = None,
+        clearml_task_id: str | None = None,
+    ) -> TrainingRun:
         fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
         cache_path = self.annotations.ensure_target_cache(self.owner, target)
         cache_relative_path = cache_path.resolve().relative_to((self.config.runtime_dir / 'cache').resolve()).as_posix()
@@ -203,8 +217,8 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
                 fingerprint,
                 cache_relative_path,
                 '2026-09-18T12:00:00+00:00',
-                None,
-                None,
+                create_attempted_at,
+                clearml_task_id,
                 desired_action,
             )
         )
@@ -218,6 +232,40 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
                     raise AssertionError('coordinator did not reach the controlled SDK boundary')
 
         asyncio.run(run())
+
+    @staticmethod
+    def _run_one_lifespan_pass(app, training: TrainingService) -> int:
+        completed = threading.Event()
+        calls = 0
+        real_reconcile = training.reconcile_pending
+
+        def reconcile() -> None:
+            nonlocal calls
+            calls += 1
+            try:
+                real_reconcile()
+            finally:
+                completed.set()
+
+        async def run() -> None:
+            with patch.object(training, 'reconcile_pending', side_effect=reconcile):
+                async with app.router.lifespan_context(app):
+                    observed = await asyncio.to_thread(completed.wait, 2)
+                    if not observed:
+                        raise AssertionError('coordinator did not complete its first reconciliation pass')
+
+        asyncio.run(run())
+        return calls
+
+    @staticmethod
+    def _sdk_write_counts(sdk: _LifecycleSDK) -> tuple[int, int, int, int, int]:
+        return (
+            sdk.create_calls,
+            sdk.enqueue_calls,
+            sdk.cancel_queued_calls,
+            sdk.cancel_created_calls,
+            sdk.request_stop_calls,
+        )
 
     def test_three_runs_keep_annotation_database_unchanged_and_fifo_order(self) -> None:
         before = self.repository.annotations()
@@ -386,19 +434,41 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertEqual(1, sdk.create_calls)
         self.assertEqual(1, sdk.enqueue_calls)
 
+        attempted = self._stored_run('classify', 'execute', create_attempted_at='2026-09-18T12:01:00+00:00')
+        sdk.tasks['task-unbound'] = {
+            'id': 'task-unbound',
+            'run_id': attempted.id,
+            'status': 'created',
+            'last_worker': None,
+            'parameters': {},
+        }
+        rows_before_reads = TrainingRunStore(self.store_path).list_user(self.owner)
+        writes_before_reads = self._sdk_write_counts(sdk)
+
         read_app = create_app(self.config, self.annotations, _BrowserSession(self.owner), training_service=restarted)
         read_client = self._client(read_app)
         try:
-            with patch.object(sdk, 'enqueue', side_effect=AssertionError('read must not enqueue')):
+            with (
+                patch.object(sdk, 'create', side_effect=AssertionError('read must not create')),
+                patch.object(sdk, 'enqueue', side_effect=AssertionError('read must not enqueue')),
+                patch.object(sdk, 'cancel_queued', side_effect=AssertionError('read must not cancel queued')),
+                patch.object(sdk, 'cancel_created', side_effect=AssertionError('read must not cancel created')),
+                patch.object(sdk, 'request_stop', side_effect=AssertionError('read must not request stop')),
+            ):
                 workspace = read_client.get('/platform/api/workspace')
                 listed = read_client.get('/platform/api/training-runs')
-                detailed = read_client.get(f'/platform/api/training-runs/{run.id}')
+                detailed = read_client.get(f'/platform/api/training-runs/{attempted.id}')
         finally:
             read_client.close()
 
+        self.assertEqual(200, workspace.status_code)
+        self.assertEqual(200, listed.status_code)
+        self.assertEqual(200, detailed.status_code)
         self.assertEqual('queued', workspace.json()['training']['detect']['execution']['status'])
-        self.assertEqual(run.id, listed.json()[0]['id'])
-        self.assertEqual('queued', detailed.json()['execution']['status'])
+        self.assertEqual([run.id, attempted.id], [item['id'] for item in listed.json()])
+        self.assertEqual('unknown', detailed.json()['execution']['status'])
+        self.assertEqual(rows_before_reads, TrainingRunStore(self.store_path).list_user(self.owner))
+        self.assertEqual(writes_before_reads, self._sdk_write_counts(sdk))
 
     def test_cancel_restarts_after_dequeue_failure_without_reenqueue(self) -> None:
         sdk = _LifecycleSDK()
@@ -450,9 +520,16 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
 
     def test_legacy_row_is_observed_without_external_writes(self) -> None:
         sdk = _LifecycleSDK()
-        legacy = self._stored_run('detect', None, user_id=99)
+        legacy = self._stored_run('detect', None)
+        before = TrainingRunStore(self.store_path).get(self.owner, legacy.id)
         training = self._sdk_training_service(sdk)
         legacy_app = create_app(self.config, self.annotations, _BrowserSession(self.owner), training_service=training)
+        self.assertEqual(1, self._run_one_lifespan_pass(legacy_app, training))
+
+        after_reconcile = TrainingRunStore(self.store_path).get(self.owner, legacy.id)
+        self.assertEqual(before, after_reconcile)
+        self.assertEqual((0, 0, 0, 0, 0), self._sdk_write_counts(sdk))
+
         legacy_client = self._client(legacy_app)
         try:
             with (
@@ -460,14 +537,24 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
                 patch.object(sdk, 'enqueue', side_effect=AssertionError('read must not enqueue')),
                 patch.object(sdk, 'cancel_queued', side_effect=AssertionError('read must not cancel')),
                 patch.object(sdk, 'cancel_created', side_effect=AssertionError('read must not cancel')),
+                patch.object(sdk, 'request_stop', side_effect=AssertionError('read must not request stop')),
             ):
-                self.assertEqual(200, legacy_client.get('/platform/api/workspace').status_code)
-                self.assertEqual([], legacy_client.get('/platform/api/training-runs').json())
+                workspace = legacy_client.get('/platform/api/workspace')
+                listed = legacy_client.get('/platform/api/training-runs')
+                detailed = legacy_client.get(f'/platform/api/training-runs/{legacy.id}')
         finally:
             legacy_client.close()
 
-        self.assertEqual((0, 0), (sdk.create_calls, sdk.enqueue_calls))
-        self.assertIsNone(TrainingRunStore(self.store_path).get(99, legacy.id).desired_action)
+        self.assertEqual(200, workspace.status_code)
+        self.assertEqual(legacy.id, listed.json()[0]['id'])
+        self.assertIsNone(listed.json()[0]['execution'])
+        self.assertEqual(legacy.id, detailed.json()['id'])
+        self.assertIsNone(detailed.json()['execution'])
+        self.assertEqual(legacy.id, workspace.json()['training']['detect']['id'])
+        self.assertIsNone(workspace.json()['training']['detect']['execution'])
+        self.assertFalse(workspace.json()['editing_locked'])
+        self.assertEqual(before, TrainingRunStore(self.store_path).get(self.owner, legacy.id))
+        self.assertEqual((0, 0, 0, 0, 0), self._sdk_write_counts(sdk))
 
     def test_three_targets_unlock_on_last_completion_even_when_artifact_is_missing(self) -> None:
         sdk = _LifecycleSDK()

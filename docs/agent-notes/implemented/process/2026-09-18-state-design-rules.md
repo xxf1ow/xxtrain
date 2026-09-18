@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-本文是已生效的设计与审查规范，不代表现有代码已全部符合。训练及 CVAT 的具体修正仍需设计、实现和验证；[训练输入唯一性](../../proposed/simplification/2026-09-17-training-input-identity.md)继续拥有运行身份与输入规则。
+本文是已生效的设计与审查规范，不代表所有代码自动符合。训练意图协调与新建 CVAT Task 准备已有离线实现和联合回归，[训练意图协调与 CVAT 准备简化](../../proposed/simplification/2026-09-18-authoritative-state-coordination.md)记录具体机制及仍待完成的真实服务验收；[训练输入唯一性](../../proposed/simplification/2026-09-17-training-input-identity.md)继续拥有运行身份与输入规则。
 
 ### Authority and derivation
 
