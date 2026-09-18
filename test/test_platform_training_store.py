@@ -54,6 +54,40 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different facts'):
             store.create(replace(self.run, fingerprint='b' * 64))
 
+    def test_cancel_intent_survives_reopen_and_duplicate_create(self) -> None:
+        store = TrainingRunStore(self.path)
+        candidate = replace(self.run, desired_action='execute')
+        store.create(candidate)
+        cancelled = store.request_cancel(candidate.user_id, candidate.id)
+        self.assertEqual('cancel', cancelled.desired_action)
+        self.assertEqual(cancelled, store.create(candidate))
+        self.assertEqual(cancelled, TrainingRunStore(self.path).get(candidate.user_id, candidate.id))
+        with self.assertRaisesRegex(ValueError, 'different facts'):
+            store.create(replace(candidate, fingerprint='b' * 64))
+        with self.assertRaises(ValueError):
+            store.request_cancel(18, candidate.id)
+
+    def test_cancel_is_idempotent_and_invalid_intent_is_rejected(self) -> None:
+        store = TrainingRunStore(self.path)
+        candidate = replace(self.run, desired_action='execute')
+        store.create(candidate)
+
+        cancelled = store.request_cancel(candidate.user_id, candidate.id)
+
+        self.assertEqual(cancelled, store.request_cancel(candidate.user_id, candidate.id))
+        with self.assertRaisesRegex(ValueError, 'intent'):
+            store.create(replace(self.run, id=str(uuid4()), desired_action='pause'))
+
+    def test_cancelled_input_remains_canonical_for_a_different_candidate_id(self) -> None:
+        store = TrainingRunStore(self.path)
+        candidate = replace(self.run, desired_action='execute')
+        store.create(candidate)
+        cancelled = store.request_cancel(candidate.user_id, candidate.id)
+
+        duplicate = replace(candidate, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00')
+
+        self.assertEqual(cancelled, store.create(duplicate))
+
     def test_same_input_returns_original_identity(self) -> None:
         store = TrainingRunStore(self.path)
         first = store.create(self.run)
@@ -110,7 +144,8 @@ class PlatformTrainingStoreTest(unittest.TestCase):
     def test_concurrent_same_input_candidates_create_one_canonical_run(self) -> None:
         TrainingRunStore(self.path)
         barrier = Barrier(2)
-        candidates = (self.run, replace(self.run, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00'))
+        first = replace(self.run, desired_action='execute')
+        candidates = (first, replace(first, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00'))
 
         def create(candidate: TrainingRun) -> TrainingRun:
             store = TrainingRunStore(self.path)
@@ -128,6 +163,7 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         store = TrainingRunStore(self.path)
         store.create(self.run)
         store.mark_create_attempted(self.run.id, '2026-09-17T10:01:00Z')
+        store.mark_create_attempted(self.run.id, '2026-09-17T10:02:00Z')
         store.bind_task(self.run.id, 'clearml-1')
 
         canonical = store.create(replace(self.run, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00'))
@@ -226,6 +262,42 @@ class PlatformTrainingStoreTest(unittest.TestCase):
             indexes = {row[1] for row in connection.execute('PRAGMA index_list(training_runs)')}
         self.assertIn('training_runs_by_input', indexes)
 
+    def test_legacy_database_adds_nullable_intent_without_changing_bound_run(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        bound = replace(self.run, create_attempted_at='2026-09-17T10:01:00Z', clearml_task_id='clearml-1')
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.executescript(
+                """
+                CREATE TABLE training_runs (
+                  id TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL,
+                  workspace_id TEXT NOT NULL,
+                  workspace_name TEXT NOT NULL,
+                  target TEXT NOT NULL,
+                  fingerprint TEXT NOT NULL,
+                  cache_relative_path TEXT NOT NULL,
+                  submitted_at TEXT NOT NULL,
+                  create_attempted_at TEXT,
+                  clearml_task_id TEXT UNIQUE
+                );
+                """
+            )
+            connection.execute(
+                'INSERT INTO training_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', self._run_values(bound)
+            )
+
+        first = TrainingRunStore(self.path).get(bound.user_id, bound.id)
+        second = TrainingRunStore(self.path).get(bound.user_id, bound.id)
+
+        self.assertEqual(bound, first)
+        self.assertEqual(bound, second)
+        self.assertIsNone(first.desired_action)
+        with closing(sqlite3.connect(self.path)) as connection:
+            row = connection.execute('SELECT * FROM training_runs WHERE id = ?', (bound.id,)).fetchone()
+            columns = tuple(column[1] for column in connection.execute('PRAGMA table_info(training_runs)'))
+        self.assertEqual(self._run_values(bound) + (None,), row)
+        self.assertEqual('desired_action', columns[-1])
+
     def test_run_table_contains_no_business_stage(self) -> None:
         TrainingRunStore(self.path)
 
@@ -233,6 +305,7 @@ class PlatformTrainingStoreTest(unittest.TestCase):
             columns = {row[1] for row in connection.execute('PRAGMA table_info(training_runs)')}
 
         self.assertIn('clearml_task_id', columns)
+        self.assertIn('desired_action', columns)
         self.assertTrue(columns.isdisjoint({'status', 'stage', 'active_count', 'completed'}))
 
     def test_cache_path_requires_complete_published_training_inputs(self) -> None:

@@ -18,6 +18,7 @@ class TrainingRun:
     submitted_at: str
     create_attempted_at: str | None
     clearml_task_id: str | None
+    desired_action: str | None = None
 
 
 @dataclass(frozen=True)

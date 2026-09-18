@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS training_runs (
   cache_relative_path TEXT NOT NULL,
   submitted_at TEXT NOT NULL,
   create_attempted_at TEXT,
-  clearml_task_id TEXT UNIQUE
+  clearml_task_id TEXT UNIQUE,
+  desired_action TEXT CHECK (desired_action IN ('execute', 'cancel'))
 );
 CREATE INDEX IF NOT EXISTS training_runs_by_user ON training_runs(user_id);
 CREATE INDEX IF NOT EXISTS training_runs_by_workspace ON training_runs(workspace_id);
@@ -49,7 +50,7 @@ class TrainingRunStore:
             connection.execute('BEGIN IMMEDIATE')
             existing = _find_run(connection, run.id)
             if existing is not None:
-                if existing != run:
+                if _immutable_values(existing) != _immutable_values(run):
                     raise ValueError(f'Training run {run.id!r} is already recorded with different facts')
                 return existing
             existing = _find_input(connection, run.user_id, run.workspace_id, run.target, run.fingerprint)
@@ -60,11 +61,27 @@ class TrainingRunStore:
             connection.execute(
                 """INSERT INTO training_runs(
                 id, user_id, workspace_id, workspace_name, target, fingerprint, cache_relative_path, submitted_at,
-                create_attempted_at, clearml_task_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                create_attempted_at, clearml_task_id, desired_action
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _run_values(run),
             )
         return run
+
+    def request_cancel(self, user_id: int, run_id: str) -> TrainingRun:
+        """Persist cancellation for an owned run and return its current row."""
+        _validate_user_id(user_id)
+        _validate_run_id(run_id)
+        with self._connection() as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            run = _find_run(connection, run_id)
+            if run is None or run.user_id != user_id:
+                raise ValueError('Training run access denied')
+            connection.execute(
+                "UPDATE training_runs SET desired_action = 'cancel' WHERE id = ? AND user_id = ?", (run_id, user_id)
+            )
+            cancelled = _find_run(connection, run_id)
+            assert cancelled is not None
+            return cancelled
 
     def find_input(self, user_id: int, workspace_id: str, target: str, fingerprint: str) -> TrainingRun | None:
         """Return the run associated with one user's exact training input, if present."""
@@ -117,7 +134,8 @@ class TrainingRunStore:
         with self._connection() as connection, connection:
             if (
                 connection.execute(
-                    'UPDATE training_runs SET create_attempted_at = ? WHERE id = ?', (attempted_at, run_id)
+                    'UPDATE training_runs SET create_attempted_at = COALESCE(create_attempted_at, ?) WHERE id = ?',
+                    (attempted_at, run_id),
                 ).rowcount
                 != 1
             ):
@@ -145,6 +163,12 @@ class TrainingRunStore:
         with self._connection() as connection, connection:
             connection.executescript(_SCHEMA)
             connection.execute('BEGIN IMMEDIATE')
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(training_runs)')}
+            if 'desired_action' not in columns:
+                connection.execute(
+                    'ALTER TABLE training_runs ADD COLUMN desired_action TEXT '
+                    "CHECK (desired_action IN ('execute', 'cancel'))"
+                )
             duplicate = connection.execute(
                 """SELECT user_id, workspace_id, target, fingerprint, COUNT(*)
                 FROM training_runs
@@ -209,6 +233,20 @@ def _run_values(run: TrainingRun) -> tuple[object, ...]:
         run.submitted_at,
         run.create_attempted_at,
         run.clearml_task_id,
+        run.desired_action,
+    )
+
+
+def _immutable_values(run: TrainingRun) -> tuple[object, ...]:
+    return (
+        run.id,
+        run.user_id,
+        run.workspace_id,
+        run.workspace_name,
+        run.target,
+        run.fingerprint,
+        run.cache_relative_path,
+        run.submitted_at,
     )
 
 
@@ -232,6 +270,8 @@ def _validate_run(run: TrainingRun) -> None:
     ):
         if value is not None:
             _validate_non_empty_string(value, name)
+    if run.desired_action not in {None, 'execute', 'cancel'}:
+        raise ValueError("Training intent must be 'execute', 'cancel', or None")
 
 
 def _validate_run_id(run_id: str) -> None:
