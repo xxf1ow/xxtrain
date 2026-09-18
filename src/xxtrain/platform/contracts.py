@@ -240,6 +240,10 @@ class PlatformError(Exception):
     pass
 
 
+class PlatformConflictError(PlatformError):
+    """An expected resource conflict that is safe to report without backend details."""
+
+
 class TargetValidationError(PlatformError):
     """A safe annotation validation failure with its server-owned correction link."""
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Barrier
 from uuid import uuid4
 
+from xxtrain.platform.contracts import PlatformConflictError
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun, TrainingRunView
 from xxtrain.platform.training_store import TrainingRunStore
@@ -65,6 +66,13 @@ class PlatformTrainingStoreTest(unittest.TestCase):
             results = tuple(executor.map(lambda _: create(), range(2)))
 
         self.assertEqual((self.run, self.run), results)
+
+    def test_database_lock_is_normalized_to_a_typed_conflict(self) -> None:
+        store = TrainingRunStore(self.path)
+        with closing(sqlite3.connect(self.path)) as locked, locked:
+            locked.execute('BEGIN EXCLUSIVE')
+            with self.assertRaises(PlatformConflictError):
+                store.create(self.run)
 
     def test_get_rejects_a_run_owned_by_another_user(self) -> None:
         store = TrainingRunStore(self.path)

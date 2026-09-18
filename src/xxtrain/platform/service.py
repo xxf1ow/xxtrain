@@ -15,6 +15,7 @@ from xxtrain.platform.contracts import (
     EditJob,
     JobRef,
     PlatformAccessError,
+    PlatformConflictError,
     PlatformError,
     TargetValidationError,
     TargetView,
@@ -307,7 +308,7 @@ class AnnotationService:
         """Serialize one workspace mutation without permitting recursive acquisition."""
         self._require_owner(user_id)
         if not self.lock.acquire(blocking=False):
-            raise PlatformError('A workspace write is already in progress')
+            raise PlatformConflictError('A workspace write is already in progress')
         try:
             yield
         finally:

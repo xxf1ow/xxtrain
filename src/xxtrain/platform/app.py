@@ -21,7 +21,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from xxtrain.business_tasks import MODEL_TARGETS
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformError, TargetValidationError, WorkspaceView
+from xxtrain.platform.contracts import (
+    PlatformAccessError,
+    PlatformConflictError,
+    PlatformError,
+    TargetValidationError,
+    WorkspaceView,
+)
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import TrainingRunView
 from xxtrain.platform.training_service import TrainingService
@@ -61,7 +67,8 @@ def create_app(
 
     Authentication delegates to the supplied CVAT browser-session adapter. Routes distinguish missing or rejected
     sessions (401), authenticated workspace-owner denial (403), invalid request objects (422), and operational
-    workflow or CVAT failures (502). The caller owns ``service`` and ``cvat`` and must close their external resources.
+    workflow or backend failures (502). The caller owns ``service``, ``cvat``, and the optional ``training_service``
+    and must close their external resources.
     """
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     web = resources.files('xxtrain.platform').joinpath('web')
@@ -169,11 +176,8 @@ def create_app(
     def training_access(error: PlatformAccessError) -> HTTPException:
         return HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此训练任务。')
 
-    def training_failure(error: PlatformError) -> HTTPException:
-        if str(error) in {
-            'A workspace write is already in progress',
-            'Workspace editing is disabled while training is active',
-        }:
+    def training_failure(error: Exception) -> HTTPException:
+        if isinstance(error, PlatformConflictError):
             return HTTPException(status.HTTP_409_CONFLICT, '现场当前不能执行此操作。')
         return operational_error()
 
@@ -353,7 +357,7 @@ def create_app(
                 view = training_service.submit(user_id, target, str(body.request_id))
             except PlatformAccessError as error:
                 raise training_access(error) from None
-            except PlatformError as error:
+            except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
             return {
                 'run_id': view.run.id,
@@ -367,7 +371,7 @@ def create_app(
                 return [training_payload(view) for view in training_service.list_runs(authenticated_user(request))]
             except PlatformAccessError as error:
                 raise training_access(error) from None
-            except PlatformError as error:
+            except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
 
         @app.get('/platform/api/training-runs/{run_id}')
@@ -376,7 +380,7 @@ def create_app(
                 return training_payload(training_service.get_run(authenticated_user(request), str(run_id)))
             except PlatformAccessError as error:
                 raise training_access(error) from None
-            except PlatformError as error:
+            except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
 
         @app.post('/platform/api/training-runs/{run_id}/cancel', dependencies=[Depends(write_request)])
@@ -385,7 +389,7 @@ def create_app(
                 return training_payload(training_service.cancel(authenticated_user(request), str(run_id)))
             except PlatformAccessError as error:
                 raise training_access(error) from None
-            except PlatformError as error:
+            except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
 
         @app.post('/platform/api/training-runs/{run_id}/retry', dependencies=[Depends(write_request)])
@@ -396,7 +400,7 @@ def create_app(
                 )
             except PlatformAccessError as error:
                 raise training_access(error) from None
-            except PlatformError as error:
+            except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
 
         @app.get('/platform/api/training-runs/{run_id}/download', response_class=FileResponse)
@@ -405,7 +409,7 @@ def create_app(
                 download = training_service.download(authenticated_user(request), str(run_id))
             except PlatformAccessError as error:
                 raise training_access(error) from None
-            except PlatformError as error:
+            except (OSError, ValueError, PlatformError) as error:
                 raise training_failure(error) from None
             return FileResponse(download.path, filename=download.filename, media_type=download.media_type)
 

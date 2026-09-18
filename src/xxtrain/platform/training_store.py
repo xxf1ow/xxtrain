@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import UUID
 
+from xxtrain.platform.contracts import PlatformConflictError, PlatformError
 from xxtrain.platform.training_contracts import TrainingRun
 
 _SCHEMA = """
@@ -123,11 +124,18 @@ class TrainingRunStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._path)
+        connection = None
         try:
+            connection = sqlite3.connect(self._path)
             yield connection
+        except sqlite3.Error as error:
+            error_code = getattr(error, 'sqlite_errorcode', 0) & 0xFF
+            if error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise PlatformConflictError('Training metadata is busy') from error
+            raise PlatformError('Training metadata is unavailable') from error
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
 
 def _find_run(connection: sqlite3.Connection, run_id: str) -> TrainingRun | None:

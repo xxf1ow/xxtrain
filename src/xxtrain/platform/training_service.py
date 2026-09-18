@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformError
+from xxtrain.platform.contracts import PlatformAccessError, PlatformConflictError, PlatformError
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun, TrainingRunView
 from xxtrain.platform.training_store import TrainingRunStore
@@ -129,7 +129,7 @@ class TrainingService:
             raise PlatformAccessError('Workspace access denied')
         for run in self.store.list_workspace(workspace_id):
             if run.create_attempted_at is not None and self._view(run).execution.active:
-                raise PlatformError('Workspace editing is disabled while training is active')
+                raise PlatformConflictError('Workspace editing is disabled while training is active')
 
     def workspace_view(self, user_id: int) -> dict[str, object]:
         workspace = self.annotations.view(user_id)

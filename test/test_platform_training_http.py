@@ -9,7 +9,7 @@ import httpx
 
 from xxtrain.platform.app import create_app
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformError, WorkspaceView
+from xxtrain.platform.contracts import PlatformAccessError, PlatformConflictError, PlatformError, WorkspaceView
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun, TrainingRunView
 
 
@@ -178,26 +178,40 @@ class PlatformTrainingHttpTest(unittest.TestCase):
         self.assertEqual(b'onnx', downloaded.content)
         self.assertEqual('attachment; filename="model.onnx"', downloaded.headers['content-disposition'])
 
-    def test_backend_failure_is_safely_reported(self) -> None:
+    def test_expected_backend_failures_are_safely_reported(self) -> None:
+        for error in (
+            PlatformError('SDK payload contains token=secret and C:/cache'),
+            OSError('private metadata path'),
+            ValueError('private run facts'),
+        ):
+            with self.subTest(error=type(error).__name__):
+
+                def fail(*args: object) -> TrainingRunView:
+                    raise error
+
+                self.training.list_runs = fail  # type: ignore[method-assign]
+                response = self.client.get('/platform/api/training-runs')
+                self.assertEqual(502, response.status_code)
+                self.assertEqual({'detail': '平台暂时无法完成操作，请重试。'}, response.json())
+
+    def test_programming_errors_are_not_normalized_as_backend_failures(self) -> None:
         def fail(*args: object) -> TrainingRunView:
-            raise PlatformError('SDK payload contains token=secret and C:/cache')
+            raise RuntimeError('programming defect')
 
         self.training.list_runs = fail  # type: ignore[method-assign]
         response = self.client.get('/platform/api/training-runs')
-        self.assertEqual(502, response.status_code)
-        self.assertNotIn('secret', response.text)
-        self.assertNotIn('C:/cache', response.text)
+        self.assertEqual(500, response.status_code)
 
     def test_write_lock_conflict_is_a_safe_conflict(self) -> None:
         def fail(*args: object) -> TrainingRunView:
-            raise PlatformError('A workspace write is already in progress')
+            raise PlatformConflictError('private lock details')
 
         self.training.submit = fail  # type: ignore[method-assign]
         response = self.client.post(
             '/platform/api/targets/detect/train', json={'request_id': str(uuid4())}, headers=self.write_headers
         )
         self.assertEqual(409, response.status_code)
-        self.assertNotIn('workspace write', response.text)
+        self.assertNotIn('private lock details', response.text)
 
 
 if __name__ == '__main__':
