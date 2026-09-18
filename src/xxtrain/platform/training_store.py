@@ -24,6 +24,11 @@ CREATE INDEX IF NOT EXISTS training_runs_by_user ON training_runs(user_id);
 CREATE INDEX IF NOT EXISTS training_runs_by_workspace ON training_runs(workspace_id);
 """
 
+_INPUT_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS training_runs_by_input
+ON training_runs(user_id, workspace_id, target, fingerprint)
+"""
+
 
 class TrainingRunStore:
     """Persist immutable training associations outside workspace annotation storage.
@@ -37,7 +42,7 @@ class TrainingRunStore:
         self._initialize()
 
     def create(self, run: TrainingRun) -> TrainingRun:
-        """Store one run or return the existing run when every durable fact is identical."""
+        """Store one run or return the canonical row already associated with its input."""
         _validate_run(run)
         with self._connection() as connection, connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -45,6 +50,11 @@ class TrainingRunStore:
             if existing is not None:
                 if existing != run:
                     raise ValueError(f'Training run {run.id!r} is already recorded with different facts')
+                return existing
+            existing = _find_input(connection, run.user_id, run.workspace_id, run.target, run.fingerprint)
+            if existing is not None:
+                if existing.cache_relative_path != run.cache_relative_path:
+                    raise ValueError('Training input is already recorded with a different cache association')
                 return existing
             connection.execute(
                 """INSERT INTO training_runs(
@@ -54,6 +64,18 @@ class TrainingRunStore:
                 _run_values(run),
             )
         return run
+
+    def find_input(self, user_id: int, workspace_id: str, target: str, fingerprint: str) -> TrainingRun | None:
+        """Return the run associated with one user's exact training input, if present."""
+        _validate_user_id(user_id)
+        for value, name in (
+            (workspace_id, 'Workspace id'),
+            (target, 'Training target'),
+            (fingerprint, 'Training fingerprint'),
+        ):
+            _validate_non_empty_string(value, name)
+        with self._connection() as connection:
+            return _find_input(connection, user_id, workspace_id, target, fingerprint)
 
     def get(self, user_id: int, run_id: str) -> TrainingRun:
         """Return one run only when it belongs to ``user_id``."""
@@ -119,8 +141,24 @@ class TrainingRunStore:
 
     def _initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as connection:
+        with self._connection() as connection, connection:
             connection.executescript(_SCHEMA)
+            connection.execute('BEGIN IMMEDIATE')
+            duplicate = connection.execute(
+                """SELECT user_id, workspace_id, target, fingerprint, COUNT(*)
+                FROM training_runs
+                GROUP BY user_id, workspace_id, target, fingerprint
+                HAVING COUNT(*) > 1
+                LIMIT 1"""
+            ).fetchone()
+            if duplicate is not None:
+                user_id, workspace_id, target, fingerprint, count = duplicate
+                raise PlatformConflictError(
+                    'Training metadata contains duplicate input runs; resolve the records without deleting task '
+                    f'associations before startup (user_id={user_id}, workspace_id={workspace_id!r}, '
+                    f'target={target!r}, fingerprint={fingerprint!r}, rows={count})'
+                )
+            connection.execute(_INPUT_INDEX)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -140,6 +178,17 @@ class TrainingRunStore:
 
 def _find_run(connection: sqlite3.Connection, run_id: str) -> TrainingRun | None:
     row = connection.execute('SELECT * FROM training_runs WHERE id = ?', (run_id,)).fetchone()
+    return None if row is None else _run_from_row(row)
+
+
+def _find_input(
+    connection: sqlite3.Connection, user_id: int, workspace_id: str, target: str, fingerprint: str
+) -> TrainingRun | None:
+    row = connection.execute(
+        """SELECT * FROM training_runs
+        WHERE user_id = ? AND workspace_id = ? AND target = ? AND fingerprint = ?""",
+        (user_id, workspace_id, target, fingerprint),
+    ).fetchone()
     return None if row is None else _run_from_row(row)
 
 

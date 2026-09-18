@@ -54,6 +54,46 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different facts'):
             store.create(replace(self.run, fingerprint='b' * 64))
 
+    def test_same_input_returns_original_identity(self) -> None:
+        store = TrainingRunStore(self.path)
+        first = store.create(self.run)
+        candidate = replace(self.run, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00')
+
+        self.assertEqual(first, store.create(candidate))
+        self.assertEqual((first,), store.list_user(self.run.user_id))
+        self.assertEqual(first, store.find_input(first.user_id, first.workspace_id, first.target, first.fingerprint))
+
+    def test_input_key_dimensions_create_distinct_runs(self) -> None:
+        store = TrainingRunStore(self.path)
+        variants = (
+            replace(self.run, id=str(uuid4()), user_id=18),
+            replace(self.run, id=str(uuid4()), workspace_id='line-4'),
+            replace(self.run, id=str(uuid4()), target='segment'),
+            replace(self.run, id=str(uuid4()), fingerprint='b' * 64),
+        )
+
+        store.create(self.run)
+        for variant in variants:
+            self.assertEqual(variant, store.create(variant))
+
+        self.assertEqual(5, sum(len(store.list_user(user_id)) for user_id in (17, 18)))
+
+    def test_same_input_rejects_a_different_cache_association(self) -> None:
+        store = TrainingRunStore(self.path)
+        store.create(self.run)
+
+        with self.assertRaisesRegex(ValueError, 'cache'):
+            store.create(replace(self.run, id=str(uuid4()), cache_relative_path='cache/b/detect'))
+
+    def test_find_input_uses_the_full_owned_key(self) -> None:
+        store = TrainingRunStore(self.path)
+        store.create(self.run)
+
+        self.assertIsNone(store.find_input(18, self.run.workspace_id, self.run.target, self.run.fingerprint))
+        self.assertIsNone(store.find_input(17, 'line-4', self.run.target, self.run.fingerprint))
+        self.assertIsNone(store.find_input(17, self.run.workspace_id, 'segment', self.run.fingerprint))
+        self.assertIsNone(store.find_input(17, self.run.workspace_id, self.run.target, 'b' * 64))
+
     def test_concurrent_same_id_creates_return_the_same_persisted_run(self) -> None:
         TrainingRunStore(self.path)
         barrier = Barrier(2)
@@ -66,6 +106,35 @@ class PlatformTrainingStoreTest(unittest.TestCase):
             results = tuple(executor.map(lambda _: create(), range(2)))
 
         self.assertEqual((self.run, self.run), results)
+
+    def test_concurrent_same_input_candidates_create_one_canonical_run(self) -> None:
+        TrainingRunStore(self.path)
+        barrier = Barrier(2)
+        candidates = (self.run, replace(self.run, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00'))
+
+        def create(candidate: TrainingRun) -> TrainingRun:
+            store = TrainingRunStore(self.path)
+            barrier.wait()
+            return store.create(candidate)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = tuple(executor.map(create, candidates))
+
+        reopened = TrainingRunStore(self.path)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual((results[0],), reopened.list_user(self.run.user_id))
+
+    def test_canonical_reuse_preserves_attempt_and_task_binding(self) -> None:
+        store = TrainingRunStore(self.path)
+        store.create(self.run)
+        store.mark_create_attempted(self.run.id, '2026-09-17T10:01:00Z')
+        store.bind_task(self.run.id, 'clearml-1')
+
+        canonical = store.create(replace(self.run, id=str(uuid4()), submitted_at='2026-09-17T13:00:00+00:00'))
+
+        self.assertEqual(self.run.id, canonical.id)
+        self.assertEqual('2026-09-17T10:01:00Z', canonical.create_attempted_at)
+        self.assertEqual('clearml-1', canonical.clearml_task_id)
 
     def test_database_lock_is_normalized_to_a_typed_conflict(self) -> None:
         store = TrainingRunStore(self.path)
@@ -89,6 +158,73 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         store.bind_task(self.run.id, 'clearml-1')
         with self.assertRaisesRegex(ValueError, 'different task'):
             store.bind_task(self.run.id, 'clearml-2')
+
+    def test_legacy_duplicate_inputs_refuse_startup_without_changing_rows(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        duplicate = replace(self.run, id=str(uuid4()), clearml_task_id='clearml-2')
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.executescript(
+                """
+                CREATE TABLE training_runs (
+                  id TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL,
+                  workspace_id TEXT NOT NULL,
+                  workspace_name TEXT NOT NULL,
+                  target TEXT NOT NULL,
+                  fingerprint TEXT NOT NULL,
+                  cache_relative_path TEXT NOT NULL,
+                  submitted_at TEXT NOT NULL,
+                  create_attempted_at TEXT,
+                  clearml_task_id TEXT UNIQUE
+                );
+                CREATE INDEX training_runs_by_user ON training_runs(user_id);
+                CREATE INDEX training_runs_by_workspace ON training_runs(workspace_id);
+                """
+            )
+            connection.executemany(
+                'INSERT INTO training_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (self._run_values(self.run), self._run_values(duplicate)),
+            )
+            before = tuple(connection.execute('SELECT * FROM training_runs ORDER BY rowid'))
+
+        with self.assertRaisesRegex(PlatformConflictError, 'duplicate.*user_id=17.*line-3.*detect'):
+            TrainingRunStore(self.path)
+
+        with closing(sqlite3.connect(self.path)) as connection:
+            after = tuple(connection.execute('SELECT * FROM training_runs ORDER BY rowid'))
+            indexes = {row[1] for row in connection.execute('PRAGMA index_list(training_runs)')}
+        self.assertEqual(before, after)
+        self.assertNotIn('training_runs_by_input', indexes)
+
+    def test_legacy_nonduplicate_database_acquires_input_index_without_changing_facts(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.executescript(
+                """
+                CREATE TABLE training_runs (
+                  id TEXT PRIMARY KEY,
+                  user_id INTEGER NOT NULL,
+                  workspace_id TEXT NOT NULL,
+                  workspace_name TEXT NOT NULL,
+                  target TEXT NOT NULL,
+                  fingerprint TEXT NOT NULL,
+                  cache_relative_path TEXT NOT NULL,
+                  submitted_at TEXT NOT NULL,
+                  create_attempted_at TEXT,
+                  clearml_task_id TEXT UNIQUE
+                );
+                """
+            )
+            connection.execute(
+                'INSERT INTO training_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', self._run_values(self.run)
+            )
+
+        store = TrainingRunStore(self.path)
+
+        self.assertEqual(self.run, store.get(self.run.user_id, self.run.id))
+        with closing(sqlite3.connect(self.path)) as connection:
+            indexes = {row[1] for row in connection.execute('PRAGMA index_list(training_runs)')}
+        self.assertIn('training_runs_by_input', indexes)
 
     def test_run_table_contains_no_business_stage(self) -> None:
         TrainingRunStore(self.path)
@@ -192,6 +328,21 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         (workspace / 'train.png').touch()
         (workspace / 'val.png').touch()
         return target
+
+    @staticmethod
+    def _run_values(run: TrainingRun) -> tuple[object, ...]:
+        return (
+            run.id,
+            run.user_id,
+            run.workspace_id,
+            run.workspace_name,
+            run.target,
+            run.fingerprint,
+            run.cache_relative_path,
+            run.submitted_at,
+            run.create_attempted_at,
+            run.clearml_task_id,
+        )
 
 
 if __name__ == '__main__':
