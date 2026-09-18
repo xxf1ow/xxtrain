@@ -3,8 +3,12 @@ import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
+import requests
+
+import xxtrain.integrations.clearml.client as clearml_client_module
 from test.platform_fixture import create_fixture
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.integrations.clearml.client import QUEUED_CANCELLATION_PARAMETER, QUEUED_CANCELLATION_VALUE, ClearMLClient
@@ -305,6 +309,38 @@ class TrainingServiceTests(unittest.TestCase):
         self.service.reconcile_pending()
 
         self.assertEqual([('create', run.id) for run in runs], self.backend.write_calls[::2])
+
+    def test_reconcile_pending_normalizes_lazy_sdk_login_failure_and_continues(self):
+        from clearml.backend_api.session.defs import ENV_ACCESS_KEY, ENV_SECRET_KEY
+
+        runs = [
+            self._store_run('detect', desired_action='execute'),
+            self._store_run('classify', desired_action='execute'),
+        ]
+        clearml = ClearMLClient(
+            'xxtrain', 'training', Path('/opt/xxtrain/worker.py'), self.config.runtime_dir / 'cache'
+        )
+        service = TrainingService(
+            self.config, self.annotations, TrainingRunStore(self.store_path), clearml, self.config.runtime_dir / 'cache'
+        )
+
+        with (
+            patch.object(ENV_ACCESS_KEY, 'get', return_value='controlled-key'),
+            patch.object(ENV_SECRET_KEY, 'get', return_value='controlled-secret'),
+            patch.object(
+                clearml_client_module._BoundedSession,
+                '_send_request',
+                side_effect=requests.Timeout('controlled login timeout'),
+            ),
+            self.assertLogs('xxtrain.platform.training_service', level='WARNING') as logs,
+        ):
+            service.reconcile_pending()
+
+        stored = [TrainingRunStore(self.store_path).get(self.owner, run.id) for run in runs]
+        self.assertEqual(2, len(logs.output))
+        self.assertTrue(all('Training submission recovery failed' in entry for entry in logs.output))
+        self.assertTrue(all(run.create_attempted_at is not None for run in stored))
+        self.assertTrue(all(run.clearml_task_id is None for run in stored))
 
     def test_read_reconciliation_keeps_unconfirmed_creation_unknown_and_locked(self):
         def missing_create(run):

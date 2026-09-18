@@ -407,6 +407,36 @@ class ClearMLClientTests(unittest.TestCase):
         with self.assertRaises(SendError):
             Task._send(session, GetAllRequest())
 
+    def test_bounded_session_preserves_programming_error_across_installed_sdk_retry_boundary(self):
+        from clearml import Task
+        from clearml.backend_api.services.v2_20.tasks import GetAllRequest
+        from clearml.backend_interface.session import SendError
+
+        programming_error = TypeError('controlled invalid adapter request')
+
+        class ParentSession:
+            def send(self, req_obj, async_enable=False, headers=None):
+                raise programming_error
+
+        class Session(clearml_client_module._BoundedSession, ParentSession):
+            pass
+
+        session = object.__new__(Session)
+        session._logger = None
+
+        def find(**kwargs):
+            return Task._send(session, GetAllRequest())
+
+        client = ClearMLClient(
+            'xxtrain', 'training', Path('/worker.py'), Path('/shared'), sdk=SimpleNamespace(find=find)
+        )
+
+        with self.assertRaises(TypeError) as caught:
+            client.find(training_run().id)
+
+        self.assertIs(programming_error, caught.exception)
+        self.assertIsInstance(caught.exception.__cause__, SendError)
+
     def test_sdk_artifact_readiness_uses_metadata_without_downloading(self):
         sdk = object.__new__(_ClearMLSDK)
         sdk._task = Mock()

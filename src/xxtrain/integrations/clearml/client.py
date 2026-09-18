@@ -15,6 +15,8 @@ QUEUED_CANCELLATION_PARAMETER = 'xxtrain/queued_cancellation'
 QUEUED_CANCELLATION_VALUE = 'dequeued-v1'
 CREATED_CANCELLATION_VALUE = 'created-v1'
 _REQUEST_ATTEMPTS = 3
+_PROGRAMMING_ERRORS = (AssertionError, AttributeError, KeyError, TypeError)
+_PROGRAMMING_ERROR_ATTRIBUTE = '_xxtrain_programming_error'
 
 
 class _BoundedSession:
@@ -73,22 +75,27 @@ class _BoundedSession:
     def send(self, req_obj, async_enable=False, headers=None):
         try:
             result = super().send(req_obj, async_enable=async_enable, headers=headers)
+        except _PROGRAMMING_ERRORS as error:
+            return self._request_failure(req_obj, error)
         except Exception:
             return self._request_failure(req_obj)
         if result is not None and result.meta.result_code > 500:
             return self._request_failure(req_obj)
         return result
 
-    def _request_failure(self, req_obj):
+    def _request_failure(self, req_obj, programming_error=None):
         from clearml.backend_api.session.callresult import CallResult
 
-        return CallResult._make_raw_response(
+        result = CallResult._make_raw_response(
             request_cls=req_obj.__class__,
             service=req_obj._service,
             action=req_obj._action,
             status_code=500,
             text='ClearML transport request failed',
         )
+        if programming_error is not None:
+            setattr(result, _PROGRAMMING_ERROR_ATTRIBUTE, programming_error)
+        return result
 
     def _request_timeout(self, data):
         if data and len(data) > self._write_session_data_size:
@@ -133,14 +140,14 @@ class ClearMLClient:
         return self._sdk
 
     def find(self, run_id: str) -> str | None:
-        tasks = self._sdk_call(self.sdk.find, project_name=self._project, task_name=f'^{re.escape(run_id)}$')
+        tasks = self._sdk_call('find', project_name=self._project, task_name=f'^{re.escape(run_id)}$')
         if len(tasks) > 1:
             raise ClearMLConflictError(f'Multiple ClearML tasks match training run {run_id}')
         return tasks[0].id if tasks else None
 
     def create(self, run: TrainingRun) -> str:
         task = self._sdk_call(
-            self.sdk.create,
+            'create',
             project_name=self._project,
             task_name=run.id,
             task_type='training',
@@ -160,26 +167,26 @@ class ClearMLClient:
         return task.id
 
     def enqueue(self, task_id: str) -> None:
-        if self._sdk_call(self.sdk.get, task_id).get('status') != 'created':
+        if self._sdk_call('get', task_id).get('status') != 'created':
             return
-        self._sdk_call(self.sdk.enqueue, task_id, queue_name=self._queue, force=False)
+        self._sdk_call('enqueue', task_id, queue_name=self._queue, force=False)
 
     def observe(self, task_id: str) -> ExecutionView:
-        facts = self._sdk_call(self.sdk.get, task_id)
+        facts = self._sdk_call('get', task_id)
         artifact_ready, detail = self._artifact_observation(task_id)
         if facts.get('status') == 'stopped':
             return self._stopped_view(facts, artifact_ready)
         return parse_execution(facts, artifact_ready=artifact_ready, detail=detail)
 
     def cancel(self, task_id: str) -> ExecutionView:
-        before = self._sdk_call(self.sdk.get, task_id)
+        before = self._sdk_call('get', task_id)
         if before.get('status') == 'queued':
-            self._sdk_call(self.sdk.cancel_queued, task_id)
+            self._sdk_call('cancel_queued', task_id)
         elif before.get('status') == 'created':
-            self._sdk_call(self.sdk.cancel_created, task_id)
+            self._sdk_call('cancel_created', task_id)
         elif before.get('status') == 'in_progress':
-            self._sdk_call(self.sdk.request_stop, task_id)
-        facts = self._sdk_call(self.sdk.get, task_id)
+            self._sdk_call('request_stop', task_id)
+        facts = self._sdk_call('get', task_id)
         artifact_ready, detail = self._artifact_observation(task_id)
         if facts.get('status') == 'stopped':
             return self._stopped_view(facts, artifact_ready)
@@ -187,18 +194,20 @@ class ClearMLClient:
 
     def _artifact_observation(self, task_id: str) -> tuple[bool, str | None]:
         try:
-            ready = self._sdk_call(self.sdk.has_artifact, task_id, 'deployment', project_name=self._project)
+            ready = self._sdk_call('has_artifact', task_id, 'deployment', project_name=self._project)
             return ready, None
         except ClearMLOperationError:
             return False, 'Deployment artifact status is temporarily unavailable'
 
-    @staticmethod
-    def _sdk_call(operation, *args, **kwargs):
+    def _sdk_call(self, operation, *args, **kwargs):
         try:
-            return operation(*args, **kwargs)
-        except (AssertionError, AttributeError, KeyError, TypeError):
+            return getattr(self.sdk, operation)(*args, **kwargs)
+        except _PROGRAMMING_ERRORS:
             raise
         except Exception as error:
+            programming_error = getattr(getattr(error, 'result', None), _PROGRAMMING_ERROR_ATTRIBUTE, None)
+            if isinstance(programming_error, _PROGRAMMING_ERRORS):
+                raise programming_error from error
             raise ClearMLOperationError('ClearML SDK operation failed') from error
 
     def _stopped_view(self, facts: dict[str, object], artifact_ready: bool) -> ExecutionView:
@@ -206,7 +215,7 @@ class ClearMLClient:
             return parse_execution(facts, artifact_ready=artifact_ready, worker_released=True)
         try:
             released = self._sdk_call(
-                self.sdk.worker_released,
+                'worker_released',
                 str(facts['id']),
                 worker_id=facts.get('last_worker'),
                 stopped_at=facts.get('status_changed'),
@@ -221,7 +230,7 @@ class ClearMLClient:
         return parse_execution(facts, artifact_ready=artifact_ready, detail=detail)
 
     def download(self, task_id: str, destination: Path) -> DownloadFile:
-        artifact = self._sdk_call(self.sdk.artifact, task_id, 'deployment', project_name=self._project)
+        artifact = self._sdk_call('artifact', task_id, 'deployment', project_name=self._project)
         source = Path(artifact.local_path).resolve()
         if not source.is_file():
             raise FileNotFoundError('ClearML deployment artifact is unavailable')
