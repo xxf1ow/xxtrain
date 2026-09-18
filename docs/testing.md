@@ -63,7 +63,7 @@ Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQ
 uv run --locked --extra platform python -m unittest test.test_platform_point_workflow -v
 ```
 
-训练闭环联合回归通过真实 ASGI 路由、应用生命周期、`TrainingService`、`TrainingRunStore`、`AnnotationService`、训练缓存和 ClearML 适配器运行，只控制 ClearML SDK 边界及 CVAT 会话。它覆盖无浏览器请求的持久意图接续、查询只读、出队后部分取消失败与重启、创建前取消、旧行观察、三目标 FIFO 提交且标注库不变、最后一个终态解锁、完成但缺产物时禁止下载、并发唯一运行、未知状态、旧 CVAT 页面回写拒绝，以及输入变化、规范历史恢复和原缓存保留：
+训练闭环联合回归通过真实 ASGI 路由、应用生命周期、`TrainingService`、`TrainingRunStore`、`AnnotationService`、训练缓存和 ClearML 适配器运行，只控制 ClearML SDK 边界及 CVAT 会话。它覆盖无浏览器请求的持久意图接续、查询只读、创建部分成功后的同任务补齐与取消、启动配置不完整时禁止入队、出队后部分取消失败与重启、创建前取消、旧行观察、三目标 FIFO 提交且标注库不变、最后一个终态解锁、完成但缺产物时禁止下载、并发唯一运行、未知状态、旧 CVAT 页面回写拒绝，以及输入变化、规范历史恢复和原缓存保留：
 
 ```powershell
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_workflow -v

@@ -53,7 +53,7 @@ class ControlledClearML:
             raise error
         return task_id
 
-    def enqueue(self, task_id):
+    def enqueue(self, task_id, run):
         if self.tasks[task_id]['status'] != 'created':
             return
         self.enqueue_calls += 1
@@ -107,6 +107,9 @@ class DequeueProofFailureSDK:
     def enqueue(self, task_id, **kwargs):
         self.enqueue_calls += 1
         self.task['status'] = 'queued'
+
+    def prepare(self, task_id, **kwargs):
+        return True
 
     def get(self, task_id):
         return dict(self.task, parameters=dict(self.task['parameters']))
@@ -268,6 +271,23 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual(recovered.run, repeated.run)
         self.assertEqual(1, self.backend.create_calls)
         self.assertEqual('queued', repeated.execution.status)
+
+    def test_cancel_after_interrupted_population_uses_the_original_task_without_enqueue(self):
+        self.backend.create_failure = ConnectionError('response lost after identity creation')
+
+        def incomplete(task_id, run):
+            raise ConnectionError('launch population interrupted')
+
+        self.backend.enqueue = incomplete
+        with self.assertRaisesRegex(PlatformError, 'queue'):
+            self.service.submit(self.owner, 'detect')
+        run = TrainingRunStore(self.store_path).list_user(self.owner)[0]
+
+        cancelled = self.service.cancel(self.owner, run.id)
+
+        self.assertEqual('task-1', cancelled.run.clearml_task_id)
+        self.assertEqual(1, self.backend.create_calls)
+        self.assertEqual([('create', run.id), ('cancel', 'task-1')], self.backend.write_calls)
 
     def test_uncertain_create_without_remote_match_is_not_retried_blindly(self):
         def missing_create(run):

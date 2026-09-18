@@ -8,7 +8,7 @@ from ultralytics.models import YOLO
 from xxtrain.task import TaskType
 
 from .exporting import export_model_to_path
-from .model import generate_configured_model_yaml, prepare_pretrained_weights
+from .model import configured_model_name, generate_configured_model_yaml, prepare_pretrained_weights
 from .settings import TrainingProgress, TrainingResult, TrainingSettings, training_arguments
 
 
@@ -28,7 +28,7 @@ def train_prepared(
 
     run_dir.mkdir(parents=True, exist_ok=True)
     local_data = _prepare_local_dataset(settings.task_type, dataset_dir, run_dir / 'dataset')
-    model_yaml = run_dir / 'model.yaml'
+    model_yaml = run_dir / f'{configured_model_name(settings)}.yaml'
     name, model_yaml = generate_configured_model_yaml(settings, local_data / 'dataset.yaml', model_yaml)
     model = YOLO(model_yaml)
     model.load(prepare_pretrained_weights(name))

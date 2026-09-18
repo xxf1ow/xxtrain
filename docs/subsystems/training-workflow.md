@@ -40,7 +40,7 @@
 
 训练完成后，工作流把 Scenario 文件复制到 Ultralytics run 目录以保留运行配置；存在 best checkpoint 时从它导出，否则从当前模型导出并报告缺失。Ultralytics YOLO 是唯一后端，不为假设中的第二框架维护抽象。
 
-`train_prepared()` 直接消费已发布的数据集目录。它在独立 `run_dir` 中生成模型 YAML、split 列表、标签副本和一次性图片副本，使 Ultralytics 的图片修复、cache、run、checkpoint 和 ONNX 写入都不触及发布树。每次运行仍只从共用默认权重缓存初始化，不使用历史训练 checkpoint。训练回调以从 1 开始的已完成 epoch 上报进度；best checkpoint 存在时，导出和验证指标均来自该 checkpoint。这些副本增加每次运行的传输与磁盘占用，但只属于当次 run，不是持久从机数据缓存。
+`train_prepared()` 直接消费已发布的数据集目录。它在独立 `run_dir` 中以配置模型名生成 YAML，并生成 split 列表、标签副本和一次性图片副本；模型 basename 使 Ultralytics 选择 `model_scale` 对应的结构，其他副本使图片修复、cache、run、checkpoint 和 ONNX 写入都不触及发布树。每次运行仍只从共用默认权重缓存初始化，不使用历史训练 checkpoint。训练回调以从 1 开始的已完成 epoch 上报进度；best checkpoint 存在时，导出和验证指标均来自该 checkpoint。这些副本增加每次运行的传输与磁盘占用，但只属于当次 run，不是持久从机数据缓存。
 
 ## Export and review
 

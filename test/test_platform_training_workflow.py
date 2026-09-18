@@ -50,9 +50,9 @@ class _QueuedClearML(ControlledClearML):
         super().__init__()
         self.enqueued: list[str] = []
 
-    def enqueue(self, task_id):
+    def enqueue(self, task_id, run):
         before = self.tasks[task_id]['status']
-        super().enqueue(task_id)
+        super().enqueue(task_id, run)
         if before == 'created':
             self.enqueued.append(task_id)
 
@@ -101,6 +101,9 @@ class _LifecycleSDK:
         self.enqueue_calls += 1
         self.tasks[task_id]['status'] = 'queued'
         self.enqueued.set()
+
+    def prepare(self, task_id, **kwargs):
+        return True
 
     def get(self, task_id):
         task = self.tasks[task_id]
@@ -370,7 +373,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
     def test_refreshes_are_read_only_and_coordinator_recovers_bound_created_task(self) -> None:
         original_enqueue = self.clearml.enqueue
 
-        def fail_before_enqueue(task_id):
+        def fail_before_enqueue(task_id, run):
             raise ConnectionError('queue unavailable before enqueue')
 
         self.clearml.enqueue = fail_before_enqueue

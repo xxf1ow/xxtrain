@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -24,12 +25,17 @@ def build_delivery(*args: object, **kwargs: object) -> Path:
 def _task_init() -> Any:
     from clearml import Task
 
-    return Task.init(auto_connect_frameworks=False)
+    return Task.init(auto_connect_arg_parser=False, auto_connect_frameworks=False)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    arguments = _parser().parse_args(argv)
+    raw_arguments = list(sys.argv[1:] if argv is None else argv)
+    parser = _parser()
+    if '-h' in raw_arguments or '--help' in raw_arguments:
+        parser.parse_args(raw_arguments)
     task = _task_init()
+    task.connect(parser)
+    arguments = parser.parse_args(raw_arguments)
     try:
         definition = _training_definition(arguments.task, arguments.target)
         dataset_dir = _contained_path(Path(arguments.shared_root), arguments.cache_relative_path)

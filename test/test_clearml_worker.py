@@ -1,10 +1,12 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 from xxtrain.integrations.clearml.worker import main
 from xxtrain.training.settings import TrainingProgress, TrainingResult
@@ -45,7 +47,78 @@ class ClearMLWorkerTests(unittest.TestCase):
             from xxtrain.integrations.clearml.worker import _task_init
 
             self.assertIs(_task_init(), self.task)
-            task_init.assert_called_once_with(auto_connect_frameworks=False)
+            task_init.assert_called_once_with(auto_connect_arg_parser=False, auto_connect_frameworks=False)
+
+    @patch('xxtrain.integrations.clearml.worker.build_delivery')
+    @patch('xxtrain.integrations.clearml.worker.train_prepared')
+    def test_agent_no_flags_consumes_installed_clearml_parameters_for_all_targets(self, train, build):
+        from clearml.backend_interface.task.args import _Arguments
+
+        delivery = self.root / 'delivery.zip'
+        delivery.write_bytes(b'zip')
+        build.return_value = delivery
+        train.return_value = TrainingResult(self.root / 'model.onnx', {}, {})
+        expected_train_args = {
+            'detect': {'epochs': 80, 'batch': 32, 'imgsz': 640},
+            'classify': {
+                'epochs': 72,
+                'batch': 64,
+                'imgsz': 224,
+                'scale': 0.0,
+                'fliplr': 0.0,
+                'flipud': 0.0,
+                'degrees': 0.0,
+                'auto_augment': None,
+            },
+            'segment': {'epochs': 80, 'batch': 32, 'imgsz': 640},
+        }
+
+        for target in ('detect', 'classify', 'segment'):
+            with self.subTest(target=target):
+                run_id = str(uuid4())
+                cache_relative_path = f'{target}/cache'
+                (self.root / 'shared' / target / 'cache').mkdir(parents=True, exist_ok=True)
+                task = Mock()
+                task.get_logger.return_value = Mock()
+                task.upload_artifact.return_value = True
+                task.get_parameters.return_value = {
+                    'Args/task': 'point',
+                    'Args/target': target,
+                    'Args/cache_relative_path': cache_relative_path,
+                    'Args/shared_root': str(self.root / 'shared'),
+                    'Args/run_id': run_id,
+                    'Args/run_root': str(self.root / 'runs'),
+                }
+
+                def connect(parser, *, current=task):
+                    with patch('clearml.backend_interface.task.args.Session.check_min_api_version', return_value=True):
+                        _Arguments(current).copy_to_parser(parser, None)
+                    return parser
+
+                task.connect.side_effect = connect
+                with (
+                    patch('xxtrain.integrations.clearml.worker._task_init', return_value=task),
+                    patch.object(sys, 'argv', ['xxtrain-worker']),
+                ):
+                    main()
+
+                settings, dataset_dir, run_dir = train.call_args.args
+                self.assertEqual(target, settings.task_type.value)
+                self.assertEqual('v8', settings.model_version)
+                self.assertEqual('n', settings.model_scale)
+                self.assertEqual(expected_train_args[target], dict(settings.train_args))
+                self.assertEqual(self.root / 'shared' / target / 'cache', dataset_dir)
+                self.assertEqual(self.root / 'runs' / run_id, run_dir)
+
+    def test_help_does_not_initialize_clearml(self):
+        with (
+            patch('xxtrain.integrations.clearml.worker._task_init') as task_init,
+            self.assertRaises(SystemExit) as exit,
+        ):
+            main(['--help'])
+
+        self.assertEqual(0, exit.exception.code)
+        task_init.assert_not_called()
 
     @patch('xxtrain.integrations.clearml.worker._task_init')
     @patch('xxtrain.integrations.clearml.worker.build_delivery')

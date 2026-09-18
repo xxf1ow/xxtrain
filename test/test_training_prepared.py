@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import yaml
 from PIL import Image
 from ultralytics.data.utils import check_image
+from ultralytics.nn.tasks import yaml_model_load
 
 from xxtrain.task import TaskType
 from xxtrain.training import TrainingProgress, TrainingSettings, train_prepared
@@ -79,8 +80,9 @@ class PreparedTrainingTest(unittest.TestCase):
                     )
 
                 convert.assert_not_called()
-                weights.assert_called_once()
-                yolo.assert_called_once_with(run_dir / 'model.yaml')
+                suffix = '-cls' if task_type is TaskType.CLASSIFY else '-seg' if task_type is TaskType.SEGMENT else ''
+                weights.assert_called_once_with(f'yolov8n{suffix}')
+                yolo.assert_called_once_with(run_dir / f'yolov8n{suffix}.yaml')
                 model.load.assert_called_once_with(self.root / 'default.pt')
                 train_args = model.train.call_args.kwargs
                 self.assertEqual(run_dir, train_args['project'])
@@ -91,6 +93,32 @@ class PreparedTrainingTest(unittest.TestCase):
                 self.assertEqual(run_dir / 'model.onnx', result.onnx_path)
                 self.assertEqual(b'onnx', result.onnx_path.read_bytes())
                 self.assertEqual({'metrics/score': 0.75}, dict(result.metrics))
+
+    def test_configured_model_basename_selects_the_real_ultralytics_scale(self) -> None:
+        dataset = self._write_dataset(TaskType.DETECT)
+        for scale in ('n', 's'):
+            with self.subTest(scale=scale):
+                run_dir = self.root / f'{scale}-run'
+                model = MagicMock(names={0: 'Point'})
+                model.trainer = MagicMock(best='')
+                model.val.return_value = MagicMock(results_dict={})
+                exported = run_dir / 'exported.onnx'
+                model.export.side_effect = lambda **_kwargs: (exported.write_bytes(b'onnx'), exported)[1]
+                loaded_scales = []
+
+                def load_model(path):
+                    loaded_scales.append(yaml_model_load(path)['scale'])
+                    return model
+
+                with (
+                    patch('xxtrain.training.prepared.YOLO', side_effect=load_model),
+                    patch(
+                        'xxtrain.training.prepared.prepare_pretrained_weights', return_value=self.root / 'default.pt'
+                    ),
+                ):
+                    train_prepared(TrainingSettings(TaskType.DETECT, model_scale=scale), dataset, run_dir)
+
+                self.assertEqual([scale], loaded_scales)
 
     def test_best_checkpoint_supplies_export_names_and_metrics(self) -> None:
         dataset = self._write_dataset(TaskType.DETECT)

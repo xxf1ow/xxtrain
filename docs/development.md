@@ -29,7 +29,7 @@ uv sync --extra dev --extra clearml
 
 训练机的普通 ClearML Agent 使用预装且受控的 `/opt/xxtrain-agent` 环境。该环境同时安装当前构建 wheel 的 `clearml` extra 与 `clearml-agent==3.0.3`，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 展示项目、队列、共享缓存根、平台元数据目录、Agent 运行目录和已安装 worker 路径；`deploy/platform/clearml-agent.example.conf` 展示普通 Agent 的已验证配置键。两个文件都不保存服务地址或凭据。
 
-安装后从 `/opt/xxtrain-agent/bin/python` 导入 `xxtrain`、`clearml` 和训练依赖，并运行 `xxtrain-worker --help`。普通 Agent 默认另建任务虚拟环境；`python_binary` 只选择构建该环境的解释器。启动时把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 设为已验证的预装解释器，ClearML Agent 便直接使用该环境，任务本身不从仓库、网络或 checkout 安装包。共享缓存根以只读方式提供给训练机，`run_root` 和 Agent 缓存目录保持可写且互相独立。服务地址及访问密钥通过 ClearML 官方环境变量或机器外部配置提供，不复制到示例文件。以下前台命令只监听一个共享队列；单个普通 daemon 同时执行一个任务，不使用 `--services-mode`、`--dynamic-gpus`、后台运行或开机自启：
+安装后从 `/opt/xxtrain-agent/bin/python` 导入 `xxtrain`、`clearml` 和训练依赖，并运行 `xxtrain-worker --help`。普通 Agent 启动 worker 时不附加平台参数；worker 从任务的 `Args/*` 参数取得输入身份，显式本地 CLI flags 仍可用于受控诊断，帮助输出不连接 ClearML。普通 Agent 默认另建任务虚拟环境；`python_binary` 只选择构建该环境的解释器。启动时把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 设为已验证的预装解释器，ClearML Agent 便直接使用该环境，任务本身不从仓库、网络或 checkout 安装包。共享缓存根以只读方式提供给训练机，`run_root` 和 Agent 缓存目录保持可写且互相独立。服务地址及访问密钥通过 ClearML 官方环境变量或机器外部配置提供，不复制到示例文件。以下前台命令只监听一个共享队列；单个普通 daemon 同时执行一个任务，不使用 `--services-mode`、`--dynamic-gpus`、后台运行或开机自启：
 
 ```sh
 CLEARML_AGENT_SKIP_PIP_VENV_INSTALL=/opt/xxtrain-agent/bin/python \

@@ -167,11 +167,15 @@ class TrainingService:
                 current = self.store.get(current.user_id, current.id)
             try:
                 if current.desired_action == 'execute':
-                    self.clearml.enqueue(task_id)
+                    self.clearml.enqueue(task_id, current)
                 else:
                     self.clearml.cancel(task_id)
             except (OSError, RuntimeError) as error:
-                action = 'queue submission' if current.desired_action == 'execute' else 'cancellation'
+                action = (
+                    'launch configuration or queue submission'
+                    if current.desired_action == 'execute'
+                    else 'cancellation'
+                )
                 raise PlatformError(f'Training {action} could not be confirmed') from error
 
     def _view(self, run: TrainingRun) -> TrainingRunView:

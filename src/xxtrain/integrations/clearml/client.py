@@ -146,30 +146,40 @@ class ClearMLClient:
         return tasks[0].id if tasks else None
 
     def create(self, run: TrainingRun) -> str:
-        task = self._sdk_call(
-            'create',
-            project_name=self._project,
-            task_name=run.id,
-            task_type='training',
-            script=str(self._worker_script),
-            working_directory=str(self._worker_script.parent),
-            packages=False,
-            argparse_args=[
-                ('task', 'point'),
-                ('target', run.target),
-                ('cache-relative-path', run.cache_relative_path),
-                ('shared-root', str(self._shared_root)),
-                ('run-id', run.id),
-                ('run-root', str(self._run_root)),
-            ],
-            add_task_init_call=False,
-        )
+        task = self._sdk_call('create', **self._creation_arguments(run))
         return task.id
 
-    def enqueue(self, task_id: str) -> None:
+    def enqueue(self, task_id: str, run: TrainingRun) -> None:
         if self._sdk_call('get', task_id).get('status') != 'created':
             return
+        ready = self._sdk_call('prepare', task_id, **self._creation_arguments(run))
+        status = self._sdk_call('get', task_id).get('status')
+        if not ready:
+            if status == 'created':
+                raise RuntimeError('ClearML task launch readiness could not be confirmed')
+            return
+        if status != 'created':
+            return
         self._sdk_call('enqueue', task_id, queue_name=self._queue, force=False)
+
+    def _creation_arguments(self, run: TrainingRun) -> dict[str, object]:
+        return {
+            'project_name': self._project,
+            'task_name': run.id,
+            'task_type': 'training',
+            'script': str(self._worker_script),
+            'working_directory': str(self._worker_script.parent),
+            'packages': False,
+            'argparse_args': [
+                ('task', 'point'),
+                ('target', run.target),
+                ('cache_relative_path', run.cache_relative_path),
+                ('shared_root', str(self._shared_root)),
+                ('run_id', run.id),
+                ('run_root', str(self._run_root)),
+            ],
+            'add_task_init_call': False,
+        }
 
     def observe(self, task_id: str) -> ExecutionView:
         facts = self._sdk_call('get', task_id)
@@ -318,6 +328,49 @@ class _ClearMLSDK:
     def enqueue(self, task_id: str, **kwargs: object) -> None:
         self._task.enqueue(task_id, **kwargs)
 
+    def prepare(self, task_id: str, **creation_arguments: object) -> bool:
+        from clearml.backend_interface.task.populate import CreateAndPopulate
+
+        arguments = list(creation_arguments.pop('argparse_args'))
+        expected_script = CreateAndPopulate(**creation_arguments, raise_on_missing_entries=False).create_task(
+            dry_run=True
+        )['script']
+        expected_parameters = {f'Args/{name}': value for name, value in arguments}
+
+        task = self._task.get_task(task_id=task_id)
+        if not _is_unstarted_created(task):
+            return False
+        actual_script = _script_state(task)
+        if not _script_matches(actual_script, expected_script):
+            if _has_launch_script(actual_script):
+                raise RuntimeError('ClearML task launch script does not match the configured worker')
+            task.update_task({'script': expected_script})
+
+        task = self._task.get_task(task_id=task_id)
+        if not _is_unstarted_created(task):
+            return False
+        actual_parameters = task.get_parameters()
+        conflicting = {
+            name
+            for name, value in expected_parameters.items()
+            if name in actual_parameters and str(actual_parameters[name]) != str(value)
+        }
+        if conflicting:
+            raise RuntimeError('ClearML task launch parameters do not match the canonical run')
+        missing = {name: value for name, value in expected_parameters.items() if name not in actual_parameters}
+        if missing:
+            task.update_parameters(missing)
+
+        task = self._task.get_task(task_id=task_id)
+        if not _is_unstarted_created(task):
+            return False
+        if not _script_matches(_script_state(task), expected_script):
+            raise RuntimeError('ClearML task launch script could not be confirmed')
+        persisted = task.get_parameters()
+        if any(str(persisted.get(name)) != str(value) for name, value in expected_parameters.items()):
+            raise RuntimeError('ClearML task launch parameters could not be confirmed')
+        return True
+
     def get(self, task_id: str) -> dict[str, object]:
         task = self._task.get_task(task_id=task_id)
         data = task.data.to_dict()
@@ -411,3 +464,24 @@ def _has_never_started_cancellation_proof(facts: dict[str, object]) -> bool:
         and isinstance(parameters, dict)
         and parameters.get(QUEUED_CANCELLATION_PARAMETER) in {QUEUED_CANCELLATION_VALUE, CREATED_CANCELLATION_VALUE}
     )
+
+
+_SCRIPT_FIELDS = ('repository', 'version_num', 'branch', 'diff', 'working_dir', 'entry_point', 'binary', 'requirements')
+
+
+def _is_unstarted_created(task: Any) -> bool:
+    return str(task.data.status) == 'created' and not task.last_worker
+
+
+def _script_state(task: Any) -> dict[str, object]:
+    data = task.data.to_dict()
+    script = data.get('script')
+    return script if isinstance(script, dict) else {}
+
+
+def _script_matches(actual: dict[str, object], expected: dict[str, object]) -> bool:
+    return all(actual.get(name) == expected.get(name) for name in _SCRIPT_FIELDS)
+
+
+def _has_launch_script(script: dict[str, object]) -> bool:
+    return any(script.get(name) not in (None, '', {}, []) for name in _SCRIPT_FIELDS if name != 'binary')

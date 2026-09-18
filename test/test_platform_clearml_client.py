@@ -82,10 +82,10 @@ class ClearMLClientTests(unittest.TestCase):
             argparse_args=[
                 ('task', 'point'),
                 ('target', 'detect'),
-                ('cache-relative-path', 'detect/abc'),
-                ('shared-root', str(Path('/shared').resolve())),
-                ('run-id', run.id),
-                ('run-root', str(Path('/shared').resolve().parent / 'runs')),
+                ('cache_relative_path', 'detect/abc'),
+                ('shared_root', str(Path('/shared').resolve())),
+                ('run_id', run.id),
+                ('run_root', str(Path('/shared').resolve().parent / 'runs')),
             ],
             add_task_init_call=False,
         )
@@ -128,14 +128,194 @@ class ClearMLClientTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_enqueue_always_uses_configured_queue_without_force(self):
-        self.sdk.get.return_value = {'id': 'task-1', 'status': 'created'}
-        self.client.enqueue('task-1')
+        self.sdk.get.side_effect = [{'id': 'task-1', 'status': 'created'}, {'id': 'task-1', 'status': 'created'}]
+        self.client.enqueue('task-1', training_run())
+        self.sdk.prepare.assert_called_once()
         self.sdk.enqueue.assert_called_once_with('task-1', queue_name='training', force=False)
 
     def test_enqueue_does_not_enqueue_existing_remote_execution_twice(self):
         self.sdk.get.return_value = {'id': 'task-1', 'status': 'queued'}
-        self.client.enqueue('task-1')
+        self.client.enqueue('task-1', training_run())
+        self.sdk.prepare.assert_not_called()
         self.sdk.enqueue.assert_not_called()
+
+    def test_enqueue_does_not_publish_an_incomplete_created_task(self):
+        self.sdk.get.return_value = {'id': 'task-1', 'status': 'created'}
+        self.sdk.prepare.return_value = False
+
+        with self.assertRaisesRegex(RuntimeError, 'readiness'):
+            self.client.enqueue('task-1', training_run())
+
+        self.sdk.enqueue.assert_not_called()
+
+    def test_installed_sdk_completes_the_same_task_after_script_population_failure(self):
+        from clearml import Task
+        from clearml.backend_api.services.v2_20.tasks import Task as TaskData
+
+        class ControlledRemoteTask:
+            def __init__(self):
+                self.id = 'task-original'
+                self.data = TaskData(id=self.id, status='created', script={})
+                self.last_worker = None
+                self.parameters = {}
+                self.fail_script_update = True
+
+            def get_parameters(self, *args, **kwargs):
+                return dict(self.parameters)
+
+            def reload(self):
+                return self
+
+            def set_base_docker(self, **kwargs):
+                pass
+
+            def set_parameters(self, parameters):
+                self.parameters = dict(parameters)
+
+            def update_parameters(self, parameters):
+                self.parameters.update(parameters)
+
+            def update_task(self, state):
+                if self.fail_script_update:
+                    self.fail_script_update = False
+                    raise ConnectionError('script publication interrupted')
+                self.data.script = state['script']
+
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = Path(temporary) / 'worker.py'
+            worker.write_text('print("worker")\n', encoding='utf-8')
+            remote = ControlledRemoteTask()
+            run = training_run()
+            arguments = [
+                ('task', 'point'),
+                ('target', run.target),
+                ('cache_relative_path', run.cache_relative_path),
+                ('shared_root', str(Path('/shared').resolve())),
+                ('run_id', run.id),
+                ('run_root', str(Path('/runs').resolve())),
+            ]
+            with (
+                patch.object(Task, '_create', return_value=remote),
+                patch.object(Task, 'get_project_id', return_value='project-id'),
+                self.assertRaisesRegex(ConnectionError, 'interrupted'),
+            ):
+                Task.create(
+                    project_name='xxtrain',
+                    task_name=run.id,
+                    task_type='training',
+                    script=str(worker),
+                    working_directory=str(worker.parent),
+                    packages=False,
+                    argparse_args=arguments,
+                    add_task_init_call=False,
+                )
+
+            sdk = object.__new__(_ClearMLSDK)
+            sdk._task = Task
+            with (
+                patch.object(Task, 'get_task', return_value=remote),
+                patch.object(Task, 'get_project_id', return_value='project-id'),
+            ):
+                sdk.prepare(
+                    remote.id,
+                    project_name='xxtrain',
+                    task_name=run.id,
+                    task_type='training',
+                    script=str(worker),
+                    working_directory=str(worker.parent),
+                    packages=False,
+                    argparse_args=arguments,
+                    add_task_init_call=False,
+                )
+
+        self.assertEqual('worker.py', remote.data.script.entry_point)
+        self.assertEqual('point', remote.parameters['Args/task'])
+        self.assertEqual(run.id, remote.parameters['Args/run_id'])
+
+    def test_sdk_population_stops_when_the_created_task_is_cancelled(self):
+        from clearml import Task
+        from clearml.backend_api.services.v2_20.tasks import Task as TaskData
+
+        class CancelDuringScriptUpdate:
+            id = 'task-original'
+            last_worker = None
+            parameters = {}
+
+            def __init__(self):
+                self.data = TaskData(id=self.id, status='created', script={})
+                self.parameter_updates = 0
+
+            def get_parameters(self, *args, **kwargs):
+                return dict(self.parameters)
+
+            def update_parameters(self, parameters):
+                self.parameter_updates += 1
+
+            def update_task(self, state):
+                self.data.script = state['script']
+                self.data.status = 'stopped'
+
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = Path(temporary) / 'worker.py'
+            worker.write_text('print("worker")\n', encoding='utf-8')
+            remote = CancelDuringScriptUpdate()
+            sdk = object.__new__(_ClearMLSDK)
+            sdk._task = Task
+            with (
+                patch.object(Task, 'get_task', return_value=remote),
+                patch.object(Task, 'get_project_id', return_value='project-id'),
+            ):
+                ready = sdk.prepare(
+                    remote.id,
+                    project_name='xxtrain',
+                    task_name=training_run().id,
+                    task_type='training',
+                    script=str(worker),
+                    working_directory=str(worker.parent),
+                    packages=False,
+                    argparse_args=[('task', 'point')],
+                    add_task_init_call=False,
+                )
+
+        self.assertFalse(ready)
+        self.assertEqual(0, remote.parameter_updates)
+
+    def test_sdk_rejects_a_mismatching_created_task_without_overwriting_it(self):
+        from clearml import Task
+        from clearml.backend_api.services.v2_20.tasks import Task as TaskData
+
+        remote = Mock()
+        remote.id = 'task-original'
+        remote.last_worker = None
+        remote.data = TaskData(
+            id=remote.id,
+            status='created',
+            script={'entry_point': 'other.py', 'working_dir': '.', 'diff': 'print("other")\n'},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = Path(temporary) / 'worker.py'
+            worker.write_text('print("worker")\n', encoding='utf-8')
+            sdk = object.__new__(_ClearMLSDK)
+            sdk._task = Task
+            with (
+                patch.object(Task, 'get_task', return_value=remote),
+                patch.object(Task, 'get_project_id', return_value='project-id'),
+                self.assertRaisesRegex(RuntimeError, 'does not match'),
+            ):
+                sdk.prepare(
+                    remote.id,
+                    project_name='xxtrain',
+                    task_name=training_run().id,
+                    task_type='training',
+                    script=str(worker),
+                    working_directory=str(worker.parent),
+                    packages=False,
+                    argparse_args=[('task', 'point')],
+                    add_task_init_call=False,
+                )
+
+        remote.update_task.assert_not_called()
+        remote.update_parameters.assert_not_called()
 
     def test_artifact_query_failure_keeps_completed_execution_inactive(self):
         self.sdk.get.return_value = {'id': 'task-1', 'status': 'completed'}
