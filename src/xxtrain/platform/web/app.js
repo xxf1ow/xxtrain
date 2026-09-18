@@ -164,13 +164,15 @@
   }
 
   function trainingLabel(run) {
+    if (run.execution?.active && run.cancellation_requested) return '取消请求已保存，等待停止';
     if (run.execution?.status === 'completed' && !run.execution.download_ready) return '训练已结束，产物不可用';
     return trainingStatuses[run.execution?.status] || '查看训练任务';
   }
 
   function submissionFeedback(run) {
     const execution = run.execution;
-    if (!execution || execution.status === 'pending' || execution.status === 'unknown') return '提交已保存，等待确认';
+    if (!execution) return '已有历史任务，未保存新的训练请求';
+    if (execution.status === 'pending' || execution.status === 'unknown') return '提交已保存，等待确认';
     if (execution.status === 'queued') return '已加入训练队列';
     if (execution.status === 'running') return '训练中';
     if (execution.status === 'completed') {

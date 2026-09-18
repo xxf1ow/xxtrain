@@ -99,6 +99,8 @@ class PlatformBrowserTest(unittest.TestCase):
         classify_ready: bool = False,
         validation_payload: dict[str, str] | None = None,
         load_actions: str = 'await loaded();',
+        training_run: dict[str, object] | None = None,
+        submission_run: dict[str, object] | None = None,
     ) -> dict[str, object]:
         script = self.client.get('/platform/app.js')
         self.assertEqual(200, script.status_code)
@@ -164,10 +166,13 @@ const workspace = {{
     {{id: 'segment', name: '分割', available: true, sample_count: 7, annotated_sample_count: 0,
       can_annotate: false, can_generate_cache: false, cache_ready: false}},
   ],
+  training_enabled: {json.dumps(training_run is not None or submission_run is not None)},
+  training: {{detect: {json.dumps(training_run)}, classify: null, segment: null}},
 }};
 let release;
 let hold = false;
 let failure = {json.dumps(sync_failure)};
+let submittedRun = null;
 globalThis.fetch = async (url, options = {{}}) => {{
   const multipart = options.body instanceof FormData;
   calls.push({{
@@ -188,6 +193,10 @@ globalThis.fetch = async (url, options = {{}}) => {{
       annotation_url: '/tasks/42/jobs/74?defaultWorkspace=TAGS&frame=2',
     }})}};
   }}
+  if (url.endsWith('/train')) {{
+    submittedRun = {json.dumps(submission_run)};
+    return {{ok: true, status: 200, json: async () => ({{run_id: submittedRun.id, run: submittedRun}})}};
+  }}
   const completedTargets = workspace.targets.map((target) =>
     target.id === 'detect' ? {{...target, sample_count: 50, annotated_sample_count: 50, can_generate_cache: true}}
       : target);
@@ -200,7 +209,8 @@ globalThis.fetch = async (url, options = {{}}) => {{
     : url.endsWith('/cache') ? {{...workspace, detection_cache_ready: true,
         targets: workspace.targets.map((target) => url.includes(`/targets/${{target.id}}/`)
           ? {{...target, cache_ready: true}} : target)}}
-    : url.endsWith('/start') ? {{annotation_url: '/tasks/41/jobs/73'}} : workspace;
+    : url.endsWith('/start') ? {{annotation_url: '/tasks/41/jobs/73'}}
+    : submittedRun ? {{...workspace, training: {{...workspace.training, detect: submittedRun}}}} : workspace;
   return {{ok: true, status: 200, json: async () => body}};
 }};
 eval({json.dumps(script.text)});
@@ -394,6 +404,57 @@ await get('image-files').listeners.change();
         self.assertEqual([True, True, '开始训练'], result['before']['targetButtons'][2])
         self.assertEqual('/platform/api/targets/classify/start', result['calls'][-1]['url'])
         self.assertEqual('classify', result['storedTarget'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_workspace_training_label_uses_cancellation_and_terminal_facts(self) -> None:
+        base_run = {
+            'id': '55555555-5555-4555-8555-555555555555',
+            'workspace_id': 'line-3',
+            'workspace_name': '三号现场',
+            'target': 'detect',
+            'submitted_at': '2026-09-17T00:00:00+00:00',
+            'metric_name': '检测效果：mAP50-95',
+        }
+        cancelling = {
+            **base_run,
+            'cancellation_requested': True,
+            'execution': {
+                'status': 'queued',
+                'active': True,
+                'epoch': None,
+                'total_epochs': None,
+                'elapsed_seconds': None,
+                'metric': None,
+                'download_ready': False,
+                'detail': None,
+            },
+        }
+        completed_without_artifact = {
+            **cancelling,
+            'execution': {**cancelling['execution'], 'status': 'completed', 'active': False},
+        }
+        cancellation_result = self.run_page(training_run=cancelling)
+        terminal_result = self.run_page(training_run=completed_without_artifact)
+
+        self.assertEqual('取消请求已保存，等待停止', cancellation_result['after']['cacheText'])
+        self.assertEqual('训练已结束，产物不可用', terminal_result['after']['cacheText'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
+    def test_legacy_run_submission_does_not_claim_new_intent_was_saved(self) -> None:
+        legacy = {
+            'id': '55555555-5555-4555-8555-555555555555',
+            'workspace_id': 'line-3',
+            'workspace_name': '三号现场',
+            'target': 'detect',
+            'submitted_at': '2026-09-17T00:00:00+00:00',
+            'metric_name': '检测效果：mAP50-95',
+            'cancellation_requested': False,
+            'execution': None,
+        }
+
+        legacy_result = self.run_page("await get('cache-action').listeners.click();", ready=True, submission_run=legacy)
+
+        self.assertEqual('已有历史任务，未保存新的训练请求', legacy_result['after']['notification'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline browser-script check')
     def test_return_hint_selects_target_sync_and_clears_only_after_success(self) -> None:
