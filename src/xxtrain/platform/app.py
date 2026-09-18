@@ -79,6 +79,9 @@ def create_app(
     def operational_error() -> HTTPException:
         return HTTPException(status.HTTP_502_BAD_GATEWAY, _OPERATIONAL_ERROR)
 
+    def conflict_error() -> HTTPException:
+        return HTTPException(status.HTTP_409_CONFLICT, '现场当前有操作或训练任务正在进行，请稍后重试。')
+
     def browser_cookie(request: Request) -> str:
         values = []
         for name in ('sessionid', 'csrftoken'):
@@ -178,7 +181,7 @@ def create_app(
 
     def training_failure(error: Exception) -> HTTPException:
         if isinstance(error, PlatformConflictError):
-            return HTTPException(status.HTTP_409_CONFLICT, '现场当前不能执行此操作。')
+            return conflict_error()
         return operational_error()
 
     @app.get('/platform/', response_class=HTMLResponse)
@@ -271,6 +274,8 @@ def create_app(
                 await form.close()
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
 
@@ -281,6 +286,8 @@ def create_app(
             annotation_url = service.begin_detection(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return {'annotation_url': annotation_url}
@@ -294,6 +301,8 @@ def create_app(
             return validation_response(error)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return JSONResponse(content=workspace_payload(view))
@@ -305,6 +314,8 @@ def create_app(
             view = service.generate_detection_cache(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return workspace_payload(view)
@@ -317,6 +328,8 @@ def create_app(
             annotation_url = service.begin_target(user_id, target)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return {'annotation_url': annotation_url}
@@ -331,6 +344,8 @@ def create_app(
             return validation_response(error)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return JSONResponse(content=workspace_payload(view))
@@ -343,6 +358,8 @@ def create_app(
             view = service.generate_target_cache(user_id, target)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return workspace_payload(view)

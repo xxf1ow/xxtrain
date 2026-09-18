@@ -211,7 +211,7 @@ class PlatformTrainingHttpTest(unittest.TestCase):
             '/platform/api/targets/detect/train', json={'request_id': str(uuid4())}, headers=self.write_headers
         )
         self.assertEqual(409, response.status_code)
-        self.assertNotIn('private lock details', response.text)
+        self.assertEqual({'detail': '现场当前有操作或训练任务正在进行，请稍后重试。'}, response.json())
 
 
 if __name__ == '__main__':
