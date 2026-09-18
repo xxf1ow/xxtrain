@@ -43,6 +43,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
+训练 HTTP、严格运行配置和组合根使用 `platform` 与 `clearml` 可选依赖；该检查通过真实 ASGI 认证与 CSRF 路径覆盖安全投影、用户归属、取消、重试和下载，并验证仅标注启动保持可用：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_http test.test_platform_training_config test.test_platform_http -v
+```
+
 Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQLite 数据层和训练缓存运行，覆盖原生身份、对象级失效、重启、回滚重试和缓存可读性：
 
 ```powershell

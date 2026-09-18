@@ -1,0 +1,204 @@
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import httpx
+
+from xxtrain.platform.app import create_app
+from xxtrain.platform.config import WorkspaceConfig
+from xxtrain.platform.contracts import PlatformAccessError, PlatformError, WorkspaceView
+from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun, TrainingRunView
+
+
+class AsgiClient:
+    def __init__(self, app: Any) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url='http://testserver'
+        )
+
+    def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        return self.loop.run_until_complete(self.client.request(method, path, **kwargs))
+
+    def get(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.request('GET', path, **kwargs)
+
+    def post(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.request('POST', path, **kwargs)
+
+    def close(self) -> None:
+        self.loop.run_until_complete(self.client.aclose())
+        self.loop.close()
+
+
+class AnnotationStub:
+    def view(self, user_id: int) -> WorkspaceView:
+        return WorkspaceView('line-3', 'Line 3', 0, 0, 0, False, False)
+
+
+class CvatSessionStub:
+    user_id = 17
+
+    def current_user(self, cookie: str) -> int:
+        if 'sessionid=active' not in cookie:
+            raise PlatformAccessError('expired')
+        return self.user_id
+
+
+class TrainingStub:
+    def __init__(self, download: DownloadFile) -> None:
+        run_id = str(uuid4())
+        self.view = TrainingRunView(
+            TrainingRun(
+                run_id,
+                17,
+                'line-3',
+                'Line 3',
+                'detect',
+                'fingerprint',
+                'cache/secret',
+                '2026-09-17T00:00:00+00:00',
+                'attempt',
+                'clearml-secret',
+            ),
+            ExecutionView('clearml-secret', 'running', True, 2, 10, 4.5, 0.4, False, None),
+        )
+        self.download_file = download
+        self.calls: list[tuple[object, ...]] = []
+
+    def submit(self, user_id: int, target: str, request_id: str) -> TrainingRunView:
+        self.calls.append(('submit', user_id, target, request_id))
+        return self.view
+
+    def list_runs(self, user_id: int) -> tuple[TrainingRunView, ...]:
+        self.calls.append(('list', user_id))
+        return (self.view,)
+
+    def get_run(self, user_id: int, run_id: str) -> TrainingRunView:
+        self.calls.append(('get', user_id, run_id))
+        if user_id != 17 or run_id != self.view.run.id:
+            raise PlatformAccessError('denied')
+        return self.view
+
+    def cancel(self, user_id: int, run_id: str) -> TrainingRunView:
+        self.calls.append(('cancel', user_id, run_id))
+        return self.get_run(user_id, run_id)
+
+    def retry(self, user_id: int, run_id: str, request_id: str) -> TrainingRunView:
+        self.calls.append(('retry', user_id, run_id, request_id))
+        return self.get_run(user_id, run_id)
+
+    def download(self, user_id: int, run_id: str) -> DownloadFile:
+        self.calls.append(('download', user_id, run_id))
+        self.get_run(user_id, run_id)
+        return self.download_file
+
+
+class PlatformTrainingHttpTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        artifact = root / 'model.onnx'
+        artifact.write_bytes(b'onnx')
+        config = WorkspaceConfig('line-3', 'Line 3', 17, root, root / 'runtime', 'http://cvat.test')
+        self.cvat = CvatSessionStub()
+        self.training = TrainingStub(DownloadFile(artifact, 'model.onnx', 'application/octet-stream'))
+        self.client = AsgiClient(create_app(config, AnnotationStub(), self.cvat, training_service=self.training))
+        self.addCleanup(self.client.close)
+        self.client.client.cookies.set('sessionid', 'active')
+        self.client.get('/platform/')
+        token = self.client.client.cookies.get('xxtrain_csrf')
+        self.write_headers = {'origin': 'http://testserver', 'x-xtrain-csrf': token}
+
+    def test_submit_uses_real_auth_csrf_and_strict_uuid_body(self) -> None:
+        request_id = str(uuid4())
+        self.client.client.cookies.delete('sessionid')
+        self.assertEqual(
+            401,
+            self.client.post(
+                '/platform/api/targets/detect/train', json={'request_id': request_id}, headers=self.write_headers
+            ).status_code,
+        )
+        self.client.client.cookies.set('sessionid', 'active')
+        self.assertEqual(
+            403, self.client.post('/platform/api/targets/detect/train', json={'request_id': request_id}).status_code
+        )
+        response = self.client.post(
+            '/platform/api/targets/detect/train',
+            json={'request_id': request_id, 'cache_path': '/tmp/foreign'},
+            headers=self.write_headers,
+        )
+        self.assertEqual(422, response.status_code)
+        response = self.client.post(
+            '/platform/api/targets/detect/train', json={'request_id': request_id}, headers=self.write_headers
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(('submit', 17, 'detect', request_id), self.training.calls[-1])
+        self.assertEqual(self.training.view.run.id, response.json()['run_id'])
+
+    def test_list_and_detail_return_only_safe_projection(self) -> None:
+        listed = self.client.get('/platform/api/training-runs')
+        detail = self.client.get(f'/platform/api/training-runs/{self.training.view.run.id}')
+        self.assertEqual(200, listed.status_code)
+        self.assertEqual(200, detail.status_code)
+        payload = {'list': listed.json(), 'detail': detail.json()}
+        serialized = str(payload)
+        for secret in (
+            'cache/secret',
+            'clearml-secret',
+            'cache_relative_path',
+            'clearml_task_id',
+            'user_id',
+            'fingerprint',
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertEqual('running', detail.json()['execution']['status'])
+
+    def test_unknown_and_cross_user_run_ids_have_the_same_forbidden_response(self) -> None:
+        unknown = self.client.get(f'/platform/api/training-runs/{uuid4()}')
+        self.cvat.user_id = 18
+        foreign = self.client.get(f'/platform/api/training-runs/{self.training.view.run.id}')
+        self.assertEqual((403, unknown.json()), (foreign.status_code, foreign.json()))
+
+    def test_cancel_retry_and_download_use_server_owned_run(self) -> None:
+        run_id = self.training.view.run.id
+        cancelled = self.client.post(
+            f'/platform/api/training-runs/{run_id}/cancel', json={}, headers=self.write_headers
+        )
+        retried = self.client.post(
+            f'/platform/api/training-runs/{run_id}/retry', json={'request_id': str(uuid4())}, headers=self.write_headers
+        )
+        downloaded = self.client.get(f'/platform/api/training-runs/{run_id}/download')
+        self.assertEqual(200, cancelled.status_code)
+        self.assertEqual(200, retried.status_code)
+        self.assertEqual(b'onnx', downloaded.content)
+        self.assertEqual('attachment; filename="model.onnx"', downloaded.headers['content-disposition'])
+
+    def test_backend_failure_is_safely_reported(self) -> None:
+        def fail(*args: object) -> TrainingRunView:
+            raise PlatformError('SDK payload contains token=secret and C:/cache')
+
+        self.training.list_runs = fail  # type: ignore[method-assign]
+        response = self.client.get('/platform/api/training-runs')
+        self.assertEqual(502, response.status_code)
+        self.assertNotIn('secret', response.text)
+        self.assertNotIn('C:/cache', response.text)
+
+    def test_write_lock_conflict_is_a_safe_conflict(self) -> None:
+        def fail(*args: object) -> TrainingRunView:
+            raise PlatformError('A workspace write is already in progress')
+
+        self.training.submit = fail  # type: ignore[method-assign]
+        response = self.client.post(
+            '/platform/api/targets/detect/train', json={'request_id': str(uuid4())}, headers=self.write_headers
+        )
+        self.assertEqual(409, response.status_code)
+        self.assertNotIn('workspace write', response.text)
+
+
+if __name__ == '__main__':
+    unittest.main()

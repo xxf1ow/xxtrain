@@ -27,7 +27,7 @@ uv sync --extra dev --extra platform
 uv sync --extra dev --extra clearml
 ```
 
-训练机的普通 ClearML Agent 环境安装当前构建 wheel，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 只展示项目、队列和本地路径，不保存服务凭据。
+训练机的普通 ClearML Agent 环境安装当前构建 wheel，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 展示项目、队列、共享缓存根、平台元数据目录、Agent 运行目录和已安装 worker 路径，不保存服务地址或凭据。
 
 ## Repository layout
 
@@ -67,6 +67,14 @@ docs/              # 项目权威文档与 Agent Notes
 ```powershell
 $env:XXTRAIN_CVAT_SERVICE_TOKEN = '<service-token>'
 xxtrain-platform --config '<workspace.json>' --host 127.0.0.1 --port 8000
+```
+
+启用训练 API 时另设 ClearML 官方环境变量 `CLEARML_API_ACCESS_KEY` 和 `CLEARML_API_SECRET_KEY`，并传入训练配置。工作区的 `runtime_dir/cache` 必须位于 `shared_root`，`metadata_dir` 必须位于可清理的工作区运行目录之外，`worker_script` 必须是可部署文件。`run_root` 是训练机写入独立运行产物的位置：
+
+```powershell
+$env:CLEARML_API_ACCESS_KEY = '<access-key>'
+$env:CLEARML_API_SECRET_KEY = '<secret-key>'
+xxtrain-platform --config '<workspace.json>' --training-config '<training.json>' --host 127.0.0.1 --port 8000
 ```
 
 正式 CVAT UI 镜像固定使用 2.51.0，并在构建时把导航隐藏样式和返回插件插入 `index.html`。基础 HTML 缺少唯一的 `head` 插入点时构建失败：
