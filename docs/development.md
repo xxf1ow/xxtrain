@@ -27,7 +27,15 @@ uv sync --extra dev --extra platform
 uv sync --extra dev --extra clearml
 ```
 
-训练机的普通 ClearML Agent 环境安装当前构建 wheel，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 展示项目、队列、共享缓存根、平台元数据目录、Agent 运行目录和已安装 worker 路径，不保存服务地址或凭据。
+训练机的普通 ClearML Agent 环境安装当前构建 wheel，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 展示项目、队列、共享缓存根、平台元数据目录、Agent 运行目录和已安装 worker 路径；`deploy/platform/clearml-agent.example.conf` 展示普通虚拟环境 Agent 的已验证配置键。两个文件都不保存服务地址或凭据。
+
+为 Agent 创建独立虚拟环境，安装同一验收 wheel 及 `clearml-agent`，并确认 `xxtrain-worker --help` 从该环境运行。共享缓存根以只读方式提供给训练机，`run_root` 和 Agent 缓存目录保持可写且互相独立。服务地址及访问密钥通过 ClearML 官方环境变量或机器外部配置提供，不复制到示例文件。以下前台命令只监听一个共享队列；单个普通 daemon 同时执行一个任务，不使用 `--services-mode`、`--dynamic-gpus`、后台运行或开机自启：
+
+```sh
+/opt/xxtrain-agent/bin/clearml-agent --config-file /etc/xxtrain/clearml-agent.conf daemon --foreground --queue training --gpus 0
+```
+
+部署前运行 `clearml-agent --version` 和 `clearml-agent --config-file /etc/xxtrain/clearml-agent.conf config` 检查实际安装版本与合并后的脱敏配置。示例键已按 ClearML Agent 3.0.3 的内置配置验证；目标训练机仍需安装并现场核对 Agent 版本。启动 Agent 或设置服务、自启策略属于另行授权的部署操作。
 
 ## Repository layout
 
