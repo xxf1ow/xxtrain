@@ -65,6 +65,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.clearml = _QueuedClearML()
         self.training = self._training_service()
         self.annotations.require_editable = self.training.require_editable
+        self.annotations.require_cache_rebuild = self.training.require_cache_rebuild
         self.app = create_app(
             self.config, self.annotations, _BrowserSession(self.owner), training_service=self.training
         )
@@ -180,6 +181,62 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertNotEqual(original, changed)
         self.assertEqual(original, restored)
         self.assertEqual(2, len(self.store.list_user(self.owner)))
+
+    def test_refresh_list_detail_and_new_session_recover_bound_created_task(self) -> None:
+        original_enqueue = self.clearml.enqueue
+
+        def fail_before_enqueue(task_id):
+            raise ConnectionError('queue unavailable before enqueue')
+
+        self.clearml.enqueue = fail_before_enqueue
+        failed = self._submit('detect')
+        self.assertEqual(502, failed.status_code)
+        run = self.store.list_user(self.owner)[0]
+        self.clearml.enqueue = original_enqueue
+
+        workspace = self.client.get('/platform/api/workspace')
+        listed = self.client.get('/platform/api/training-runs')
+        detailed = self.client.get(f'/platform/api/training-runs/{run.id}')
+        new_session = self._client()
+        try:
+            restarted = new_session.get('/platform/api/workspace')
+        finally:
+            new_session.close()
+
+        self.assertEqual('queued', workspace.json()['training']['detect']['execution']['status'])
+        self.assertEqual('queued', listed.json()[0]['execution']['status'])
+        self.assertEqual('queued', detailed.json()['execution']['status'])
+        self.assertEqual('queued', restarted.json()['training']['detect']['execution']['status'])
+        self.assertEqual(1, self.clearml.create_calls)
+        self.assertEqual(['task-1'], self.clearml.enqueued)
+
+    def test_referenced_damaged_target_caches_are_not_rebuilt_through_http(self) -> None:
+        for target in ('classify', 'segment'):
+            with self.subTest(target=target):
+                submitted = self._submit(target)
+                self.assertEqual(200, submitted.status_code)
+                run = self.store.get(self.owner, submitted.json()['run_id'])
+                publication = (self.config.runtime_dir / 'cache' / run.cache_relative_path).parent
+                (publication / 'manifest.json').unlink()
+                (publication / 'review-marker').write_bytes(b'preserve')
+                before = {
+                    path.relative_to(publication).as_posix(): path.read_bytes()
+                    for path in publication.rglob('*')
+                    if path.is_file()
+                }
+
+                response = self.client.post(
+                    f'/platform/api/targets/{target}/cache', json={}, headers=self._headers(self.client)
+                )
+                after = {
+                    path.relative_to(publication).as_posix(): path.read_bytes()
+                    for path in publication.rglob('*')
+                    if path.is_file()
+                }
+
+                self.assertEqual(502, response.status_code)
+                self.assertEqual({'detail': '平台暂时无法完成操作，请重试。'}, response.json())
+                self.assertEqual(before, after)
 
 
 if __name__ == '__main__':

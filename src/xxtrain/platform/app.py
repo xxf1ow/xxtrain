@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from xxtrain.business_tasks import MODEL_TARGETS
+from xxtrain.business_tasks import MODEL_TARGETS, point_task_definition
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.platform.config import WorkspaceConfig
 from xxtrain.platform.contracts import (
@@ -152,11 +152,15 @@ def create_app(
     def training_payload(view: TrainingRunView) -> dict[str, object]:
         run = view.run
         execution = view.execution
+        training = point_task_definition().step(run.target).training
+        if training is None:
+            raise ValueError(f'Target does not define training: {run.target!r}')
         return {
             'id': run.id,
             'workspace_id': run.workspace_id,
             'workspace_name': run.workspace_name,
             'target': run.target,
+            'metric_name': training.metric_name,
             'submitted_at': run.submitted_at,
             'execution': None
             if execution is None
@@ -171,6 +175,18 @@ def create_app(
                 'detail': execution.detail,
             },
         }
+
+    def full_workspace_payload(user_id: int, view: WorkspaceView | None = None) -> dict[str, object]:
+        if training_service is None:
+            return workspace_payload(view if view is not None else view_for(user_id))
+        state = training_service.workspace_view(user_id)
+        payload = workspace_payload(state['workspace'])
+        payload['editing_locked'] = not state['editable']
+        payload['training_enabled'] = True
+        payload['training'] = {
+            target: None if run is None else training_payload(run) for target, run in state['training'].items()
+        }
+        return payload
 
     def training_access(error: PlatformAccessError) -> HTTPException:
         return HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此训练任务。')
@@ -247,21 +263,12 @@ def create_app(
     @app.get('/platform/api/workspace')
     def workspace(request: Request) -> dict[str, object]:
         user_id = authenticated_user(request)
-        if training_service is None:
-            return workspace_payload(view_for(user_id))
         try:
-            state = training_service.workspace_view(user_id)
+            return full_workspace_payload(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        payload = workspace_payload(state['workspace'])
-        payload['editing_locked'] = not state['editable']
-        payload['training_enabled'] = True
-        payload['training'] = {
-            target: None if view is None else training_payload(view) for target, view in state['training'].items()
-        }
-        return payload
 
     def stage_uploads(user_id: int, images: list[UploadFile]) -> WorkspaceView:
         staging = config.runtime_dir / 'staging'
@@ -293,7 +300,7 @@ def create_app(
                 if not parts or any(name != 'images' or not isinstance(value, UploadFile) for name, value in parts):
                     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, '请选择要上传的图片。')
                 view = await run_in_threadpool(stage_uploads, user_id, form.getlist('images'))
-                return workspace_payload(view)
+                return full_workspace_payload(user_id, view)
             finally:
                 await form.close()
         except PlatformAccessError:
@@ -329,7 +336,7 @@ def create_app(
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return JSONResponse(content=workspace_payload(view))
+        return JSONResponse(content=full_workspace_payload(user_id, view))
 
     @app.post('/platform/api/detection/cache', dependencies=[Depends(write_request)])
     def generate_detection_cache(request: Request, body: _EmptyBody) -> dict[str, object]:
@@ -342,7 +349,7 @@ def create_app(
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return workspace_payload(view)
+        return full_workspace_payload(user_id, view)
 
     @app.post('/platform/api/targets/{target}/start', dependencies=[Depends(write_request)])
     def start_target(request: Request, target: str, body: _EmptyBody) -> dict[str, str]:
@@ -372,7 +379,7 @@ def create_app(
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return JSONResponse(content=workspace_payload(view))
+        return JSONResponse(content=full_workspace_payload(user_id, view))
 
     @app.post('/platform/api/targets/{target}/cache', dependencies=[Depends(write_request)])
     def generate_target_cache(request: Request, target: str, body: _EmptyBody) -> dict[str, object]:
@@ -386,7 +393,7 @@ def create_app(
             raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return workspace_payload(view)
+        return full_workspace_payload(user_id, view)
 
     if training_service is not None:
 

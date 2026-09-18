@@ -92,6 +92,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             training_service = TrainingService(config, service, store, clearml, training_config.shared_root)
             service.require_editable = training_service.require_editable
+            service.require_cache_rebuild = training_service.require_cache_rebuild
         app = create_app(config, service, cvat, training_service=training_service)
         uvicorn.run(app, host=args.host, port=args.port, workers=1, proxy_headers=True, forwarded_allow_ips='*')
 

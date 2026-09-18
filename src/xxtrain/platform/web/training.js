@@ -4,7 +4,6 @@
   const apiRoot = '/platform/api';
   const statusNames = {queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
   const targetNames = {detect: '检测模型', classify: '分类模型', segment: '指针分割模型'};
-  const metricNames = {detect: '检测效果：mAP50-95', classify: '分类准确率：Top-1', segment: '指针分割效果：Mask mAP50-95'};
   const elements = {
     list: document.getElementById('training-list'), detail: document.getElementById('training-detail'),
     error: document.getElementById('training-error'), message: document.getElementById('training-message'),
@@ -72,7 +71,7 @@
     const elapsed = execution?.elapsed_seconds == null ? '暂无' : `${Math.round(execution.elapsed_seconds)} 秒`;
     elements.detail.append(text('p', `已用时间：${elapsed}`));
     const metric = execution?.metric == null ? '暂无' : `${(execution.metric * 100).toFixed(1)}%`;
-    elements.detail.append(text('p', `${metricNames[run.target] || '本次验证集结果'}：${metric}`));
+    elements.detail.append(text('p', `本次验证集结果 · ${run.metric_name || '训练指标'}：${metric}`));
     const actions = document.createElement('div'); actions.className = 'training-actions';
     const download = text('a', '下载部署产物', 'primary-button'); download.href = execution?.download_ready ? `${apiRoot}/training-runs/${run.id}/download` : '#';
     download.setAttribute('aria-disabled', String(!execution?.download_ready)); if (!execution?.download_ready) download.addEventListener('click', (event) => event.preventDefault());

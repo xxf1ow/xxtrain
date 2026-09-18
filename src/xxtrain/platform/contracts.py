@@ -8,6 +8,7 @@ from xxtrain.data import Bbox
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 type WorkspaceEditGuard = Callable[[str], None]
+type WorkspaceCacheRebuildGuard = Callable[[str, str, str], None]
 
 
 @dataclass(frozen=True)

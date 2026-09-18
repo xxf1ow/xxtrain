@@ -107,11 +107,13 @@ ids.forEach((id) => elements.set(id, element(id)));
 let loaded; let assigned = null;
 globalThis.document = {{cookie:'xxtrain_csrf=token', getElementById:(id)=>elements.get(id), querySelectorAll:()=>[],
   addEventListener:(name, fn)=>{{if(name==='DOMContentLoaded') loaded=fn}}}};
-globalThis.location = {{search:'', assign:(url)=>{{assigned=url}}}};
-globalThis.history = {{replaceState(){{}}}};
+globalThis.location = {{search:'?returned=1', assign:(url)=>{{assigned=url}}}};
+globalThis.history = {{replaceState(_state,_title,url){{location.search='';location.pathname=url}}}};
 const trainingStorageWrites=[];
-globalThis.sessionStorage = (()=>{{const values=new Map(); return {{getItem:(k)=>values.get(k)||null,
+globalThis.sessionStorage = (()=>{{
+  const values=new Map([['xxtrain-return-target','detect']]); return {{getItem:(k)=>values.get(k)||null,
   setItem:(k,v)=>{{trainingStorageWrites.push(k);values.set(k,String(v))}}, removeItem:(k)=>values.delete(k)}}}})();
+globalThis.FormData = class {{ append() {{}} }};
 let cryptoCalls = 0;
 globalThis.crypto = {{randomUUID:()=>{{cryptoCalls += 1; return 'unused'}}}};
 globalThis.setTimeout = ()=>1; globalThis.clearTimeout = ()=>{{}};
@@ -155,6 +157,8 @@ const get=(id)=>elements.get(id); const detect=get('cache-action');
 const queued=detect.textContent; detect.dispatchEvent(new Event('mouseenter')); const hovered=detect.textContent;
 detect.dispatchEvent(new Event('mouseleave')); const restored=detect.textContent;
 const annotationDisabled=get('primary-action').disabled;
+get('image-files').files=[{{name:'duplicate.png'}}];
+await get('image-files').listeners.change[0]();
 await get('classify-cache-action').listeners.click[0]();
 const recoveredRunId=get('classify-cache-action').dataset.runId;
 const recoveredText=get('classify-cache-action').textContent;
@@ -183,6 +187,9 @@ process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled
         self.assertTrue(
             any(call['url'].endswith('/targets/classify/train') for call in result['calls']), result['calls']
         )
+        self.assertTrue(any(call['url'].endswith('/targets/detect/sync') for call in result['calls']), result['calls'])
+        self.assertTrue(any(call['url'].endswith('/images') for call in result['calls']), result['calls'])
+        self.assertFalse(any(call['url'].endswith('/cache') for call in result['calls']), result['calls'])
         self.assertEqual([{}, {}], [json.loads(body) for body in result['trainingBodies']])
         self.assertEqual(0, result['cryptoCalls'])
         self.assertEqual([], result['trainingStorageWrites'])
@@ -226,7 +233,7 @@ const active={{id:'{run_id}',workspace_id:'line-3',workspace_name:'三号现场'
   submitted_at:'2026-09-17T00:01:00+00:00',execution:{{status:'unknown',active:true,epoch:null,
     total_epochs:null,elapsed_seconds:null,metric:null,download_ready:false,detail:'暂时不可用'}}}};
 const completed={{id:'{completed_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'classify',
-  submitted_at:'2026-09-17T00:02:00+00:00',execution:{{status:'completed',active:false,epoch:10,
+  metric_name:'分类准确率：Top-1',submitted_at:'2026-09-17T00:02:00+00:00',execution:{{status:'completed',active:false,epoch:10,
     total_epochs:10,elapsed_seconds:30,metric:0.8,download_ready:true,detail:null}}}};
 let runs=[missing,active,completed]; let failList=false; let authFail=false; const calls=[];
 globalThis.fetch=async(url,options={{}})=>{{calls.push({{url,method:options.method||'GET',body:options.body||null,csrf:options.headers?.['X-XTrain-CSRF']||null}});
@@ -245,6 +252,7 @@ const missingState={{cancel:byText(detail,'取消训练').disabled,
 const taskButtons=elements.get('training-list').children;
 await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='分类模型')).fire('click');
 const downloadHref=byText(detail,'下载部署产物').href;
+const metricText=Boolean(byText(detail,'本次验证集结果 · 分类准确率：Top-1：80.0%'));
 failList=true; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
 const retainedAfterFailure=all(detail).some((node)=>node.textContent==='分类模型'); failList=false;
 await taskButtons.find((item)=>all(item).some((node)=>node.textContent==='检测模型')).fire('click');
@@ -257,7 +265,7 @@ document.hidden=true; await documentListeners.visibilitychange(); const paused=t
 document.hidden=false; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
 const resumed=[...timers.values()].some((timer)=>timer.ms===5000);
 authFail=true; await documentListeners.visibilitychange(); await new Promise((resolve)=>setImmediate(resolve));
-process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,retainedAfterFailure,cancelCall,
+process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,metricText,retainedAfterFailure,cancelCall,
   scheduledWhileAnotherActive,paused,resumed,assigned,retryCallCount:calls.filter((call)=>call.url.endsWith('/retry')).length}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
 """
@@ -267,6 +275,7 @@ process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,ret
         self.assertEqual({'cancel': True, 'retry': False, 'download': 'true'}, result['missingState'])
         self.assertEqual({'cancel': False, 'retry': False, 'download': 'true'}, result['unknownState'])
         self.assertEqual(f'/platform/api/training-runs/{completed_id}/download', result['downloadHref'])
+        self.assertTrue(result['metricText'])
         self.assertTrue(result['retainedAfterFailure'])
         self.assertEqual('task-token', result['cancelCall']['csrf'])
         self.assertTrue(result['scheduledWhileAnotherActive'])

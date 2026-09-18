@@ -19,6 +19,7 @@ from xxtrain.platform.contracts import (
     PlatformError,
     TargetValidationError,
     TargetView,
+    WorkspaceCacheRebuildGuard,
     WorkspaceEditGuard,
     WorkspaceView,
 )
@@ -55,12 +56,14 @@ class AnnotationService:
         runtime: RuntimeCache,
         *,
         require_editable: WorkspaceEditGuard | None = None,
+        require_cache_rebuild: WorkspaceCacheRebuildGuard | None = None,
     ) -> None:
         self.config = config
         self.data = data
         self.cvat = cvat
         self.runtime = runtime
         self.require_editable = require_editable
+        self.require_cache_rebuild = require_cache_rebuild
         self.lock = threading.Lock()
 
     def view(self, user_id: int) -> WorkspaceView:
@@ -220,6 +223,8 @@ class AnnotationService:
             raise PlatformError(f'{target.title()} cache requires every crop to be annotated')
         fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
         if not target_view.cache_ready:
+            if self.require_cache_rebuild is not None:
+                self.require_cache_rebuild(self.config.workspace_id, target, fingerprint)
             destination = self.config.runtime_dir / 'cache' / fingerprint
             destination.parent.mkdir(parents=True, exist_ok=True)
             if target == 'detect':

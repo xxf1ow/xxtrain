@@ -38,6 +38,15 @@ class AnnotationStub:
     def view(self, user_id: int) -> WorkspaceView:
         return WorkspaceView('line-3', 'Line 3', 0, 0, 0, False, False)
 
+    def upload(self, user_id: int, staged: tuple[Path, ...]) -> WorkspaceView:
+        return self.view(user_id)
+
+    def sync_target(self, user_id: int, target: str) -> WorkspaceView:
+        return self.view(user_id)
+
+    def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
+        return self.view(user_id)
+
 
 class CvatSessionStub:
     user_id = 17
@@ -76,6 +85,14 @@ class TrainingStub:
     def list_runs(self, user_id: int) -> tuple[TrainingRunView, ...]:
         self.calls.append(('list', user_id))
         return (self.view,)
+
+    def workspace_view(self, user_id: int) -> dict[str, object]:
+        self.calls.append(('workspace', user_id))
+        return {
+            'workspace': AnnotationStub().view(user_id),
+            'editable': False,
+            'training': {'detect': self.view, 'classify': None, 'segment': None},
+        }
 
     def get_run(self, user_id: int, run_id: str) -> TrainingRunView:
         self.calls.append(('get', user_id, run_id))
@@ -143,6 +160,26 @@ class PlatformTrainingHttpTest(unittest.TestCase):
         ):
             self.assertNotIn(secret, serialized)
         self.assertEqual('running', detail.json()['execution']['status'])
+        self.assertEqual('检测效果：mAP50-95', detail.json()['metric_name'])
+
+    def test_annotation_mutations_return_full_training_workspace_projection(self) -> None:
+        responses = (
+            self.client.post('/platform/api/targets/detect/sync', json={}, headers=self.write_headers),
+            self.client.post('/platform/api/targets/detect/cache', json={}, headers=self.write_headers),
+            self.client.post(
+                '/platform/api/images',
+                files=[('images', ('duplicate.png', b'image', 'image/png'))],
+                headers=self.write_headers,
+            ),
+        )
+
+        for response in responses:
+            with self.subTest(path=response.request.url.path):
+                self.assertEqual(200, response.status_code)
+                payload = response.json()
+                self.assertTrue(payload['training_enabled'])
+                self.assertTrue(payload['editing_locked'])
+                self.assertEqual(self.training.view.run.id, payload['training']['detect']['id'])
 
     def test_unknown_and_cross_user_run_ids_have_the_same_forbidden_response(self) -> None:
         unknown = self.client.get(f'/platform/api/training-runs/{uuid4()}')

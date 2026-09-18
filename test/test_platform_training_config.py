@@ -107,9 +107,13 @@ class TrainingEntrypointTest(unittest.TestCase):
 
             class Annotation(Resource):
                 require_editable = None
+                require_cache_rebuild = None
 
             class Training(Resource):
                 def require_editable(self, workspace_id: str) -> None:
+                    pass
+
+                def require_cache_rebuild(self, workspace_id: str, target: str, fingerprint: str) -> None:
                     pass
 
             class Http:
@@ -125,6 +129,7 @@ class TrainingEntrypointTest(unittest.TestCase):
                 config: object, annotations: Annotation, cvat: object, *, training_service: Training | None = None
             ) -> object:
                 captured['guard'] = annotations.require_editable
+                captured['cache_guard'] = annotations.require_cache_rebuild
                 captured['training'] = training_service
                 return object()
 
@@ -150,6 +155,7 @@ class TrainingEntrypointTest(unittest.TestCase):
 
             self.assertIsNotNone(captured['training'])
             self.assertEqual(captured['training'].require_editable, captured['guard'])
+            self.assertEqual(captured['training'].require_cache_rebuild, captured['cache_guard'])
             clearml_event = next(
                 event for event in events if event[0] == 'Resource' and event[1:3] == ('xxtrain', 'training')
             )

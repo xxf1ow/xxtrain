@@ -85,7 +85,7 @@ uv run --locked --extra platform --extra platform-test python -m unittest test.t
 
 同版本真实验收覆盖 tag 唯一选择、polyline 多指针、原生身份往返、裁剪来源和 frame 关联、分类数量及 line 点数修正、返回目标路由和两个下游缓存可读性。保存返回必须等待目标同步成功、返回参数清除且目标无错误后才能回读数据库；离线页面覆盖延迟与快速同步。改类后通过原生绘制补回该框被清除的指针；非法对象用 PATCH create 注入，回收检查当前 Job 的绑定。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。完整 fixture 的投影、同步和缓存消费者，以及真实服务到 HTTP、页面的业务原因均有离线验证。当前运行证据、范围和未覆盖项记录在 [Point 分类与指针分割 Agent Note](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md#implementation)；离线 HTTPX fixture、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
 
-修改平台 package-data、平台或 worker 入口后构建 wheel，在独立临时环境安装该 wheel，并从临时环境运行 `xxtrain-worker --help`、`xxtrain-platform --help`，再通过 `importlib.resources` 读取包内 `web/index.html`、`web/training.html`、`web/app.js` 和 `web/training.js`。这些检查不得依赖 checkout 的 `src` 或 `data`。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
+修改平台 package-data、平台或 worker 入口后构建 wheel，在独立临时环境安装该 wheel，并从临时环境运行 `xxtrain-worker --help`、`xxtrain-platform --help`，再通过 `importlib.resources` 读取包内 `web/index.html`、`web/training.html`、`web/app.js` 和 `web/training.js`。ClearML 提交或 Agent 环境变化还要把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 指向该环境解释器，从清洁工作目录导入 `xxtrain`、`clearml` 及训练依赖，并核对已安装 ClearML Agent 源码确实选择该解释器且跳过任务虚拟环境创建。这些检查不得依赖 checkout 的 `src` 或 `data`，也不替代真实 Agent/GPU 验收。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 
 ```powershell
 uv build --wheel --out-dir .superpowers/task-5-dist

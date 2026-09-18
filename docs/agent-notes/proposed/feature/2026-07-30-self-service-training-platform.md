@@ -10,7 +10,7 @@ xxtrain 已能把外部标注转换为可训练数据集，并完成训练、预
 
 ## Proposal
 
-[Point 自助训练与结果交付](2026-09-17-point-training-loop.md)拥有当前批准的真实训练阶段设计，包括连续提交、ClearML 队列、工作区编辑限制、独立任务页面和部署产物规则；该阶段尚未实现。本文继续拥有平台总体目标和六模块职责。
+[Point 自助训练与结果交付](2026-09-17-point-training-loop.md)拥有当前批准的真实训练阶段设计，包括连续提交、ClearML 队列、工作区编辑限制、独立任务页面和部署产物规则；这些路径已有离线实现，真实 ClearML Server、Agent 和 GPU 验收仍未完成。本文继续拥有平台总体目标和六模块职责。
 
 本文原有的权威 LabelMe、分类借用框类别、整图清除下游及暂不建设 SQLite 的方向，已由 [SQLite 权威标注存储设计](../../implemented/architecture/2026-09-16-sqlite-annotation-storage.md)部分替代。当前工作区以 SQLite 保存图片登记、显式步骤、父关联和 CVAT 对象映射，按对象清除下游；检测缓存只使用临时 LabelMe 输入。SQLite 运行路径已经通过离线测试、同版本 CVAT 身份往返和真实上传、标注、缓存验收。用户流程、六模块职责、SQLite 之前的检测验收事实和未被替代的约束继续有效。
 

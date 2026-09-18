@@ -44,6 +44,21 @@ class ClearMLClientTests(unittest.TestCase):
         self.assertFalse(with_artifact.active)
         self.assertTrue(with_artifact.download_ready)
 
+    def test_real_sdk_active_duration_is_projected_as_elapsed_seconds(self):
+        from clearml.backend_api.services.v2_20.tasks import Task
+
+        facts = Task(id='task-1', status='in_progress', active_duration=123).to_dict()
+        facts['id'] = 'task-1'
+
+        view = parse_execution(facts, artifact_ready=False)
+
+        self.assertEqual(123.0, view.elapsed_seconds)
+
+    def test_missing_sdk_active_duration_remains_unknown(self):
+        view = parse_execution({'id': 'task-1', 'status': 'in_progress'}, artifact_ready=False)
+
+        self.assertIsNone(view.elapsed_seconds)
+
     def test_create_carries_run_identity_and_worker_arguments_in_initial_call(self):
         task = SimpleNamespace(id='task-1')
         self.sdk.create.return_value = task
@@ -255,6 +270,35 @@ class ClearMLClientTests(unittest.TestCase):
 
         task.set_parameter.assert_called_once_with(QUEUED_CANCELLATION_PARAMETER, QUEUED_CANCELLATION_VALUE)
         task.stopped.assert_not_called()
+
+    def test_sdk_artifact_readiness_uses_metadata_without_downloading(self):
+        sdk = object.__new__(_ClearMLSDK)
+        sdk._task = Mock()
+        task = sdk._task.get_task.return_value
+        task.get_project_name.return_value = 'xxtrain'
+        artifact = SimpleNamespace(url='https://files/deployment', get_local_copy=Mock())
+        task.artifacts = {'deployment': artifact}
+
+        self.assertTrue(sdk.has_artifact('task-1', 'deployment', project_name='xxtrain'))
+        artifact.get_local_copy.assert_not_called()
+
+    def test_sdk_artifact_download_rejects_missing_and_empty_local_results(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            sdk = object.__new__(_ClearMLSDK)
+            sdk._task = Mock()
+            task = sdk._task.get_task.return_value
+            task.get_project_name.return_value = 'xxtrain'
+            artifact = SimpleNamespace(url='https://files/deployment', get_local_copy=Mock(return_value=None))
+            task.artifacts = {'deployment': artifact}
+
+            with self.assertRaises(FileNotFoundError):
+                sdk.artifact('task-1', 'deployment', project_name='xxtrain')
+
+            empty = Path(temporary) / 'empty.zip'
+            empty.touch()
+            artifact.get_local_copy.return_value = str(empty)
+            with self.assertRaises(FileNotFoundError):
+                sdk.artifact('task-1', 'deployment', project_name='xxtrain')
 
     def test_download_copies_only_the_fixed_owned_deployment_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:

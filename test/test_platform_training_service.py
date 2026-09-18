@@ -207,6 +207,53 @@ class TrainingServiceTests(unittest.TestCase):
         self.assertEqual('task-1', recovered.run.clearml_task_id)
         self.assertEqual(1, self.backend.create_calls)
 
+    def test_authenticated_reads_reconcile_one_bound_created_task_without_recreating_it(self):
+        original_enqueue = self.backend.enqueue
+
+        def fail_before_enqueue(task_id):
+            raise ConnectionError('queue unavailable before enqueue')
+
+        self.backend.enqueue = fail_before_enqueue
+        with self.assertRaisesRegex(PlatformError, 'queue'):
+            self.service.submit(self.owner, 'detect')
+        stored = TrainingRunStore(self.store_path).list_user(self.owner)[0]
+        self.backend.enqueue = original_enqueue
+
+        listed = self.service.list_runs(self.owner)
+        detailed = self.service.get_run(self.owner, stored.id)
+
+        self.assertEqual('queued', listed[0].execution.status)
+        self.assertEqual('queued', detailed.execution.status)
+        self.assertEqual(1, self.backend.create_calls)
+        self.assertEqual(1, self.backend.enqueue_calls)
+
+    def test_read_reconciliation_never_reenqueues_terminal_tasks(self):
+        run = self.service.submit(self.owner, 'detect')
+        enqueue_calls = self.backend.enqueue_calls
+
+        for status in ('completed', 'failed', 'cancelled'):
+            with self.subTest(status=status):
+                self.backend.tasks[run.run.clearml_task_id]['status'] = status
+                view = self.service.get_run(self.owner, run.run.id)
+                self.assertEqual(status, view.execution.status)
+                self.assertEqual(enqueue_calls, self.backend.enqueue_calls)
+
+    def test_read_reconciliation_keeps_unconfirmed_creation_unknown_and_locked(self):
+        def missing_create(run):
+            self.backend.create_calls += 1
+            raise ConnectionError('request state unknown')
+
+        self.backend.create = missing_create
+        with self.assertRaisesRegex(PlatformError, 'not confirmed'):
+            self.service.submit(self.owner, 'detect')
+
+        listed = self.service.list_runs(self.owner)
+
+        self.assertEqual('unknown', listed[0].execution.status)
+        self.assertEqual(1, self.backend.create_calls)
+        with self.assertRaises(PlatformError):
+            self.service.require_editable(self.workspace_id)
+
     def test_unknown_remote_status_keeps_workspace_locked(self):
         run = self.service.submit(self.owner, 'detect')
 

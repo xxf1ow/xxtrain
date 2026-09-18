@@ -49,10 +49,16 @@ class TrainingService:
             return self._resume_submission(self.store.create(run))
 
     def list_runs(self, user_id: int) -> tuple[TrainingRunView, ...]:
-        return tuple(self._view(run) for run in self.store.list_user(user_id))
+        runs = self.store.list_user(user_id)
+        if not runs:
+            return ()
+        with self.annotations.mutation(user_id):
+            return tuple(self._view(self._reconcile_submission(run)) for run in runs)
 
     def get_run(self, user_id: int, run_id: str) -> TrainingRunView:
-        return self._view(self._get(user_id, run_id))
+        run = self._get(user_id, run_id)
+        with self.annotations.mutation(user_id):
+            return self._view(self._reconcile_submission(run))
 
     def cancel(self, user_id: int, run_id: str) -> TrainingRunView:
         run = self._get(user_id, run_id)
@@ -81,26 +87,36 @@ class TrainingService:
             if run.create_attempted_at is not None and self._view(run).execution.active:
                 raise PlatformConflictError('Workspace editing is disabled while training is active')
 
+    def require_cache_rebuild(self, workspace_id: str, target: str, fingerprint: str) -> None:
+        """Reject rebuilding a publication referenced by any current or historical run."""
+        if workspace_id != self.config.workspace_id:
+            raise PlatformAccessError('Workspace access denied')
+        if any(
+            run.target == target and run.fingerprint == fingerprint for run in self.store.list_workspace(workspace_id)
+        ):
+            raise PlatformError('A training run references this cache publication')
+
     def workspace_view(self, user_id: int) -> dict[str, object]:
-        workspace = self.annotations.view(user_id)
-        runs = self.list_runs(user_id)
-        editable = True
-        try:
-            self.require_editable(workspace.workspace_id)
-        except PlatformError:
-            editable = False
-        latest = {}
-        for target in ('detect', 'classify', 'segment'):
-            fingerprint = (
-                self.annotations.data.detection_fingerprint()
-                if target == 'detect'
-                else self.annotations.data.target_fingerprint(target)
-            )
-            latest[target] = next(
-                (view for view in reversed(runs) if view.run.target == target and view.run.fingerprint == fingerprint),
-                None,
-            )
-        return {'workspace': workspace, 'editable': editable, 'training': latest}
+        with self.annotations.mutation(user_id):
+            workspace = self.annotations.view(user_id)
+            runs = tuple(self._view(self._reconcile_submission(run)) for run in self.store.list_user(user_id))
+            editable = not any(view.execution is not None and view.execution.active for view in runs)
+            latest = {}
+            for target in ('detect', 'classify', 'segment'):
+                fingerprint = (
+                    self.annotations.data.detection_fingerprint()
+                    if target == 'detect'
+                    else self.annotations.data.target_fingerprint(target)
+                )
+                latest[target] = next(
+                    (
+                        view
+                        for view in reversed(runs)
+                        if view.run.target == target and view.run.fingerprint == fingerprint
+                    ),
+                    None,
+                )
+            return {'workspace': workspace, 'editable': editable, 'training': latest}
 
     def _resume_submission(self, run: TrainingRun) -> TrainingRunView:
         current = self.store.get(run.user_id, run.id)
@@ -138,6 +154,25 @@ class TrainingService:
         except Exception:
             execution = _unknown(run.clearml_task_id, 'Training status is temporarily unavailable')
         return TrainingRunView(run, execution)
+
+    def _reconcile_submission(self, run: TrainingRun) -> TrainingRun:
+        current = self.store.get(run.user_id, run.id)
+        if current.clearml_task_id is None:
+            if current.create_attempted_at is None:
+                return current
+            try:
+                task_id = self.clearml.find(current.id)
+                if task_id is None:
+                    return current
+                self.store.bind_task(current.id, task_id)
+                current = self.store.get(current.user_id, current.id)
+            except Exception:
+                return current
+        try:
+            self.clearml.enqueue(current.clearml_task_id)
+        except Exception:
+            pass
+        return current
 
     def _get(self, user_id: int, run_id: str) -> TrainingRun:
         try:

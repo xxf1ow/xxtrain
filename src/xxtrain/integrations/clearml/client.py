@@ -150,7 +150,7 @@ def parse_execution(
         active=active,
         epoch=_optional_int(parameters.get('xxtrain/epoch')),
         total_epochs=_optional_int(parameters.get('xxtrain/total_epochs')),
-        elapsed_seconds=_optional_float(facts.get('elapsed_seconds')),
+        elapsed_seconds=_optional_float(facts.get('active_duration')),
         metric=_optional_float(parameters.get('xxtrain/metric')),
         download_ready=status == 'completed' and artifact_ready,
         detail=detail,
@@ -226,18 +226,27 @@ class _ClearMLSDK:
         return None
 
     def has_artifact(self, task_id: str, name: str, *, project_name: str) -> bool:
+        task = self._task.get_task(task_id=task_id)
+        if task.get_project_name() != project_name:
+            raise ValueError('ClearML task does not belong to the configured project')
         try:
-            self.artifact(task_id, name, project_name=project_name)
-        except (KeyError, ValueError):
+            artifact = task.artifacts[name]
+        except KeyError:
             return False
-        return True
+        return bool(artifact.url)
 
     def artifact(self, task_id: str, name: str, *, project_name: str) -> Any:
         task = self._task.get_task(task_id=task_id)
         if task.get_project_name() != project_name:
             raise ValueError('ClearML task does not belong to the configured project')
         artifact = task.artifacts[name]
-        return SimpleNamespace(name=name, url=artifact.url, local_path=artifact.get_local_copy())
+        local_copy = artifact.get_local_copy()
+        if not local_copy:
+            raise FileNotFoundError('ClearML deployment artifact is unavailable')
+        local_path = Path(local_copy).resolve()
+        if not local_path.is_file() or local_path.stat().st_size == 0:
+            raise FileNotFoundError('ClearML deployment artifact is unavailable')
+        return SimpleNamespace(name=name, url=artifact.url, local_path=local_path)
 
 
 def _timestamp(value: object) -> datetime | None:
