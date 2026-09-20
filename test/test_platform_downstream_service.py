@@ -31,11 +31,11 @@ class FakeEditCvat:
         self.results = None
         self.unfinished = True
 
-    def create_edit_task(self, name, labels, label_type):
-        self.create_calls.append((name, labels, label_type))
+    def create_task(self, name, labels, policy):
+        self.create_calls.append((name, labels, policy.cvat_type))
         return 100 + len(self.create_calls)
 
-    def prepare_edit_task(self, task_id, frames, user_id):
+    def prepare_task(self, task_id, frames, user_id, policy):
         self.frames = frames
         sample_ids = tuple(dict.fromkeys(frame.mapping.image_id for frame in frames))
         bindings = tuple(
@@ -50,7 +50,7 @@ class FakeEditCvat:
     def job_is_unfinished(self, ref):
         return self.unfinished
 
-    def fetch_edit(self, job):
+    def fetch_annotations(self, job, policy):
         if self.results is not None:
             return self.results
         return tuple(EditFrameResult(frame.frame_id, ()) for frame in job.frames)
@@ -115,7 +115,7 @@ class DownstreamServiceTest(unittest.TestCase):
         targets = self._targets(self.service.view(17))
         self.assertTrue(targets['classify'].can_annotate)
         self.assertFalse(targets['classify'].can_generate_cache)
-        self.assertFalse(targets['segment'].can_annotate)
+        self.assertTrue(targets['segment'].can_annotate)
 
         classifications = tuple(
             AnnotationRecord(uuid4(), box.image_id, 'classify', box.id, 'classification', 'tc', None) for box in boxes

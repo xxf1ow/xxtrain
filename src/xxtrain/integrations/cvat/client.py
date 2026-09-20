@@ -8,20 +8,18 @@ from urllib.parse import quote
 
 import httpx
 
+from xxtrain.business_tasks.definition import AnnotationPolicy
 from xxtrain.platform.contracts import (
     CvatBinding,
     EditFrame,
     EditFrameResult,
     EditJob,
-    FrameResult,
-    ImageInput,
     JobRef,
     PlatformAccessError,
     PlatformError,
     PreparedJob,
 )
 
-from .codec import NEGATIVE_LABEL, decode_annotations, decode_initial_bindings, encode_mapped_annotations
 from .edit_codec import decode_edit_annotations, decode_edit_bindings, encode_edit_annotations
 
 _EXTRA_ATTRIBUTE = 'xxtrain_labelme_extra'
@@ -29,7 +27,6 @@ _PREPARE_TIMEOUT_SECONDS = 120.0
 _POLL_INTERVAL_SECONDS = 0.25
 _REQUEST_TIMEOUT_SECONDS = 10.0
 
-type _UploadFrame = ImageInput | EditFrame
 type _BindingDecoder = Callable[[dict, JobRef, list[dict]], tuple[CvatBinding, ...]]
 
 
@@ -55,27 +52,12 @@ class CvatClient:
         self._service_token = service_token
         self._http = http
 
-    def create_task(self, name: str, labels: tuple[str, ...]) -> int:
-        """Create a detection task with rectangle labels and an explicit negative-image tag.
-
-        Each label receives the mutable reserved text attribute used by the codec. CVAT assigns both label and
-        attribute IDs; callers must not manufacture them.
-        """
-
-        return self._create_typed_task(
-            name, tuple((label, 'rectangle') for label in labels) + ((NEGATIVE_LABEL, 'tag'),)
-        )
-
-    def create_edit_task(self, name: str, labels: tuple[str, ...], label_type: str) -> int:
-        """Create a typed CVAT task and return its server-assigned ID.
-
-        ``label_type`` must be ``rectangle``, ``tag``, or ``polyline``. Each label receives the mutable reserved
-        text attribute used for initialization correlation.
-        """
-
-        if label_type not in {'rectangle', 'tag', 'polyline'}:
-            raise ValueError(f'Unsupported CVAT label type: {label_type!r}')
-        return self._create_typed_task(name, tuple((label, label_type) for label in labels))
+    def create_task(self, name: str, labels: tuple[str, ...], policy: AnnotationPolicy) -> int:
+        """Create a task with the definition's native CVAT labels and optional negative-image tag."""
+        typed_labels = tuple((label, policy.cvat_type) for label in labels)
+        if policy.negative_label is not None:
+            typed_labels += ((policy.negative_label, 'tag'),)
+        return self._create_typed_task(name, typed_labels)
 
     def _create_typed_task(self, name: str, labels: tuple[tuple[str, str], ...]) -> int:
         payload = {
@@ -101,25 +83,10 @@ class CvatClient:
         task_id = self._integer_field(self._json(response), 'id', '/api/tasks')
         return task_id
 
-    def prepare_task(self, task_id: int, images: tuple[ImageInput, ...], user_id: int) -> PreparedJob:
-        """Attach frames, establish native annotation bindings, assign the Job, and return the prepared job.
-
-        The complete operation, including polling, has a 120-second deadline. The task must be fresh; existing
-        images are rejected before annotations can be initialized. Every platform token and native CVAT ID must be
-        decoded before the Job is assigned.
-        """
-
-        return self._prepare_frames(
-            task_id,
-            images,
-            user_id,
-            tuple(image.sample_id for image in images),
-            lambda labels: encode_mapped_annotations(images, labels),
-            lambda payload, ref, labels: decode_initial_bindings(payload, images, ref, labels),
-        )
-
-    def prepare_edit_task(self, task_id: int, frames: tuple[EditFrame, ...], user_id: int) -> PreparedJob:
-        """Upload ordered edit frames, initialize typed annotations, and return original-image bindings.
+    def prepare_task(
+        self, task_id: int, frames: tuple[EditFrame, ...], user_id: int, policy: AnnotationPolicy
+    ) -> PreparedJob:
+        """Upload ordered edit frames, initialize policy annotations, and return original-image bindings.
 
         Generated filenames are opaque ordering keys. ``PreparedJob.ref.sample_ids`` contains each original image ID
         once in first-frame order; callers retain the supplied mappings when constructing ``EditJob``.
@@ -129,30 +96,23 @@ class CvatClient:
 
         def decode(payload: dict, ref: JobRef, labels: list[dict]) -> tuple[CvatBinding, ...]:
             job = EditJob(ref, tuple(frame.mapping for frame in frames))
-            return decode_edit_bindings(payload, frames, job, labels)
+            return decode_edit_bindings(payload, frames, job, labels, policy)
 
         return self._prepare_frames(
             task_id,
             frames,
             user_id,
             sample_ids,
-            lambda labels: encode_edit_annotations(frames, labels, mapped=True),
+            lambda labels: encode_edit_annotations(frames, labels, policy, mapped=True),
             decode,
         )
 
-    def fetch_detection(self, ref: JobRef) -> tuple[FrameResult, ...]:
-        """Fetch current detection rectangles and negative tags using CVAT's actual label IDs."""
-
-        labels = self._labels(ref.task_id)
-        response = self._service_request('GET', f'/api/jobs/{ref.job_id}/annotations')
-        return decode_annotations(self._json(response), ref, labels)
-
-    def fetch_edit(self, job: EditJob) -> tuple[EditFrameResult, ...]:
-        """Fetch persistent tag or polyline annotations using the Job's verified frame order."""
+    def fetch_annotations(self, job: EditJob, policy: AnnotationPolicy) -> tuple[EditFrameResult, ...]:
+        """Fetch persistent annotations using the Job's verified frame order and task policy."""
 
         labels = self._labels(job.ref.task_id)
         response = self._service_request('GET', f'/api/jobs/{job.ref.job_id}/annotations')
-        return decode_edit_annotations(self._json(response), job, labels)
+        return decode_edit_annotations(self._json(response), job, labels, policy)
 
     def job_is_unfinished(self, ref: JobRef) -> bool:
         """Return whether the Job state differs from completed.
@@ -208,7 +168,7 @@ class CvatClient:
     def _prepare_frames(
         self,
         task_id: int,
-        frames: tuple[_UploadFrame, ...],
+        frames: tuple[EditFrame, ...],
         user_id: int,
         sample_ids: tuple[str, ...],
         encode: Callable[[list[dict]], dict],
@@ -254,7 +214,7 @@ class CvatClient:
         return PreparedJob(ref, bindings)
 
     def _upload_images(
-        self, task_id: int, images: tuple[_UploadFrame, ...], filenames: tuple[str, ...], deadline: float
+        self, task_id: int, images: tuple[EditFrame, ...], filenames: tuple[str, ...], deadline: float
     ) -> str:
         with ExitStack() as stack:
             files = [
@@ -293,7 +253,7 @@ class CvatClient:
             self._poll_pause(task_id, deadline)
 
     def _verify_frames(
-        self, task_id: int, images: tuple[_UploadFrame, ...], filenames: tuple[str, ...], deadline: float
+        self, task_id: int, images: tuple[EditFrame, ...], filenames: tuple[str, ...], deadline: float
     ) -> None:
         path = f'/api/tasks/{task_id}/data/meta'
         metadata = self._json(self._service_request('GET', path, deadline=deadline, deadline_task_id=task_id))
@@ -457,7 +417,7 @@ class CvatClient:
         return value
 
     @staticmethod
-    def _upload_filenames(images: tuple[_UploadFrame, ...]) -> tuple[str, ...]:
+    def _upload_filenames(images: tuple[EditFrame, ...]) -> tuple[str, ...]:
         return tuple(f'{index:08d}{Path(image.image_path).suffix.lower()}' for index, image in enumerate(images))
 
     @staticmethod

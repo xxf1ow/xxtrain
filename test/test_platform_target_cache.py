@@ -253,11 +253,11 @@ class PlatformTargetCacheTest(unittest.TestCase):
         self.assertFalse(RuntimeCache(self.runtime_root).has_target_cache('segment', fingerprint))
         self.assertFalse(destination.with_name(f'.{destination.name}.building').exists())
 
-    def test_rejects_unsupported_target_and_out_of_bounds_triangle(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unsupported target cache: 'detect'"):
-            build_target_cache(self.data, 'detect', self.runtime_root, self.root / 'detect')
-        with self.assertRaisesRegex(ValueError, "Unsupported target cache: 'detect'"):
-            RuntimeCache(self.runtime_root).has_target_cache('detect', 'fingerprint')
+    def test_rejects_unknown_or_unsafe_target_and_out_of_bounds_triangle(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown task step: 'missing'"):
+            build_target_cache(self.data, 'missing', self.runtime_root, self.root / 'missing')
+        with self.assertRaisesRegex(ValueError, 'relative dataset directory'):
+            RuntimeCache(self.runtime_root).cache_path('../detect', 'fingerprint')
 
         self.repository.save_annotations(
             (

@@ -332,7 +332,7 @@ class PlatformTrainingStoreTest(unittest.TestCase):
     def test_cache_path_rejects_paths_outside_the_runtime_cache(self) -> None:
         runtime = RuntimeCache(self.root / 'runtime')
 
-        with self.assertRaisesRegex(ValueError, 'Unsupported target'):
+        with self.assertRaisesRegex(ValueError, 'target'):
             runtime.cache_path('../detect', 'a' * 64)
         with self.assertRaisesRegex(ValueError, 'fingerprint'):
             runtime.cache_path('detect', '../outside')

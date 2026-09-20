@@ -63,6 +63,12 @@ Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQ
 uv run --locked --extra platform python -m unittest test.test_platform_point_workflow -v
 ```
 
+任务定义驱动的标注协调回归使用非 Point 定义和真实 SQLite、HTTPX CVAT 传输及缓存发布，覆盖并行与嵌套依赖、根与裁剪矩形、分类、负样本 Tag 和三类缓存：
+
+```powershell
+uv run --locked --extra platform python -m unittest test.test_task_annotation_service -v
+```
+
 训练闭环联合回归通过真实 ASGI 路由、应用生命周期、`TrainingService`、`TrainingRunStore`、`AnnotationService`、训练缓存和 ClearML 适配器运行，只控制 ClearML SDK 边界及 CVAT 会话。它覆盖无浏览器请求的持久意图接续、查询只读、创建部分成功后的同任务补齐与取消、启动配置不完整时禁止入队、出队后部分取消失败与重启、创建前取消、旧行观察、三目标 FIFO 提交且标注库不变、最后一个终态解锁、完成但缺产物时禁止下载、并发唯一运行、未知状态、旧 CVAT 页面回写拒绝，以及输入变化、规范历史恢复和原缓存保留：
 
 ```powershell
@@ -85,7 +91,7 @@ uv run --locked --extra platform python -m unittest test.test_platform_data test
 uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
 ```
 
-同版本真实验收覆盖 tag 唯一选择、polyline 多指针、原生身份往返、裁剪来源和 frame 关联、分类数量及 line 点数修正、返回目标路由和两个下游缓存可读性。保存返回必须等待目标同步成功、返回参数清除且目标无错误后才能回读数据库；离线页面覆盖延迟与快速同步。改类后通过原生绘制补回该框被清除的指针；非法对象用 PATCH create 注入，回收检查当前 Job 的绑定。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。完整 fixture 的投影、同步和缓存消费者，以及真实服务到 HTTP、页面的业务原因均有离线验证。当前运行证据、范围和未覆盖项记录在 [Point 分类与指针分割 Agent Note](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md#implementation)；离线 HTTPX fixture、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
+同版本真实验收覆盖 tag 唯一选择、polyline 多指针、原生身份往返、裁剪来源和 frame 关联、分类数量及 line 点数修正、返回目标路由和两个下游缓存可读性。保存返回必须等待目标同步成功、返回参数清除且目标无错误后才能回读数据库；离线页面覆盖延迟与快速同步。改类后核对同一框的指针及其身份保持不变；非法对象用 PATCH create 注入，回收检查当前 Job 的绑定。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。完整 fixture 的投影、同步和缓存消费者，以及真实服务到 HTTP、页面的业务原因均有离线验证。当前运行证据、范围和未覆盖项记录在 [Point 分类与指针分割 Agent Note](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md#implementation)；离线 HTTPX fixture、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
 
 修改平台 package-data、平台或 worker 入口后构建 wheel，在独立临时环境安装该 wheel，并从临时环境运行 `xxtrain-worker --help`、`xxtrain-platform --help`，再通过 `importlib.resources` 读取包内 `web/index.html`、`web/training.html`、`web/app.js` 和 `web/training.js`。ClearML 提交或 Agent 环境变化还要把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 指向该环境解释器，从清洁工作目录导入 `xxtrain`、`clearml` 及训练依赖，并核对已安装 ClearML Agent 源码确实选择该解释器且跳过任务虚拟环境创建。这些检查不得依赖 checkout 的 `src` 或 `data`，也不替代真实 Agent/GPU 验收。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 

@@ -11,8 +11,9 @@ from PIL import Image
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.integrations.cvat.codec import decode_annotations, decode_initial_bindings, encode_mapped_annotations
+from xxtrain.integrations.cvat.edit_codec import decode_edit_annotations
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import AnnotationRecord, FrameResult, JobRef, TargetValidationError
+from xxtrain.platform.contracts import AnnotationRecord, EditJob, FrameResult, JobRef, TargetValidationError
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.workspace_data import WorkspaceData
@@ -128,7 +129,9 @@ class NegativeTagTest(unittest.TestCase):
             return httpx.Response(201, json={'id': 7})
 
         with httpx.Client(transport=httpx.MockTransport(respond)) as http:
-            CvatClient('http://cvat.test', 'token', http).create_task('detection', ('Point',))
+            CvatClient('http://cvat.test', 'token', http).create_task(
+                'detection', ('Point',), point_task_definition().step('detect').annotation
+            )
         self.assertEqual(
             [('Point', 'rectangle'), ('无检测目标', 'tag')],
             [(label['name'], label['type']) for label in payloads[0]['labels']],
@@ -139,15 +142,16 @@ class NegativeTagTest(unittest.TestCase):
         payload['shapes'] = [{'id': 101, 'type': 'rectangle', 'frame': 0, 'label_id': 41, 'points': [1, 1, 9, 9]}]
 
         class Cvat:
-            def fetch_detection(inner, ref):
-                return decode_annotations(payload, ref, LABELS)
+            def fetch_annotations(inner, job, policy):
+                return decode_edit_annotations(payload, job, LABELS, policy)
 
             def job_path(inner, ref):
                 return '/tasks/7/jobs/8'
 
         runtime = RuntimeCache(self.root / 'runtime')
         fingerprint = self.data.detection_fingerprint()
-        runtime.remember_job('detect', fingerprint, self.ref)
+        frames = self.data.target_frames('detect', self.root / 'runtime')
+        runtime.remember_edit_job('detect', fingerprint, EditJob(self.ref, tuple(frame.mapping for frame in frames)))
         config = WorkspaceConfig('test', 'Test', 17, self.root, self.root / 'runtime', 'http://cvat.test')
         service = AnnotationService(config, self.data, Cvat(), runtime)
         with self.assertRaises(TargetValidationError) as raised:

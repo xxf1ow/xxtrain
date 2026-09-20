@@ -48,6 +48,7 @@ class TaskDefinitionTest(unittest.TestCase):
             StepDefinition(
                 'bad', frozenset({'rectangle'}), frozenset({'x'}), frozenset(), frozenset(), display_name=''
             ),
+            StepDefinition('bad', frozenset({'rectangle'}), frozenset({'x'}), frozenset(), frozenset(), sample_unit=''),
             StepDefinition('bad', frozenset({'rectangle'}), frozenset(), frozenset(), frozenset()),
             StepDefinition(
                 'bad', frozenset({'rectangle'}), frozenset({'x'}), frozenset(), frozenset(), minimum_samples=-1
@@ -151,6 +152,9 @@ class TaskDefinitionTest(unittest.TestCase):
         classify = task.step('classify')
         segment = task.step('segment')
         self.assertEqual(50, detect.minimum_samples)
+        self.assertEqual(
+            ('张图片', '张裁剪图', '张裁剪图'), (detect.sample_unit, classify.sample_unit, segment.sample_unit)
+        )
         self.assertEqual(frozenset({'detect'}), classify.parent_steps)
         self.assertEqual(frozenset({'detect'}), segment.parent_steps)
         self.assertEqual(frozenset(), classify.depends_on)

@@ -541,14 +541,15 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                 cvat.expect(data.target_frames(target, config.runtime_dir))
                 service.begin_target(17, target)
             cases = (
-                ('classify', None, '只能保留一个分类标签'),
-                ('segment', [20, 20, 50, 50, 80, 80], '必须恰好有两个点'),
-                ('segment', [20, 20, 20, 20], '两个端点不能重合'),
-                ('segment', [20, 20, 999, 999], '端点必须位于裁剪图内'),
+                ('classify', None),
+                ('segment', [20, 20, 50, 50, 80, 80]),
+                ('segment', [20, 20, 20, 20]),
+                ('segment', [20, 20, 999, 999]),
             )
             originals = {target: copy.deepcopy(cvat.job(target)['annotations']) for target in ('classify', 'segment')}
-            for target, points, reason in cases:
-                with self.subTest(reason=reason):
+            reason = '标注数量、类型、标签或坐标不符合当前任务规则'
+            for target, points in cases:
+                with self.subTest(target=target, points=points):
                     payload = copy.deepcopy(originals[target])
                     if target == 'classify':
                         payload['tags'].append({**payload['tags'][0], 'id': 9999})
@@ -562,7 +563,7 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                     self.assertEqual(409, response.status_code)
                     detail = response.json()
                     self.assertEqual(str(raised.exception), detail['detail'])
-                    self.assertIn('裁剪图 1', detail['detail'])
+                    self.assertIn('样本 1', detail['detail'])
                     self.assertIn('请返回', detail['detail'])
                     self.assertTrue(detail['annotation_url'].endswith('frame=0'))
                     for secret in (str(config.workspace_dir), str(before[0].id), 'ValueError', 'label_id'):
@@ -575,10 +576,10 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                     self.assertIsNone(page['replaced'])
                     self.assertEqual(before, repository.annotations())
             secret = f'CVAT response password=secret at {config.workspace_dir} object {before[0].id}'
-            with patch('xxtrain.platform.service.validate_target_annotations', side_effect=ValueError(secret)):
+            with patch('xxtrain.platform.service.validate_step_annotations', side_effect=ValueError(secret)):
                 response = client.post('/platform/api/targets/classify/sync', headers=headers, json={})
             self.assertEqual(409, response.status_code)
-            self.assertIn('标注类型、标签或坐标不符合要求', response.json()['detail'])
+            self.assertIn(reason, response.json()['detail'])
             self.assertNotIn(secret, response.text)
             self.assertNotIn('password', response.text)
 

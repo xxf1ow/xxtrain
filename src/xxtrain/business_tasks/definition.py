@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -8,6 +9,8 @@ from typing import TYPE_CHECKING, Protocol
 from xxtrain.training.settings import TrainingSettings
 
 if TYPE_CHECKING:
+    from xxtrain.pipeline import Context
+    from xxtrain.pipeline.core import ClassifyOutput, EncodeOutput
     from xxtrain.platform.contracts import AnnotationRecord, EditFrame, FrameMapping, ImageInput, JsonValue
 
 
@@ -66,6 +69,8 @@ class TargetTrainingDefinition:
     metric_key: str
     metric_name: str
     delivery: DeliveryDefinition
+    labels: tuple[str, ...]
+    encode_sample: Callable[[EditFrame, int, Context], EncodeOutput | ClassifyOutput]
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,7 @@ class StepDefinition:
     depends_on: frozenset[str]
     training: TargetTrainingDefinition | None = None
     display_name: str | None = None
+    sample_unit: str = '个样本'
     annotation: AnnotationPolicy | None = None
     minimum_samples: int = 0
     input_adapter: InputAdapter | None = None
@@ -116,8 +122,13 @@ class TaskDefinition:
             raise ValueError('Task step keys must be unique')
         known = frozenset(keys)
         for step in self.steps:
-            if not isinstance(step.display_name, str) or not step.display_name:
-                raise ValueError(f'Task step {step.key!r} requires a display name')
+            if (
+                not isinstance(step.display_name, str)
+                or not step.display_name
+                or not isinstance(step.sample_unit, str)
+                or not step.sample_unit
+            ):
+                raise ValueError(f'Task step {step.key!r} requires display and sample-unit metadata')
             if (
                 isinstance(step.minimum_samples, bool)
                 or not isinstance(step.minimum_samples, int)

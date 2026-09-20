@@ -18,6 +18,8 @@ from xxtrain.platform.contracts import (
     AnnotationRecord,
     CvatBinding,
     DetectionBox,
+    EditAnnotation,
+    EditFrameResult,
     EditJob,
     FrameMapping,
     FrameResult,
@@ -42,19 +44,25 @@ class FakeCvatClient:
         self.images = ()
         self.prepared = None
 
-    def create_task(self, name, labels):
+    def create_task(self, name, labels, policy):
         self.create_task_calls += 1
         return 40 + self.create_task_calls
 
-    def prepare_task(self, task_id, images, user_id):
+    def prepare_task(self, task_id, frames, user_id, policy):
         if self.prepare_error:
             raise self.prepare_error
-        self.images = images
-        ref = JobRef(task_id, task_id + 32, tuple(image.sample_id for image in images))
-        image_boxes = ((image, box) for image in images for box in image.boxes)
+        self.images = frames
+        ref = JobRef(task_id, task_id + 32, tuple(dict.fromkeys(frame.mapping.image_id for frame in frames)))
         bindings = tuple(
-            CvatBinding(image.sample_id, 'shape', 100 + index, box.geometry.id)
-            for index, (image, box) in enumerate(image_boxes, start=1)
+            CvatBinding(
+                frame.mapping.image_id,
+                'tag' if annotation.kind in {'classification', 'negative'} else 'shape',
+                100 + index,
+                annotation.id,
+            )
+            for index, (frame, annotation) in enumerate(
+                ((frame, annotation) for frame in frames for annotation in frame.annotations), start=1
+            )
         )
         self.prepared = PreparedJob(ref, bindings)
         return self.prepared
@@ -64,18 +72,43 @@ class FakeCvatClient:
             raise self.check_error
         return self.unfinished
 
-    def fetch_detection(self, ref):
+    def fetch_annotations(self, job, policy):
         if self.results is not None:
+            if self.results and isinstance(self.results[0], FrameResult):
+                by_sample = {result.sample_id: result for result in self.results}
+                return tuple(
+                    EditFrameResult(
+                        frame.mapping.frame_id,
+                        tuple(
+                            EditAnnotation(
+                                None,
+                                'rectangle',
+                                box.geometry.label,
+                                [[box.geometry.x1, box.geometry.y1], [box.geometry.x2, box.geometry.y2]],
+                                box.cvat_id,
+                            )
+                            for box in by_sample[frame.mapping.image_id].boxes
+                        ),
+                    )
+                    for frame in self.images
+                )
             return self.results
         binding_by_annotation = {binding.annotation_id: binding.object_id for binding in self.prepared.bindings}
         return tuple(
-            FrameResult(
-                image.sample_id,
+            EditFrameResult(
+                frame.mapping.frame_id,
                 tuple(
-                    DetectionBox(box.geometry, box.extra, binding_by_annotation[box.geometry.id]) for box in image.boxes
+                    EditAnnotation(
+                        None,
+                        annotation.kind,
+                        annotation.label,
+                        annotation.geometry,
+                        binding_by_annotation[annotation.id],
+                    )
+                    for annotation in frame.annotations
                 ),
             )
-            for image in self.images
+            for frame in self.images
         )
 
     def job_path(self, ref):
@@ -285,7 +318,7 @@ class AnnotationServiceTest(unittest.TestCase):
 
         self.assertEqual((1, 1, 1), (view.image_count, view.annotated_image_count, view.boxed_image_count))
         self.assertFalse(view.can_generate_detection_cache)
-        with self.assertRaisesRegex(PlatformError, 'at least 50 boxed images'):
+        with self.assertRaisesRegex(PlatformError, 'input sample'):
             self.service.generate_detection_cache(17)
 
     def test_one_incomplete_image_blocks_an_otherwise_eligible_workspace(self):
@@ -295,7 +328,7 @@ class AnnotationServiceTest(unittest.TestCase):
 
         self.assertEqual((51, 50, 50), (view.image_count, view.annotated_image_count, view.boxed_image_count))
         self.assertFalse(view.can_generate_detection_cache)
-        with self.assertRaisesRegex(PlatformError, 'all images annotated'):
+        with self.assertRaisesRegex(PlatformError, 'input sample'):
             self.service.generate_detection_cache(17)
 
     def test_sync_keeps_fifty_boxed_plus_one_incomplete_image_ineligible(self):
@@ -306,7 +339,7 @@ class AnnotationServiceTest(unittest.TestCase):
 
         self.assertEqual((51, 50, 50), (view.image_count, view.annotated_image_count, view.boxed_image_count))
         self.assertFalse(view.can_generate_detection_cache)
-        with self.assertRaisesRegex(PlatformError, 'all images annotated'):
+        with self.assertRaisesRegex(PlatformError, 'input sample'):
             self.service.generate_detection_cache(17)
 
     def test_cache_generation_publishes_registered_database_samples(self):
@@ -408,7 +441,7 @@ class AnnotationServiceTest(unittest.TestCase):
             with self.assertRaises(PlatformError):
                 self.service.sync_detection(17)
         self.assertEqual(before, self.repository.annotations())
-        with patch.object(self.runtime, 'remember_job', side_effect=OSError('runtime disk full')):
+        with patch.object(self.runtime, 'remember_edit_job', side_effect=OSError('runtime disk full')):
             with self.assertRaises(PlatformError):
                 self.service.sync_detection(17)
         self.assertEqual(before, self.repository.annotations())
@@ -471,7 +504,7 @@ class AnnotationServiceTest(unittest.TestCase):
             self.data,
             self.cvat,
             self.runtime,
-            require_editable=lambda workspace_id: (_ for _ in ()).throw(PlatformError('training active')),
+            require_editable=lambda workspace_id, target: (_ for _ in ()).throw(PlatformError('training active')),
         )
         operations = (
             ('upload', lambda: guarded.upload(17, ())),

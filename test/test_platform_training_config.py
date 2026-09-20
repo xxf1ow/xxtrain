@@ -110,7 +110,7 @@ class TrainingEntrypointTest(unittest.TestCase):
                 require_cache_rebuild = None
 
             class Training(Resource):
-                def require_editable(self, workspace_id: str) -> None:
+                def require_editable(self, workspace_id: str, target: str | None = None) -> None:
                     pass
 
                 def require_cache_rebuild(self, workspace_id: str, target: str, fingerprint: str) -> None:

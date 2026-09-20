@@ -93,7 +93,8 @@ class TrainingService:
         except (OSError, RuntimeError) as error:
             raise PlatformError('Training result download failed') from error
 
-    def require_editable(self, workspace_id: str) -> None:
+    def require_editable(self, workspace_id: str, target: str | None = None) -> None:
+        del target
         if workspace_id != self.config.workspace_id:
             raise PlatformAccessError('Workspace access denied')
         for run in self.store.list_workspace(workspace_id):

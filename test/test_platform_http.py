@@ -22,6 +22,7 @@ else:
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig
     from xxtrain.platform.contracts import (
+        EditJob,
         JobRef,
         PlatformAccessError,
         PlatformConflictError,
@@ -154,9 +155,9 @@ class PlatformHttpTest(unittest.TestCase):
         self.service.view_result = replace(
             self.service.view_result,
             targets=(
-                TargetView('detect', 2, 0, True, False, False),
-                TargetView('classify', 0, 0, False, False, False),
-                TargetView('segment', 0, 0, False, False, False),
+                TargetView('detect', 2, 0, True, False, False, '检测', '张图片'),
+                TargetView('classify', 0, 0, False, False, False, '分类', '张裁剪图'),
+                TargetView('segment', 0, 0, False, False, False, '指针分割', '张裁剪图'),
             ),
         )
         self.cvat = FakeCvat()
@@ -201,6 +202,8 @@ class PlatformHttpTest(unittest.TestCase):
                 'boxed_image_count': 0,
                 'can_generate_detection_cache': False,
                 'detection_cache_ready': False,
+                'task_id': 'point',
+                'task_name': 'Point',
                 'task': {'id': 'point', 'name': 'Point'},
                 'targets': [
                     {
@@ -210,6 +213,8 @@ class PlatformHttpTest(unittest.TestCase):
                         'can_annotate': True,
                         'can_generate_cache': False,
                         'cache_ready': False,
+                        'display_name': '检测',
+                        'sample_unit': '张图片',
                         'name': '检测',
                         'available': True,
                     },
@@ -220,6 +225,8 @@ class PlatformHttpTest(unittest.TestCase):
                         'can_annotate': False,
                         'can_generate_cache': False,
                         'cache_ready': False,
+                        'display_name': '分类',
+                        'sample_unit': '张裁剪图',
                         'name': '分类',
                         'available': True,
                     },
@@ -230,6 +237,8 @@ class PlatformHttpTest(unittest.TestCase):
                         'can_annotate': False,
                         'can_generate_cache': False,
                         'cache_ready': False,
+                        'display_name': '指针分割',
+                        'sample_unit': '张裁剪图',
                         'name': '分割',
                         'available': True,
                     },
@@ -527,7 +536,7 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
             cvat = FakeCvat()
 
-            def require_editable(workspace_id: str) -> None:
+            def require_editable(workspace_id: str, target: str | None) -> None:
                 self.assertEqual('line-3', workspace_id)
                 raise PlatformConflictError('private active task details')
 
@@ -616,10 +625,18 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             data.admit((staged,))
             sample_id = data.images()[0].sample_id
             runtime = RuntimeCache(root / 'runtime')
-            runtime.remember_job('detect', data.detection_fingerprint(), JobRef(41, 73, (sample_id,)))
+            frames = data.target_frames('detect', root / 'runtime')
+            runtime.remember_edit_job(
+                'detect', data.detection_fingerprint(), EditJob(JobRef(41, 73, (sample_id,)), (frames[0].mapping,))
+            )
             config = WorkspaceConfig('line-3', '三号现场', 17, root, root / 'runtime', 'http://cvat.test')
             labels = [
-                {'id': 41 + index, 'name': name, 'attributes': [{'id': 71 + index, 'name': 'xxtrain_labelme_extra'}]}
+                {
+                    'id': 41 + index,
+                    'name': name,
+                    'type': 'rectangle',
+                    'attributes': [{'id': 71 + index, 'name': 'xxtrain_labelme_extra'}],
+                }
                 for index, name in enumerate(POINT_BOX_LABELS)
             ]
 

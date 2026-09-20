@@ -1,4 +1,3 @@
-import json
 import shutil
 import tempfile
 import unittest
@@ -8,42 +7,12 @@ import yaml
 from PIL import Image
 
 from test.support.scenarios import load_case_scenario
-from xxtrain.business_tasks import point_detection_recipe
 from xxtrain.pipeline import convert_dataset
 
 FIXTURES_PATH = Path(__file__).resolve().parent / 'fixtures'
 
 
 class TaskTransformsTest(unittest.TestCase):
-    def test_platform_point_projection_keeps_all_five_box_labels(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            images = root / 'src' / 'workspace' / 'imgs'
-            annotations = root / 'src' / 'workspace' / 'anns_seg'
-            images.mkdir(parents=True)
-            annotations.mkdir()
-            for label in ('Point', 'tl', 'tc', 'cl', 'cc'):
-                Image.new('RGB', (100, 100)).save(images / f'{label}.png')
-                (annotations / f'{label}.json').write_text(
-                    json.dumps(
-                        {
-                            'imageWidth': 100,
-                            'imageHeight': 100,
-                            'shapes': [{'label': label, 'shape_type': 'rectangle', 'points': [[10, 20], [30, 40]]}],
-                        }
-                    ),
-                    encoding='utf-8',
-                )
-            report = convert_dataset(point_detection_recipe(), root, reserve_no_label=True)
-            for label in ('Point', 'tl', 'tc', 'cl', 'cc'):
-                with self.subTest(label=label):
-                    self.assertEqual(
-                        '0 0.200000 0.300000 0.200000 0.200000',
-                        (root / 'detect' / 'workspace' / f'{label}.txt').read_text(encoding='utf-8'),
-                    )
-            self.assertEqual({}, report.missing_annotation_counts)
-            self.assertEqual({'Point': 5}, report.output_label_counts)
-
     def copy_fixture(self, fixture_name: str) -> Path:
         temp_dir = tempfile.TemporaryDirectory(prefix='xxtrain-transforms-')
         self.addCleanup(temp_dir.cleanup)

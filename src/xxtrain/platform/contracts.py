@@ -7,7 +7,7 @@ from xxtrain.data import Bbox
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
-type WorkspaceEditGuard = Callable[[str], None]
+type WorkspaceEditGuard = Callable[[str, str | None], None]
 type WorkspaceCacheRebuildGuard = Callable[[str, str, str], None]
 
 
@@ -227,6 +227,8 @@ class TargetView:
     can_annotate: bool
     can_generate_cache: bool
     cache_ready: bool
+    display_name: str = ''
+    sample_unit: str = '个样本'
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,8 @@ class WorkspaceView:
     can_generate_detection_cache: bool
     detection_cache_ready: bool
     targets: tuple[TargetView, ...] = ()
+    task_id: str = 'point'
+    task_name: str = 'Point'
 
 
 class PlatformError(Exception):

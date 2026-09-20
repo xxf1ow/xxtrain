@@ -1,6 +1,4 @@
-import json
 import os
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,7 +28,6 @@ from xxtrain.platform.contracts import (
 from xxtrain.workspace_data.changes import plan_changes
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, image_sha256, perceptual_hash
 from xxtrain.workspace_data.editing import fingerprint_target, prepare_sync, project_target_frames, summarize_target
-from xxtrain.workspace_data.labelme import detection_document
 from xxtrain.workspace_data.repository import AnnotationRepository
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
@@ -162,34 +159,6 @@ class WorkspaceData:
     def detection_fingerprint(self) -> str:
         """Hash registered image identities and normalized detection business content."""
         return self.target_fingerprint('detect')
-
-    def materialize_detection_source(self, root: Path) -> Path:
-        """Export completed database samples into a disposable LabelMe source tree."""
-        source_root = Path(root) / 'src'
-        group_root = source_root / 'workspace'
-        images_dir = group_root / 'imgs'
-        annotations_dir = group_root / 'anns_seg'
-        images_dir.mkdir(parents=True)
-        annotations_dir.mkdir()
-        (source_root / 'labels.txt').write_text('Point\n', encoding='utf-8')
-
-        annotations = self._repository.annotations(step_key='detect')
-        by_image: dict[str, list[AnnotationRecord]] = {}
-        for record in annotations:
-            by_image.setdefault(record.image_id, []).append(record)
-        for image in self._repository.images():
-            records = tuple(by_image.get(image.id, ()))
-            if not any(record.kind in {'rectangle', 'negative'} for record in records):
-                continue
-            image_path = self._root / image.relative_path
-            document = detection_document(
-                image_path=f'../imgs/{image_path.name}', width=image.width, height=image.height, annotations=records
-            )
-            shutil.copy2(image_path, images_dir / image_path.name)
-            (annotations_dir / f'{image.id}.json').write_text(
-                json.dumps(document, ensure_ascii=False, allow_nan=False), encoding='utf-8'
-            )
-        return Path(root)
 
     def bind_job(self, prepared: PreparedJob) -> None:
         """Persist a prepared CVAT job's native-object bindings atomically."""

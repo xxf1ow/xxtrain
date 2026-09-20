@@ -1,4 +1,3 @@
-import json
 import shutil
 import tempfile
 import unittest
@@ -12,7 +11,6 @@ from PIL import Image
 
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.data import Bbox
-from xxtrain.platform.cache import build_detection_cache
 from xxtrain.platform.contracts import (
     AnnotationRecord,
     CvatBinding,
@@ -24,6 +22,7 @@ from xxtrain.platform.contracts import (
     PreparedJob,
     UploadResult,
 )
+from xxtrain.platform.target_cache import build_target_cache
 from xxtrain.workspace_data import WorkspaceData
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, perceptual_hash
 from xxtrain.workspace_data.repository import AnnotationRepository
@@ -169,22 +168,6 @@ class PlatformDataTest(unittest.TestCase):
         repository.save_annotations((changed,))
         self.assertNotEqual(before, self.workspace.detection_fingerprint())
 
-    def test_detection_export_is_independent_of_database_and_cvat_ids(self) -> None:
-        image = self.accept_image()
-        record = self.box_record(image.sample_id)
-        repository = self.repository()
-        repository.save_annotations((record,))
-        ref = JobRef(7, 8, (image.sample_id,))
-        repository.bind_job(PreparedJob(ref, (CvatBinding(image.sample_id, 'shape', 91, record.id),)))
-
-        before = self.workspace.detection_fingerprint()
-        root = self.root / 'conversion'
-        self.workspace.materialize_detection_source(root)
-        document = json.loads(next((root / 'src/workspace/anns_seg').glob('*.json')).read_text())
-        self.assertNotIn('annotation_id', document)
-        self.assertTrue(all(shape['shape_type'] == 'rectangle' for shape in document['shapes']))
-        self.assertEqual(before, self.workspace.detection_fingerprint())
-
     def test_every_point_box_label_projects_to_detection_class_zero(self) -> None:
         image = self.accept_image()
         labels = ('Point', 'tl', 'tc', 'cl', 'cc')
@@ -197,7 +180,8 @@ class PlatformDataTest(unittest.TestCase):
             )
         )
 
-        build_detection_cache(self.workspace, self.root / 'runtime' / 'cache' / 'labels')
+        runtime_root = self.root / 'runtime'
+        build_target_cache(self.workspace, 'detect', runtime_root, runtime_root / 'cache' / 'labels')
 
         output = self.root / 'runtime' / 'cache' / 'labels' / 'detect' / 'workspace'
         lines = [line for path in output.glob('*.txt') for line in path.read_text(encoding='utf-8').splitlines()]
@@ -215,7 +199,7 @@ class PlatformDataTest(unittest.TestCase):
         )
 
         destination = self.root / 'runtime' / 'cache' / 'fingerprint'
-        report = build_detection_cache(self.workspace, destination)
+        report = build_target_cache(self.workspace, 'detect', self.root / 'runtime', destination)
 
         output = destination / 'detect'
         self.assertEqual(2, report.train_image_count + report.val_image_count)
@@ -223,11 +207,6 @@ class PlatformDataTest(unittest.TestCase):
         self.assertEqual(2, len(labels))
         self.assertEqual(1, sum(bool(path.read_text(encoding='utf-8')) for path in labels))
         self.assertEqual('', (output / 'workspace' / f'{negative.sample_id}.txt').read_text(encoding='utf-8'))
-        source_documents = [
-            json.loads(path.read_text(encoding='utf-8')) for path in (output.parent / 'src').rglob('*.json')
-        ]
-        self.assertEqual({'tc'}, {shape['label'] for doc in source_documents for shape in doc['shapes']})
-
         dataset = yaml.safe_load((output / 'dataset.yaml').read_text(encoding='utf-8'))
         self.assertEqual(str(destination.absolute()), dataset['path'])
         self.assertEqual({'detect/train.txt', 'detect/val.txt'}, {dataset['train'], dataset['val']})
