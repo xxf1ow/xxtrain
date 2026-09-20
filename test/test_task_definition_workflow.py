@@ -131,16 +131,26 @@ class TaskDefinitionWorkflowTest(unittest.TestCase):
             'regions', shapes=self._rectangles('regions', len(region_frames), [10, 10, 35, 35], 100)
         )
         self.service.sync_target(17, 'regions')
+        saved_outer_boxes = self.repository.annotations(step_key='regions')
+        root_ids_by_image = {record.image_id: record.id for record in saved_outer_boxes}
         saved_outer_box = next(
-            record
-            for record in self.repository.annotations(step_key='regions')
-            if record.image_id == region_frames[0].mapping.image_id
+            record for record in saved_outer_boxes if record.image_id == region_frames[0].mapping.image_id
+        )
+        sibling_views = {target.id: target for target in self.service.view(17).targets}
+        self.assertTrue(sibling_views['kind'].can_annotate)
+        self.assertTrue(sibling_views['needles'].can_annotate)
+        self.assertEqual(
+            (0, 0), (sibling_views['kind'].annotated_sample_count, sibling_views['needles'].annotated_sample_count)
         )
 
         kind_frames, _ = self._begin('kind')
         kind_tags = self._tags('kind', len(kind_frames), 'a', 200)
         self.cvat.set_annotations('kind', tags=kind_tags)
         self.service.sync_target(17, 'kind')
+        self.assertEqual(
+            set(root_ids_by_image.items()),
+            {(record.image_id, record.parent_id) for record in self.repository.annotations(step_key='kind')},
+        )
 
         needle_frames, _ = self._begin('needles')
         needle_label = self.cvat.label_id('needles', 'line')
@@ -157,6 +167,10 @@ class TaskDefinitionWorkflowTest(unittest.TestCase):
         ]
         self.cvat.set_annotations('needles', shapes=needle_shapes)
         self.service.sync_target(17, 'needles')
+        self.assertEqual(
+            set(root_ids_by_image.items()),
+            {(record.image_id, record.parent_id) for record in self.repository.annotations(step_key='needles')},
+        )
 
         needles_before = self.repository.annotations(step_key='needles')
         needle_fingerprint = self.data.target_fingerprint('needles')
