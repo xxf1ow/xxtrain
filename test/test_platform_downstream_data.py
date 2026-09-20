@@ -189,6 +189,32 @@ class PlatformDownstreamDataTest(unittest.TestCase):
             (first_line.id,), tuple(record.id for record in self.repository.annotations(step_key='segment'))
         )
 
+    def test_display_order_only_sync_is_noop_and_preserves_identities(self) -> None:
+        _, _, first_line, second_line = self.add_targets()
+        job, frames = self.edit_job('segment', 21)
+        self.bind_existing(job, 'shape', (101, 102), frames)
+        before = self.data.target_fingerprint('segment')
+        reordered = (
+            EditFrameResult(
+                frames[0].mapping.frame_id,
+                (
+                    EditAnnotation(None, 'polyline', '1', [[4, 5], [6, 7]], 102),
+                    EditAnnotation(None, 'polyline', '1', [[1, 2], [3, 4]], 101),
+                ),
+            ),
+            EditFrameResult(frames[1].mapping.frame_id, ()),
+        )
+
+        sync = self.data.prepare_target_sync('segment', job, reordered)
+
+        self.assertEqual(
+            ((), frozenset(), frozenset()),
+            (sync.changes.upserts, sync.changes.delete_ids, sync.changes.invalidated_steps),
+        )
+        self.assertEqual(before, sync.fingerprint)
+        self.data.commit_target_sync(job, sync)
+        self.assertEqual((first_line, second_line), self.repository.annotations(step_key='segment'))
+
     def test_classification_change_and_noop_preserve_parallel_segment_lines(self) -> None:
         category, other_category, first_line, second_line = self.add_targets()
         other_line = AnnotationRecord(

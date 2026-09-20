@@ -214,6 +214,84 @@ class WorkspaceTaskInputsTest(unittest.TestCase):
         self.assertEqual(before, self.data.target_fingerprint('needles'))
         self.assertEqual((line,), self.repository.annotations(step_key='needles'))
 
+    def test_extra_dependency_changes_fingerprint_and_invalidates_only_shared_source(self) -> None:
+        task = replace(
+            self.task,
+            steps=tuple(
+                replace(step, depends_on=frozenset({'kind'})) if step.key == 'needles' else step
+                for step in self.task.steps
+            ),
+        )
+        data = WorkspaceData(self.workspace, task)
+        repository = AnnotationRepository(self.workspace / 'annotations.db', task)
+        first_region = AnnotationRecord(
+            UUID('70000000-0000-0000-0000-000000000001'),
+            self.image.id,
+            'regions',
+            None,
+            'rectangle',
+            'part',
+            [[4, 6], [24, 26]],
+        )
+        second_region = AnnotationRecord(
+            UUID('70000000-0000-0000-0000-000000000002'),
+            self.image.id,
+            'regions',
+            None,
+            'rectangle',
+            'part',
+            [[30, 10], [50, 30]],
+        )
+        first_kind = AnnotationRecord(
+            UUID('71000000-0000-0000-0000-000000000001'),
+            self.image.id,
+            'kind',
+            first_region.id,
+            'classification',
+            'a',
+            None,
+        )
+        second_kind = AnnotationRecord(
+            UUID('71000000-0000-0000-0000-000000000002'),
+            self.image.id,
+            'kind',
+            second_region.id,
+            'classification',
+            'a',
+            None,
+        )
+        repository.save_annotations((first_region, second_region, first_kind, second_kind))
+
+        before_dependency_change = data.target_fingerprint('needles')
+        repository.save_annotations((replace(first_kind, label='b'),))
+
+        self.assertNotEqual(before_dependency_change, data.target_fingerprint('needles'))
+
+        first_line = AnnotationRecord(
+            UUID('72000000-0000-0000-0000-000000000001'),
+            self.image.id,
+            'needles',
+            first_region.id,
+            'polyline',
+            'line',
+            [[6, 8], [12, 14]],
+        )
+        second_line = AnnotationRecord(
+            UUID('72000000-0000-0000-0000-000000000002'),
+            self.image.id,
+            'needles',
+            second_region.id,
+            'polyline',
+            'line',
+            [[32, 12], [38, 18]],
+        )
+        repository.save_annotations((first_line, second_line))
+
+        repository.save_annotations((first_kind,))
+
+        self.assertEqual((second_line,), repository.annotations(step_key='needles'))
+        self.assertEqual(second_kind, repository.annotations(step_key='kind')[1])
+
     def test_root_negative_is_complete_but_not_a_qualified_positive_sample(self) -> None:
         negative = AnnotationRecord(
             UUID('60000000-0000-0000-0000-000000000001'), self.image.id, 'regions', None, 'negative', None, None
