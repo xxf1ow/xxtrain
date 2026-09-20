@@ -24,6 +24,7 @@ else:
     from xxtrain.platform.contracts import (
         JobRef,
         PlatformAccessError,
+        PlatformConflictError,
         PlatformError,
         TargetValidationError,
         TargetView,
@@ -518,6 +519,60 @@ class PlatformHttpTest(unittest.TestCase):
 
 
 class PlatformRealWorkflowHttpTest(unittest.TestCase):
+    def test_active_training_guard_rejects_legacy_and_current_annotation_writes_with_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / 'workspace'
+            (workspace / 'images').mkdir(parents=True)
+            config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
+            cvat = FakeCvat()
+
+            def require_editable(workspace_id: str) -> None:
+                self.assertEqual('line-3', workspace_id)
+                raise PlatformConflictError('private active task details')
+
+            service = AnnotationService(
+                config,
+                WorkspaceData(workspace),
+                cvat,
+                RuntimeCache(config.runtime_dir),
+                require_editable=require_editable,
+            )
+            with AsgiTestClient(create_app(config, service, cvat)) as client:
+                client.cookies.set('sessionid', 'active')
+                client.get('/platform/')
+                headers = {'origin': 'http://testserver', 'x-xtrain-csrf': client.cookies.get('xxtrain_csrf')}
+                requests = (
+                    ('/platform/api/images', {'files': {'images': ('frame.jpg', b'image')}}),
+                    ('/platform/api/detection/start', {'json': {}}),
+                    ('/platform/api/detection/sync', {'json': {}}),
+                    ('/platform/api/targets/classify/start', {'json': {}}),
+                    ('/platform/api/targets/classify/sync', {'json': {}}),
+                )
+                for path, arguments in requests:
+                    with self.subTest(path=path):
+                        response = client.post(path, headers=headers, **arguments)
+                        self.assertEqual(409, response.status_code)
+                        self.assertEqual({'detail': '现场当前有操作或训练任务正在进行，请稍后重试。'}, response.json())
+
+    def test_shared_mutation_lock_rejects_legacy_and_current_cache_writes_with_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / 'workspace'
+            (workspace / 'images').mkdir(parents=True)
+            config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
+            cvat = FakeCvat()
+            service = AnnotationService(config, WorkspaceData(workspace), cvat, RuntimeCache(config.runtime_dir))
+            with AsgiTestClient(create_app(config, service, cvat)) as client:
+                client.cookies.set('sessionid', 'active')
+                client.get('/platform/')
+                headers = {'origin': 'http://testserver', 'x-xtrain-csrf': client.cookies.get('xxtrain_csrf')}
+                with service.lock:
+                    for path in ('/platform/api/detection/cache', '/platform/api/targets/classify/cache'):
+                        with self.subTest(path=path):
+                            response = client.post(path, headers=headers, json={})
+                            self.assertEqual(409, response.status_code)
+
     def test_uploaded_image_is_admitted_by_the_real_service_and_ineligible_cache_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

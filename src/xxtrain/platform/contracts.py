@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
@@ -6,6 +7,8 @@ from xxtrain.data import Bbox
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
+type WorkspaceEditGuard = Callable[[str], None]
+type WorkspaceCacheRebuildGuard = Callable[[str, str, str], None]
 
 
 @dataclass(frozen=True)
@@ -236,6 +239,10 @@ class WorkspaceView:
 
 class PlatformError(Exception):
     pass
+
+
+class PlatformConflictError(PlatformError):
+    """An expected resource conflict that is safe to report without backend details."""
 
 
 class TargetValidationError(PlatformError):

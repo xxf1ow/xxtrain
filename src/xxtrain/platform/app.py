@@ -2,26 +2,37 @@ from __future__ import annotations
 
 import secrets
 import shutil
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from hmac import compare_digest
 from importlib import resources
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 from python_multipart.exceptions import MultipartParseError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from xxtrain.business_tasks import MODEL_TARGETS
+from xxtrain.business_tasks import MODEL_TARGETS, point_task_definition
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformError, TargetValidationError, WorkspaceView
+from xxtrain.platform.contracts import (
+    PlatformAccessError,
+    PlatformConflictError,
+    PlatformError,
+    TargetValidationError,
+    WorkspaceView,
+)
 from xxtrain.platform.service import AnnotationService
+from xxtrain.platform.training_contracts import TrainingRunView
+from xxtrain.platform.training_coordinator import TrainingCoordinator
+from xxtrain.platform.training_service import TrainingService
 
 _CSRF_COOKIE = 'xxtrain_csrf'
 _CSRF_HEADER = 'x-xtrain-csrf'
@@ -41,21 +52,47 @@ class _LoginBody(BaseModel):
     password: str
 
 
-def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatClient) -> FastAPI:
+def create_app(
+    config: WorkspaceConfig,
+    service: AnnotationService,
+    cvat: CvatClient,
+    *,
+    training_service: TrainingService | None = None,
+) -> FastAPI:
     """Create the HTTP application for one configured workspace.
 
     Authentication delegates to the supplied CVAT browser-session adapter. Routes distinguish missing or rejected
     sessions (401), authenticated workspace-owner denial (403), invalid request objects (422), and operational
-    workflow or CVAT failures (502). The caller owns ``service`` and ``cvat`` and must close their external resources.
+    workflow or backend failures (502). When training is configured, the application lifespan owns and joins its
+    coordinator. The caller owns ``service``, ``cvat``, and ``training_service`` resources and closes them after the
+    lifespan exits.
     """
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if training_service is None:
+            yield
+            return
+        coordinator = TrainingCoordinator(training_service)
+        coordinator.start()
+        try:
+            yield
+        finally:
+            coordinator.close()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     web = resources.files('xxtrain.platform').joinpath('web')
     page = web.joinpath('index.html').read_text(encoding='utf-8')
+    training_page = web.joinpath('training.html').read_text(encoding='utf-8')
     style = web.joinpath('style.css').read_text(encoding='utf-8')
     script = web.joinpath('app.js').read_text(encoding='utf-8')
+    training_script = web.joinpath('training.js').read_text(encoding='utf-8')
 
     def operational_error() -> HTTPException:
         return HTTPException(status.HTTP_502_BAD_GATEWAY, _OPERATIONAL_ERROR)
+
+    def conflict_error() -> HTTPException:
+        return HTTPException(status.HTTP_409_CONFLICT, '现场当前有操作或训练任务正在进行，请稍后重试。')
 
     def browser_cookie(request: Request) -> str:
         values = []
@@ -128,9 +165,66 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
 
+    def training_payload(view: TrainingRunView) -> dict[str, object]:
+        run = view.run
+        execution = view.execution
+        training = point_task_definition().step(run.target).training
+        if training is None:
+            raise ValueError(f'Target does not define training: {run.target!r}')
+        return {
+            'id': run.id,
+            'workspace_id': run.workspace_id,
+            'workspace_name': run.workspace_name,
+            'target': run.target,
+            'metric_name': training.metric_name,
+            'submitted_at': run.submitted_at,
+            'cancellation_requested': view.cancellation_requested,
+            'execution': None
+            if execution is None
+            else {
+                'status': execution.status,
+                'active': execution.active,
+                'epoch': execution.epoch,
+                'total_epochs': execution.total_epochs,
+                'elapsed_seconds': execution.elapsed_seconds,
+                'metric': execution.metric,
+                'download_ready': execution.download_ready,
+                'detail': execution.detail,
+            },
+        }
+
+    def full_workspace_payload(user_id: int, view: WorkspaceView | None = None) -> dict[str, object]:
+        if training_service is None:
+            return workspace_payload(view if view is not None else view_for(user_id))
+        state = training_service.workspace_view(user_id)
+        payload = workspace_payload(state['workspace'])
+        payload['editing_locked'] = not state['editable']
+        payload['training_enabled'] = True
+        payload['training'] = {
+            target: None if run is None else training_payload(run) for target, run in state['training'].items()
+        }
+        return payload
+
+    def training_access(error: PlatformAccessError) -> HTTPException:
+        return HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此训练任务。')
+
+    def training_failure(error: Exception) -> HTTPException:
+        if isinstance(error, PlatformConflictError):
+            return conflict_error()
+        return operational_error()
+
     @app.get('/platform/', response_class=HTMLResponse)
     def platform_page(request: Request) -> Response:
         response = HTMLResponse(page)
+        if not request.cookies.get(_CSRF_COOKIE):
+            response.set_cookie(
+                _CSRF_COOKIE, secrets.token_urlsafe(32), httponly=False, samesite='strict', path='/platform/'
+            )
+        return response
+
+    @app.get('/platform/training/', response_class=HTMLResponse)
+    def training_page_route(request: Request) -> Response:
+        response = HTMLResponse(training_page)
         if not request.cookies.get(_CSRF_COOKIE):
             response.set_cookie(
                 _CSRF_COOKIE, secrets.token_urlsafe(32), httponly=False, samesite='strict', path='/platform/'
@@ -144,6 +238,10 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
     @app.get('/platform/app.js', response_class=PlainTextResponse)
     def platform_script() -> Response:
         return Response(script, media_type='text/javascript')
+
+    @app.get('/platform/training.js', response_class=PlainTextResponse)
+    def training_page_script() -> Response:
+        return Response(training_script, media_type='text/javascript')
 
     @app.post('/platform/api/login', status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(write_request)])
     def login(body: _LoginBody) -> Response:
@@ -181,7 +279,13 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
 
     @app.get('/platform/api/workspace')
     def workspace(request: Request) -> dict[str, object]:
-        return workspace_payload(view_for(authenticated_user(request)))
+        user_id = authenticated_user(request)
+        try:
+            return full_workspace_payload(user_id)
+        except PlatformAccessError:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except (OSError, ValueError, PlatformError):
+            raise operational_error() from None
 
     def stage_uploads(user_id: int, images: list[UploadFile]) -> WorkspaceView:
         staging = config.runtime_dir / 'staging'
@@ -213,11 +317,13 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
                 if not parts or any(name != 'images' or not isinstance(value, UploadFile) for name, value in parts):
                     raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, '请选择要上传的图片。')
                 view = await run_in_threadpool(stage_uploads, user_id, form.getlist('images'))
-                return workspace_payload(view)
+                return full_workspace_payload(user_id, view)
             finally:
                 await form.close()
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
 
@@ -228,6 +334,8 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
             annotation_url = service.begin_detection(user_id)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return {'annotation_url': annotation_url}
@@ -237,24 +345,28 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
         user_id = authenticated_user(request)
         try:
             view = service.sync_detection(user_id)
+            return JSONResponse(content=full_workspace_payload(user_id, view))
         except TargetValidationError as error:
             return validation_response(error)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return JSONResponse(content=workspace_payload(view))
 
     @app.post('/platform/api/detection/cache', dependencies=[Depends(write_request)])
     def generate_detection_cache(request: Request, body: _EmptyBody) -> dict[str, object]:
         user_id = authenticated_user(request)
         try:
             view = service.generate_detection_cache(user_id)
+            return full_workspace_payload(user_id, view)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return workspace_payload(view)
 
     @app.post('/platform/api/targets/{target}/start', dependencies=[Depends(write_request)])
     def start_target(request: Request, target: str, body: _EmptyBody) -> dict[str, str]:
@@ -264,6 +376,8 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
             annotation_url = service.begin_target(user_id, target)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
         return {'annotation_url': annotation_url}
@@ -274,13 +388,15 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
         target = target_id(target)
         try:
             view = service.sync_target(user_id, target)
+            return JSONResponse(content=full_workspace_payload(user_id, view))
         except TargetValidationError as error:
             return validation_response(error)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return JSONResponse(content=workspace_payload(view))
 
     @app.post('/platform/api/targets/{target}/cache', dependencies=[Depends(write_request)])
     def generate_target_cache(request: Request, target: str, body: _EmptyBody) -> dict[str, object]:
@@ -288,10 +404,67 @@ def create_app(config: WorkspaceConfig, service: AnnotationService, cvat: CvatCl
         target = target_id(target)
         try:
             view = service.generate_target_cache(user_id, target)
+            return full_workspace_payload(user_id, view)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
+        except PlatformConflictError:
+            raise conflict_error() from None
         except (OSError, ValueError, PlatformError):
             raise operational_error() from None
-        return workspace_payload(view)
+
+    if training_service is not None:
+
+        @app.post('/platform/api/targets/{target}/train', dependencies=[Depends(write_request)])
+        def submit_training(request: Request, target: str, body: _EmptyBody) -> dict[str, object]:
+            user_id = authenticated_user(request)
+            target = target_id(target)
+            try:
+                view = training_service.submit(user_id, target)
+                return {
+                    'run_id': view.run.id,
+                    'training_url': f'/platform/training/?run={view.run.id}',
+                    'run': training_payload(view),
+                }
+            except PlatformAccessError as error:
+                raise training_access(error) from None
+            except (OSError, ValueError, PlatformError) as error:
+                raise training_failure(error) from None
+
+        @app.get('/platform/api/training-runs')
+        def list_training(request: Request) -> list[dict[str, object]]:
+            try:
+                return [training_payload(view) for view in training_service.list_runs(authenticated_user(request))]
+            except PlatformAccessError as error:
+                raise training_access(error) from None
+            except (OSError, ValueError, PlatformError) as error:
+                raise training_failure(error) from None
+
+        @app.get('/platform/api/training-runs/{run_id}')
+        def get_training(request: Request, run_id: UUID) -> dict[str, object]:
+            try:
+                return training_payload(training_service.get_run(authenticated_user(request), str(run_id)))
+            except PlatformAccessError as error:
+                raise training_access(error) from None
+            except (OSError, ValueError, PlatformError) as error:
+                raise training_failure(error) from None
+
+        @app.post('/platform/api/training-runs/{run_id}/cancel', dependencies=[Depends(write_request)])
+        def cancel_training(request: Request, run_id: UUID, body: _EmptyBody) -> dict[str, object]:
+            try:
+                return training_payload(training_service.cancel(authenticated_user(request), str(run_id)))
+            except PlatformAccessError as error:
+                raise training_access(error) from None
+            except (OSError, ValueError, PlatformError) as error:
+                raise training_failure(error) from None
+
+        @app.get('/platform/api/training-runs/{run_id}/download', response_class=FileResponse)
+        def download_training(request: Request, run_id: UUID) -> FileResponse:
+            try:
+                download = training_service.download(authenticated_user(request), str(run_id))
+            except PlatformAccessError as error:
+                raise training_access(error) from None
+            except (OSError, ValueError, PlatformError) as error:
+                raise training_failure(error) from None
+            return FileResponse(download.path, filename=download.filename, media_type=download.media_type)
 
     return app

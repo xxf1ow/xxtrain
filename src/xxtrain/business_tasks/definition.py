@@ -1,5 +1,21 @@
 from dataclasses import dataclass
 
+from xxtrain.training.settings import TrainingSettings
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryDefinition:
+    labels: bool
+    reference_images: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TargetTrainingDefinition:
+    settings: TrainingSettings
+    metric_key: str
+    metric_name: str
+    delivery: DeliveryDefinition
+
 
 @dataclass(frozen=True)
 class StepDefinition:
@@ -10,6 +26,7 @@ class StepDefinition:
     labels: frozenset[str]
     parent_steps: frozenset[str]
     depends_on: frozenset[str]
+    training: TargetTrainingDefinition | None = None
 
 
 @dataclass(frozen=True)

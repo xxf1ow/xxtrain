@@ -6,7 +6,7 @@
 
 ## Scenario contract
 
-一个 Scenario 文件必须导出 `SCENARIO: TrainingScenario`。该不可变值包含一个 `DatasetRecipe`、模型版本与规模、split、`reserve_no_label` 以及传给 `YOLO.train()` 的覆盖参数；规模只能是 `n`、`s`、`m`、`l` 或 `x`。
+一个 Scenario 文件必须导出 `SCENARIO: TrainingScenario`。该不可变值包含一个 `DatasetRecipe`、模型版本与规模、split、`reserve_no_label` 以及传给 `YOLO.train()` 的覆盖参数；模型默认值与规模集合由训练设置共用，规模只能是 `n`、`s`、`m`、`l` 或 `x`。
 
 加载器把 `train_args` 中的相对 `Path` 递归解析到 Scenario 文件目录，普通字符串保持不变。文件不存在、模块无法加载、缺少 `SCENARIO` 或导出类型错误时，加载在开始训练前失败。
 
@@ -40,9 +40,15 @@
 
 训练完成后，工作流把 Scenario 文件复制到 Ultralytics run 目录以保留运行配置；存在 best checkpoint 时从它导出，否则从当前模型导出并报告缺失。Ultralytics YOLO 是唯一后端，不为假设中的第二框架维护抽象。
 
+`train_prepared()` 直接消费已发布的数据集目录。它在独立 `run_dir` 中以配置模型名生成 YAML，并生成 split 列表、标签副本和一次性图片副本；模型 basename 使 Ultralytics 选择 `model_scale` 对应的结构，其他副本使图片修复、cache、run、checkpoint 和 ONNX 写入都不触及发布树。每次运行仍只从共用默认权重缓存初始化，不使用历史训练 checkpoint。训练回调以从 1 开始的已完成 epoch 上报进度；best checkpoint 存在时，导出和验证指标均来自该 checkpoint。这些副本增加每次运行的传输与磁盘占用，但只属于当次 run，不是持久从机数据缓存。
+
+图片列表保留缓存入口路径：图片可以是软链接，配套 `.txt` 标签仍从该入口旁读取，不能先解析图片链接再推导标签路径。`on_validation` 只在训练中的实际验证完成后返回该轮 epoch 和新指标；跳过验证的轮次不触发，最终 best checkpoint 的指标由返回值提供。ClearML worker 在每 5 轮的验证完成事件上更新主要指标，训练完成后以实际交付模型的验证结果覆盖；验证频率改为每 10 轮时，中间轮次保留上次已上报结果，不复制旧指标为新观测，也不额外执行验证。
+
 ## Export and review
 
 `xxtrain export` 从已有 checkpoint 独立导出带时间戳的 ONNX。分类模型同时从生成数据集的每个训练类别复制一张参考图片；类别目录没有可用图片时导出失败。
+
+`build_delivery()` 将单模型交付复制为 `model.onnx`。分类交付生成 ZIP，其中只有 `model.onnx`、按模型输出索引排序的 `labels.txt` 和 `references/<output_index>_<label>.<ext>`；索引目录名还原为业务标签，任何输出类别缺少参考图都使交付失败。
 
 `xxtrain review` 是预测结果检查，不调用 `model.val()`。Detect、segment、pose 和 OBB 把预测可视化交给 Ultralytics 保存；分类默认从图片父目录推断真实类别并整理错分，`--unlabeled` 则把无标签图片按预测类别分目录保存。无标签模式只支持分类模型。
 
@@ -52,4 +58,4 @@
 
 ## Failures and limitations
 
-当前工作流不会自动识别源数据变化，不提供独立的指标重算入口，也不管理训练队列、远程状态或历史输入快照。训练、导出和 review 直接使用本地 Scenario 与 checkpoint；自助平台提案中的 ClearML 和不可变快照尚未实现。
+当前工作流不会自动识别源数据变化，也不管理训练队列、远程状态或历史输入快照。Scenario 入口仍直接使用本地数据与 checkpoint；平台适配已离线实现 ClearML 提交、远程状态和任务产物传输，真实 Agent/GPU 执行仍待验收。

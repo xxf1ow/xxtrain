@@ -58,7 +58,11 @@ class RuntimeCache:
 
     def has_detection_cache(self, fingerprint: str) -> bool:
         """Return whether a complete Point detection dataset exists for the fingerprint."""
-        return (self._root / 'cache' / fingerprint / 'detect').is_dir()
+        try:
+            self.cache_path('detect', fingerprint)
+        except ValueError:
+            return False
+        return True
 
     def has_target_cache(self, target: str, fingerprint: str) -> bool:
         """Return whether a downstream cache has its exact manifest and target directory.
@@ -68,15 +72,28 @@ class RuntimeCache:
         """
         if target not in {'classify', 'segment'}:
             raise ValueError(f'Unsupported target cache: {target!r}')
-        publication = self._root / 'cache' / fingerprint
-        if not (publication / target).is_dir():
-            return False
         try:
-            with (publication / 'manifest.json').open(encoding='utf-8') as stream:
-                manifest = json.load(stream)
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            self.cache_path(target, fingerprint)
+        except ValueError:
             return False
-        return manifest == {'fingerprint': fingerprint, 'target': target}
+        return True
+
+    def cache_path(self, target: str, fingerprint: str) -> Path:
+        """Return one complete published target cache or reject an invalid, incomplete, or escaping reference."""
+        if target not in {'detect', 'classify', 'segment'}:
+            raise ValueError(f'Unsupported target cache: {target!r}')
+        if not _safe_component(fingerprint):
+            raise ValueError('Training cache fingerprint must name one relative cache directory')
+        cache_root = self._root / 'cache'
+        publication = cache_root / fingerprint
+        path = publication / target
+        if not _is_within(path, cache_root):
+            raise ValueError('Training cache is not complete')
+        if target != 'detect' and not _has_target_manifest(publication, target, fingerprint):
+            raise ValueError('Training cache is not complete')
+        if not _has_training_inputs(path):
+            raise ValueError('Training cache is not complete')
+        return path
 
     def _load_jobs(self) -> dict[str, dict[str, RuntimeJob]]:
         if not self._jobs_path.exists():
@@ -141,6 +158,76 @@ class RuntimeCache:
             os.replace(temporary, self._jobs_path)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def _safe_component(value: str) -> bool:
+    return isinstance(value, str) and bool(value) and Path(value).name == value and value not in {'.', '..'}
+
+
+def _has_target_manifest(publication: Path, target: str, fingerprint: str) -> bool:
+    try:
+        with (publication / 'manifest.json').open(encoding='utf-8') as stream:
+            manifest = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return manifest == {'fingerprint': fingerprint, 'target': target}
+
+
+def _has_training_inputs(path: Path) -> bool:
+    dataset = path / 'dataset.yaml'
+    if not dataset.is_file():
+        return False
+    try:
+        fields = _dataset_fields(dataset.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError):
+        return False
+    publication = path.parent
+    root = Path(fields.get('path', ''))
+    if not root or root.absolute() != publication.absolute():
+        return False
+    for split in ('train', 'val'):
+        value = fields.get(split)
+        if value is None:
+            return False
+        listed = Path(value)
+        list_path = listed if listed.is_absolute() else publication / listed
+        if not _is_within(list_path, publication) or not list_path.is_file():
+            return False
+        try:
+            entries = tuple(line.strip() for line in list_path.read_text(encoding='utf-8').splitlines() if line.strip())
+        except (OSError, UnicodeError):
+            return False
+        if not entries:
+            return False
+        for entry in entries:
+            item = Path(entry)
+            item_path = item if item.is_absolute() else publication / item
+            if not _has_referenced_file(item_path, publication):
+                return False
+    return True
+
+
+def _dataset_fields(value: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in value.splitlines():
+        key, separator, field_value = line.partition(': ')
+        if separator and key.strip() in {'path', 'train', 'val'}:
+            cleaned = field_value.strip().strip('\'"')
+            if cleaned:
+                fields[key.strip()] = cleaned
+    return fields
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
+def _has_referenced_file(path: Path, publication: Path) -> bool:
+    return _is_within(path, publication) and path.is_file()
 
 
 def _decode_frames(value: object) -> tuple[FrameMapping, ...]:

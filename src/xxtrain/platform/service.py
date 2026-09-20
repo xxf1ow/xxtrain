@@ -15,9 +15,12 @@ from xxtrain.platform.contracts import (
     EditJob,
     JobRef,
     PlatformAccessError,
+    PlatformConflictError,
     PlatformError,
     TargetValidationError,
     TargetView,
+    WorkspaceCacheRebuildGuard,
+    WorkspaceEditGuard,
     WorkspaceView,
 )
 from xxtrain.platform.runtime import RuntimeCache
@@ -45,11 +48,22 @@ class AnnotationService:
     other users receive ``PlatformAccessError`` before workspace access.
     """
 
-    def __init__(self, config: WorkspaceConfig, data: WorkspaceData, cvat: CvatClient, runtime: RuntimeCache) -> None:
+    def __init__(
+        self,
+        config: WorkspaceConfig,
+        data: WorkspaceData,
+        cvat: CvatClient,
+        runtime: RuntimeCache,
+        *,
+        require_editable: WorkspaceEditGuard | None = None,
+        require_cache_rebuild: WorkspaceCacheRebuildGuard | None = None,
+    ) -> None:
         self.config = config
         self.data = data
         self.cvat = cvat
         self.runtime = runtime
+        self.require_editable = require_editable
+        self.require_cache_rebuild = require_cache_rebuild
         self.lock = threading.Lock()
 
     def view(self, user_id: int) -> WorkspaceView:
@@ -116,7 +130,8 @@ class AnnotationService:
 
         Admission consumes the staged files. Ownership or lock rejection leaves them with the caller.
         """
-        with self._write(user_id):
+        with self.mutation(user_id):
+            self._require_editable()
             self.data.admit(staged)
             return self.view(user_id)
 
@@ -131,7 +146,8 @@ class AnnotationService:
     def begin_target(self, user_id: int, target: str) -> str:
         """Return or prepare the current server-owned annotation Job for one model target."""
         self._validate_target(target)
-        with self._write(user_id):
+        with self.mutation(user_id):
+            self._require_editable()
             if target == 'detect':
                 return self._begin_detection(user_id)
             view = self._target_view(self.view(user_id), target)
@@ -157,7 +173,8 @@ class AnnotationService:
     def sync_target(self, user_id: int, target: str) -> WorkspaceView:
         """Validate, prepublish runtime mappings, and atomically commit one target Job."""
         self._validate_target(target)
-        with self._write(user_id):
+        with self.mutation(user_id):
+            self._require_editable()
             if target == 'detect':
                 return self._sync_detection(user_id)
             fingerprint = self.data.target_fingerprint(target)
@@ -190,25 +207,31 @@ class AnnotationService:
     def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
         """Generate the selected target's cache when its fact-derived completeness gate is open."""
         self._validate_target(target)
-        with self._write(user_id):
-            view = self.view(user_id)
-            target_view = self._target_view(view, target)
-            if not target_view.can_generate_cache:
-                if target == 'detect':
-                    raise PlatformError('Detection cache requires all images annotated and at least 50 boxed images')
-                raise PlatformError(f'{target.title()} cache requires every crop to be annotated')
-            if not target_view.cache_ready:
-                if target == 'detect':
-                    fingerprint = self.data.detection_fingerprint()
-                    destination = self.config.runtime_dir / 'cache' / fingerprint
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    build_detection_cache(self.data, destination)
-                else:
-                    fingerprint = self.data.target_fingerprint(target)
-                    destination = self.config.runtime_dir / 'cache' / fingerprint
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    build_target_cache(self.data, target, self.config.runtime_dir, destination)
+        with self.mutation(user_id):
+            self.ensure_target_cache(user_id, target)
             return self.view(user_id)
+
+    def ensure_target_cache(self, user_id: int, target: str) -> Path:
+        """Return a complete current cache while the caller holds ``mutation(user_id)``."""
+        self._require_owner(user_id)
+        self._validate_target(target)
+        view = self.view(user_id)
+        target_view = self._target_view(view, target)
+        if not target_view.can_generate_cache:
+            if target == 'detect':
+                raise PlatformError('Detection cache requires all images annotated and at least 50 boxed images')
+            raise PlatformError(f'{target.title()} cache requires every crop to be annotated')
+        fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
+        if not target_view.cache_ready:
+            if self.require_cache_rebuild is not None:
+                self.require_cache_rebuild(self.config.workspace_id, target, fingerprint)
+            destination = self.config.runtime_dir / 'cache' / fingerprint
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if target == 'detect':
+                build_detection_cache(self.data, destination)
+            else:
+                build_target_cache(self.data, target, self.config.runtime_dir, destination)
+        return self.runtime.cache_path(target, fingerprint)
 
     def _begin_detection(self, user_id: int) -> str:
         fingerprint = self.data.detection_fingerprint()
@@ -286,14 +309,19 @@ class AnnotationService:
             raise ValueError(f'Unsupported annotation target: {target!r}')
 
     @contextmanager
-    def _write(self, user_id: int) -> Iterator[None]:
+    def mutation(self, user_id: int) -> Iterator[None]:
+        """Serialize one workspace mutation without permitting recursive acquisition."""
         self._require_owner(user_id)
         if not self.lock.acquire(blocking=False):
-            raise PlatformError('A workspace write is already in progress')
+            raise PlatformConflictError('A workspace write is already in progress')
         try:
             yield
         finally:
             self.lock.release()
+
+    def _require_editable(self) -> None:
+        if self.require_editable is not None:
+            self.require_editable(self.config.workspace_id)
 
     def _require_owner(self, user_id: int) -> None:
         if user_id != self.config.owner_user_id:

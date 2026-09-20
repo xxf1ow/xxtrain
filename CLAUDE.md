@@ -10,6 +10,7 @@
 - 未经当前会话中的人工明确批准，不执行 push、PR 创建、远程合并或其他会触发远程状态与 CI 的操作；
 - 未实现的平台能力只能记录在 proposed Agent Note；对应阶段设计批准前，不创建 SQLite schema、平台包、CVAT/ClearML 连接层、完整 UI、身份系统或其他平台抽象；
 - 非平凡的行为、架构、流程、工具、测试策略或持久格式变更必须在同一逻辑变更中新增或更新 `docs/agent-notes/` 下的 owning Note。
+- 状态设计必须遵循[权威事实规范](docs/agent-notes/implemented/process/2026-09-18-state-design-rules.md)：单一事实来源，优先从事实重算或按用户期望协调，禁止查询隐含业务写入及复制派生阶段。
 
 ## Project authorities
 

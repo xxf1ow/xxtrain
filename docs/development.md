@@ -21,6 +21,23 @@ uv sync --extra dev
 uv sync --extra dev --extra platform
 ```
 
+开发或部署 ClearML 训练适配时安装 `clearml` 可选依赖；服务地址和凭据使用 ClearML 支持的环境配置，不写入仓库配置：
+
+```powershell
+uv sync --extra dev --extra clearml
+```
+
+训练机的普通 ClearML Agent 使用预装且受控的 `/opt/xxtrain-agent` 环境。该环境同时安装当前构建 wheel 的 `clearml` extra 与 `clearml-agent==3.0.3`，并通过 `xxtrain-worker` 执行任务。`deploy/platform/training.example.json` 展示项目、队列、共享缓存根、平台元数据目录、Agent 运行目录和已安装 worker 路径；`deploy/platform/clearml-agent.example.conf` 展示普通 Agent 的已验证配置键。两个文件都不保存服务地址或凭据。
+
+安装后从 `/opt/xxtrain-agent/bin/python` 导入 `xxtrain`、`clearml` 和训练依赖，并运行 `xxtrain-worker --help`。普通 Agent 启动 worker 时不附加平台参数；worker 从任务的 `Args/*` 参数取得输入身份，显式本地 CLI flags 仍可用于受控诊断，帮助输出不连接 ClearML。普通 Agent 默认另建任务虚拟环境；`python_binary` 只选择构建该环境的解释器。启动时把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 设为已验证的预装解释器，ClearML Agent 便直接使用该环境，任务本身不从仓库、网络或 checkout 安装包。共享缓存根以只读方式提供给训练机，`run_root` 和 Agent 缓存目录保持可写且互相独立。服务地址及访问密钥通过 ClearML 官方环境变量或机器外部配置提供，不复制到示例文件。以下前台命令只监听一个共享队列；单个普通 daemon 同时执行一个任务，不使用 `--services-mode`、`--dynamic-gpus`、后台运行或开机自启：
+
+```sh
+CLEARML_AGENT_SKIP_PIP_VENV_INSTALL=/opt/xxtrain-agent/bin/python \
+  /opt/xxtrain-agent/bin/clearml-agent --config-file /etc/xxtrain/clearml-agent.conf daemon --foreground --queue training --gpus 0
+```
+
+部署前运行 `clearml-agent --version` 和 `clearml-agent --config-file /etc/xxtrain/clearml-agent.conf config` 检查实际安装版本与合并后的脱敏配置，并在清洁工作目录用上述解释器重复导入和 worker 帮助检查。ClearML Agent 3.0.3 的执行源码确认 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 可以指定直接执行任务的解释器；目标训练机仍需安装并现场核对 Agent 版本。启动 Agent 或设置服务、自启策略属于另行授权的部署操作。
+
 ## Repository layout
 
 ```text
@@ -37,6 +54,8 @@ docs/              # 项目权威文档与 Agent Notes
 ## Daily workflow
 
 修改前先确认当前工作树并保留无关用户改动。行为变更先运行 owning test，完成后按 [测试指南](testing.md) 的选择规则执行静态检查或完整测试；文档变更先更新事实所有者，再修复入口与引用。
+
+涉及状态、恢复、计数或操作资格的设计与审查必须遵循[状态设计与权威事实规范](agent-notes/implemented/process/2026-09-18-state-design-rules.md)，明确事实所有者、派生规则及必要用户意图；典型反例与验证要求由该规范所有。
 
 本地提交只包含当前任务拥有的文件。提交或宣称可提交前检查完整差异并运行适用验证；任何 push、PR 创建、远程合并或远程 CI 触发都需要当前会话中的人工明确批准。
 
@@ -60,6 +79,18 @@ docs/              # 项目权威文档与 Agent Notes
 $env:XXTRAIN_CVAT_SERVICE_TOKEN = '<service-token>'
 xxtrain-platform --config '<workspace.json>' --host 127.0.0.1 --port 8000
 ```
+
+启用训练 API 时另设 ClearML 官方环境变量 `CLEARML_API_ACCESS_KEY` 和 `CLEARML_API_SECRET_KEY`，并传入训练配置。工作区的 `runtime_dir/cache` 必须位于 `shared_root`，`metadata_dir` 必须位于可清理的工作区运行目录之外，`worker_script` 必须是可部署文件。`run_root` 是训练机写入独立运行产物的位置：
+
+```powershell
+$env:CLEARML_API_ACCESS_KEY = '<access-key>'
+$env:CLEARML_API_SECRET_KEY = '<secret-key>'
+xxtrain-platform --config '<workspace.json>' --training-config '<training.json>' --host 127.0.0.1 --port 8000
+```
+
+训练配置启用后，应用生命周期启动一个进程内协调线程：启动立即接续持久训练意图，每轮结束后等待 5 秒，服务关闭时等待在途协调完成后再释放调用方资源。省略训练配置时不创建协调线程；该循环不替代 ClearML 队列或 Agent。
+
+现场工作区位于 `/platform/`，用户训练历史位于 `/platform/training/`。训练页只显示当前 CVAT 会话用户的安全运行摘要；机器、队列和 ClearML 内部任务身份不在平台页面展示。
 
 正式 CVAT UI 镜像固定使用 2.51.0，并在构建时把导航隐藏样式和返回插件插入 `index.html`。基础 HTML 缺少唯一的 `head` 插入点时构建失败：
 
