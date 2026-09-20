@@ -43,7 +43,7 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
-任务定义的 HTTP 组合检查使用五目标非 Point 定义，验证定义限制的路由、有序工作区载荷、训练展示元数据、真实 lifespan 启动顺序及动态 DOM 行：
+任务定义的 HTTP 组合检查使用五目标非 Point 定义，验证定义限制的路由、有序工作区载荷、训练展示元数据及动态 DOM 行：
 
 ```powershell
 uv run --locked --extra platform --extra clearml python -m unittest test.test_task_definition_http -v
@@ -55,7 +55,7 @@ uv run --locked --extra platform --extra clearml python -m unittest test.test_ta
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_coordinator test.test_platform_training_http test.test_platform_training_config test.test_platform_http -v
 ```
 
-协调器测试使用受控 Event 推进轮次并验证关闭等待；HTTP 生命周期断言必须进入 `app.router.lifespan_context(app)`，因为裸 `ASGITransport` 不运行 ASGI lifespan。
+`test.test_platform_training_http` 进入 `app.router.lifespan_context(app)` 验证输入兼容处理先于训练协调启动，因为裸 `ASGITransport` 不运行 ASGI lifespan。协调器测试使用受控 Event 推进轮次并验证关闭等待。
 
 训练页面与工作区反馈使用 Node.js DOM 适配器和真实 ASGI 资源入口，覆盖独立页面、提交反馈、任务状态入口与训练期间编辑禁用：
 
