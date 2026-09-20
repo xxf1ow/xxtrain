@@ -2,7 +2,7 @@
 
 Status: implemented
 
-[任务定义驱动设计](../../proposed/architecture/2026-09-19-task-definition-driven-platform.md)已把编辑输入身份与训练转换身份分离；旧 Point 指纹的兼容别名仍属于该提案的后续范围。本文其余所有权、约束与验收事实继续有效。
+[任务定义驱动设计](../architecture/2026-09-19-task-definition-driven-platform.md)把编辑输入身份与训练转换身份分离，并以精确兼容别名关联可证明的旧 Point 输入，不改写历史运行。本文继续拥有每用户、工作区、目标和输入唯一运行的语义。
 
 ## Problem
 

@@ -65,7 +65,7 @@ docs/              # 项目权威文档与 Agent Notes
 
 ## Annotation portal
 
-`deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。`task_entry` 必须是受信任 Python 工厂的 `module:factory` 入口，工厂返回平台和训练 worker 共用的任务定义；旧配置省略该字段时继续选择 Point 默认定义。预先创建可写的 `workspace_dir/images`；服务在工作区根目录初始化 `annotations.db`。`runtime_dir` 独立于工作区，保存当前任务各目标的可丢弃 Job 映射、共享裁剪和训练缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
+`deploy/platform/workspace.example.json` 展示完整配置字段；复制后修改现场 ID、名称、所属 CVAT 用户 ID、工作区与运行目录、CVAT 内部源地址。`task_entry` 必须是受信任 Python 工厂的 `module:factory` 入口，工厂返回平台和训练 worker 共用的任务定义；旧配置省略该字段时继续选择 Point 默认定义。任务工厂及其输入适配器或样本编码器必须随同一 wheel 部署到平台和 worker，变更 `conversion_key` 才表示训练数据编码语义改变；模型版本和训练参数不改变输入身份。预先创建可写的 `workspace_dir/images`；服务在工作区根目录初始化 `annotations.db`。`runtime_dir` 独立于工作区，保存当前任务各目标的可丢弃 Job 映射、共享裁剪和训练缓存，由服务按需创建。配置文件不得保存 CVAT 服务令牌。
 
 工作区页面按任务定义的顺序动态显示目标行，名称、样本单位、进度、操作资格和训练锁均来自服务端载荷；页面不自行解释依赖或完成条件。CVAT 返回页面使用当前标签页内服务端下发的目标集合选择同步端点；运行目录中的 Job 和 frame 映射才是服务端来源权威。标注不符合定义规则时，页面显示安全的修正说明，保留返回状态并提供当前问题帧的修正链接；刷新可重试同步，不能通过请求体提交 Job、frame 或文件路径。
 

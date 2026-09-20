@@ -2,7 +2,7 @@
 
 Status: implemented
 
-[任务定义驱动设计](../../proposed/architecture/2026-09-19-task-definition-driven-platform.md)已把分类与分割改为平行的检测子步骤，并统一其投影、同步、失效、当前输入指纹、平台标注协调、CVAT 传输和缓存发布。当前页面仍固定展示三个 Point 步骤，动态任务页面留待后续迁移；本文其余所有权、约束与验收事实继续有效。
+[任务定义驱动设计](../architecture/2026-09-19-task-definition-driven-platform.md)把分类与分割设为平行的检测子步骤，并统一其投影、同步、失效、输入身份、标注协调、CVAT 传输、缓存、训练保护和动态页面。本文继续拥有 Point 标注语义、裁剪复用及既有现场验收事实。
 
 ## Problem
 

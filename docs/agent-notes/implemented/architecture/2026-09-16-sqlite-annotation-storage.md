@@ -2,7 +2,7 @@
 
 Status: implemented
 
-[任务定义驱动设计](../../proposed/architecture/2026-09-19-task-definition-driven-platform.md)已实现任务规则注入、frame 投影、同步、失效、当前输入指纹、平台标注协调、CVAT 传输和缓存发布；训练保护、动态 HTTP 与页面仍待后续迁移。本文其余所有权、约束与验收事实继续有效。
+[任务定义驱动设计](2026-09-19-task-definition-driven-platform.md)统一了任务规则注入、frame 投影、同步、失效、输入身份、平台标注协调、CVAT 传输、缓存发布、训练保护和动态页面。本文继续拥有 SQLite 事实、事务、对象身份和备份边界。
 
 ## Problem
 

@@ -2,7 +2,7 @@
 
 Status: implemented
 
-后续[任务定义驱动设计](../../proposed/architecture/2026-09-19-task-definition-driven-platform.md)拟调整整工作区标签锁的范围；该提案尚未实现，本文其余所有权、约束与验收事实继续有效。
+[任务定义驱动设计](../architecture/2026-09-19-task-definition-driven-platform.md)按活跃运行目标及其输入祖先派生锁定范围，并对工作区全部运行取并集。本文继续拥有持久意图、只读查询、取消和协调生命周期。
 
 ## Problem
 

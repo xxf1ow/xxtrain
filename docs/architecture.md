@@ -52,6 +52,6 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-公共组件的任务规则统一与 Point 并行依赖调整见[任务定义驱动提案](agent-notes/proposed/architecture/2026-09-19-task-definition-driven-platform.md)。任务规则、存储校验、工作区 frame 投影、同步、失效、当前输入指纹、平台标注协调、CVAT 组合、训练缓存、训练保护、HTTP、页面和 worker 已按定义派生。该记录仍保留完整跨组件验证和决策生命周期范围。
+公共组件的任务规则统一与 Point 并行依赖由[任务定义驱动决策](agent-notes/implemented/architecture/2026-09-19-task-definition-driven-platform.md)所有。任务规则、存储校验、工作区 frame 投影、同步、失效、输入身份、平台标注协调、CVAT 组合、训练缓存、训练保护、HTTP、页面和 worker 均按定义派生。非 Point 合成任务已通过完整离线组件和安装 wheel 验证；新的任务定义尚未通过真实 CVAT 页面和 ClearML Server、Agent、GPU 部署验收。
 
 Point 工作区在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。全部原图已标注且至少 50 张有框原图后，平台同时开放分类和指针分割；两者只要求自身标注完整即可生成缓存，不依赖兄弟步骤或前一步缓存。配置训练服务后，“开始训练”提交当前目标并留在工作区，独立任务页面显示历史运行、实时状态和产物操作；仅标注启动仍生成所选目标的缓存。现场管理、管理员数据治理和模型推理尚未实现。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

@@ -2,7 +2,7 @@
 
 Status: implemented
 
-后续[任务定义驱动设计](../../proposed/architecture/2026-09-19-task-definition-driven-platform.md)拟调整整工作区标签锁及公共层 Point 限制；该提案尚未实现，本文其余所有权、约束与验收事实继续有效。
+[任务定义驱动设计](../architecture/2026-09-19-task-definition-driven-platform.md)按运行目标及其输入祖先限制编辑，并由运行保存的任务入口驱动公共训练组件。本文继续拥有训练执行、取消、交付和 Point 真实部署验收事实。
 
 ## Problem
 

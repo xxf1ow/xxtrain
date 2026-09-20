@@ -7,9 +7,9 @@ from xxtrain.business_tasks.definition import (
     TargetTrainingDefinition,
     TaskDefinition,
 )
-from xxtrain.platform.cache_builders import encode_classification
+from xxtrain.platform.cache_builders import encode_classification, encode_rectangles
 from xxtrain.task import TaskType
-from xxtrain.training.settings import TrainingSettings
+from xxtrain.training.settings import TrainingSettings, standard_train_args
 from xxtrain.workspace_data.inputs import AxisAlignedRectangleInputs, OriginalImageInputs
 
 
@@ -95,3 +95,46 @@ def synthetic_training_task_definition() -> TaskDefinition:
     return replace(
         task, steps=tuple(replace(step, training=training) if step.key == 'kind' else step for step in task.steps)
     )
+
+
+def workflow_task_definition() -> TaskDefinition:
+    task = synthetic_task_definition()
+    training = {
+        'regions': TargetTrainingDefinition(
+            settings=TrainingSettings(TaskType.DETECT, train_args=standard_train_args(TaskType.DETECT)),
+            metric_key='synthetic/regions',
+            metric_name='Synthetic region quality',
+            delivery=DeliveryDefinition(labels=False, reference_images=False),
+            labels=('part',),
+            conversion_key='synthetic-regions-v1',
+            encode_sample=encode_rectangles,
+        ),
+        'kind': TargetTrainingDefinition(
+            settings=TrainingSettings(TaskType.CLASSIFY, train_args=standard_train_args(TaskType.CLASSIFY)),
+            metric_key='synthetic/kind',
+            metric_name='Synthetic kind quality',
+            delivery=DeliveryDefinition(labels=True, reference_images=True),
+            labels=('a', 'b'),
+            conversion_key='synthetic-kind-v1',
+            encode_sample=encode_classification,
+        ),
+        'subregions': TargetTrainingDefinition(
+            settings=TrainingSettings(TaskType.DETECT, train_args=standard_train_args(TaskType.DETECT)),
+            metric_key='synthetic/subregions',
+            metric_name='Synthetic subregion quality',
+            delivery=DeliveryDefinition(labels=False, reference_images=False),
+            labels=('part',),
+            conversion_key='synthetic-subregions-v1',
+            encode_sample=encode_rectangles,
+        ),
+        'details': TargetTrainingDefinition(
+            settings=TrainingSettings(TaskType.CLASSIFY, train_args=standard_train_args(TaskType.CLASSIFY)),
+            metric_key='synthetic/details',
+            metric_name='Synthetic detail quality',
+            delivery=DeliveryDefinition(labels=True, reference_images=False),
+            labels=('x', 'y'),
+            conversion_key='synthetic-details-v1',
+            encode_sample=encode_classification,
+        ),
+    }
+    return replace(task, steps=tuple(replace(step, training=training.get(step.key)) for step in task.steps))
