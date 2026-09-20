@@ -52,4 +52,6 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
+公共组件的任务规则统一与 Point 并行依赖调整见[任务定义驱动提案](agent-notes/proposed/architecture/2026-09-19-task-definition-driven-platform.md)。该重构尚未实现，以下描述仍为当前行为。
+
 Point 工作区在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。检测满足全部原图已标注且至少 50 张有框原图后开放分类，全部裁剪图各有一个分类后开放指针分割；进入后续步骤不依赖前一步缓存。配置训练服务后，“开始训练”提交当前目标并留在工作区，独立任务页面显示历史运行、实时状态和产物操作；仅标注启动仍生成所选目标的缓存。现场管理、管理员数据治理和模型推理尚未实现。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

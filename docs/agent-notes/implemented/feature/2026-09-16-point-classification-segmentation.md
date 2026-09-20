@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续[任务定义驱动设计](../../proposed/architecture/2026-09-19-task-definition-driven-platform.md)拟调整顺序开放、分类对分割的清除和输入依赖；该提案尚未实现，本文其余所有权、约束与验收事实继续有效。
+
 ## Problem
 
 Point 检测入口和 SQLite 权威标注已经可用，但用户不能在平台完成后续分类和指针分割的数据准备。两者都使用检测框裁剪图；分别建设裁剪、来源关联、CVAT 任务和回收流程会产生重复实现，也可能让编辑图片与训练图片不一致。
