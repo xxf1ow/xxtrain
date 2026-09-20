@@ -75,10 +75,10 @@ uv run --locked --extra platform python -m unittest test.test_task_annotation_se
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_workflow -v
 ```
 
-训练输入迁移和依赖锁定回归从迁移前 SQLite 行与旧发布开始，验证精确别名、不可变历史事实、启动幂等、转换语义拒绝、严格新清单，以及跨用户活跃运行的目标与祖先锁并集：
+训练输入迁移和依赖锁定回归从迁移前 SQLite 行与旧发布开始，验证精确别名、不可变历史事实、启动幂等、转换语义拒绝、严格新清单，以及跨用户活跃运行的目标与祖先锁并集。训练服务回归还验证缺失或损坏的旧发布不影响同输入身份：启动后真实提交复用原运行，不重建缓存、创建任务或增加运行行：
 
 ```powershell
-python -m unittest test.test_training_input_compat test.test_training_dependency_locks -v
+python -m unittest test.test_training_input_compat test.test_training_dependency_locks test.test_platform_training_service -v
 ```
 
 负样本 Tag 的往返、撤销、初始化核对、类型约束和冲突原子性运行 `python -m unittest test.test_platform_negative_tags -v`；分类默认布局及修正链接同时运行 `test.test_platform_downstream_service` 和 `test.test_platform_browser`。页面回收回归分别断言分类数量、line 点数、端点重合、裁剪边界和负样本冲突的安全修正说明，未知后端异常只能返回通用说明。训练空标签与门槛由 `test.test_platform_data`、`test.test_platform_service` 覆盖，真实 CVAT 工具显示仍需部署验收。

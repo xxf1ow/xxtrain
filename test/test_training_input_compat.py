@@ -171,7 +171,7 @@ class TrainingInputCompatibilityTest(unittest.TestCase):
         self.assertEqual(old_run.id, service.submit(17, 'segment').run.id)
         self.assertEqual([], self.clearml.created)
 
-    def test_changed_conversion_or_broken_publication_is_never_aliased_or_rebuilt(self) -> None:
+    def test_broken_publication_does_not_prevent_exact_input_alias_or_trigger_rebuild(self) -> None:
         old_run = self._old_run()
         self._write_prechange_run(old_run)
         self._publish(old_run, complete=False)
@@ -179,7 +179,9 @@ class TrainingInputCompatibilityTest(unittest.TestCase):
 
         initialize_input_compatibility(self._service(store))
 
-        self.assertIsNone(store.find_input(17, 'line-1', 'segment', self.data.training_fingerprint('segment')))
+        self.assertEqual(
+            old_run.id, store.find_input(17, 'line-1', 'segment', self.data.training_fingerprint('segment')).id
+        )
         self.assertEqual([], self.clearml.created)
         self.assertFalse((self.config.runtime_dir / 'cache' / old_run.cache_relative_path / 'dataset.yaml').exists())
 
@@ -205,7 +207,7 @@ class TrainingInputCompatibilityTest(unittest.TestCase):
 
         self.assertIsNone(store.find_input(17, 'line-1', 'detect', changed_data.training_fingerprint('detect')))
 
-    def test_manifest_free_detection_is_only_accepted_by_frozen_point_compatibility(self) -> None:
+    def test_manifest_free_detection_does_not_weaken_runtime_manifest_requirement(self) -> None:
         old_run = self._old_run('detect')
         self._write_prechange_run(old_run)
         target = self._publish(old_run, manifest=False)

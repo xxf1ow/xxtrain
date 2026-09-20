@@ -1,9 +1,5 @@
-from pathlib import Path
-
 from xxtrain.business_tasks.definition import TaskDefinition
 from xxtrain.business_tasks.loader import LEGACY_POINT_TASK_ENTRY
-from xxtrain.platform.runtime import _has_target_manifest, _has_training_inputs, _is_within
-from xxtrain.platform.training_contracts import TrainingRun
 from xxtrain.workspace_data.editing import fingerprint_target, fingerprint_training
 from xxtrain.workspace_data.legacy_fingerprints import legacy_point_fingerprint
 from xxtrain.workspace_data.repository import AnnotationRepository
@@ -19,7 +15,7 @@ def initialize_input_compatibility(training_service) -> None:
     """Associate exact current Point inputs with immutable pre-definition run identities.
 
     The caller invokes this once before request handling or training reconciliation. Repeated startup calls are
-    idempotent. Historical runs whose input or publication cannot be proven remain accessible only by run ID.
+    idempotent. Historical runs whose input cannot be proven remain accessible only by run ID.
     """
     annotations = training_service.annotations
     config = training_service.config
@@ -40,9 +36,7 @@ def initialize_input_compatibility(training_service) -> None:
             if run.task_entry != LEGACY_POINT_TASK_ENTRY or run.target not in identities:
                 continue
             legacy_fingerprint, current_fingerprint = identities[run.target]
-            if run.fingerprint != legacy_fingerprint or not _legacy_publication_is_complete(
-                training_service.shared_root, run
-            ):
+            if run.fingerprint != legacy_fingerprint:
                 continue
             training_service.store.associate_input(
                 run.user_id, run.workspace_id, run.target, current_fingerprint, run.id
@@ -66,15 +60,3 @@ def _is_frozen_point_conversion(task: TaskDefinition) -> bool:
         if actual != expected:
             return False
     return True
-
-
-def _legacy_publication_is_complete(shared_root: Path, run: TrainingRun) -> bool:
-    root = Path(shared_root).resolve()
-    path = (root / run.cache_relative_path).resolve()
-    if not _is_within(path, root) or path.name != run.target or path.parent.name != run.fingerprint:
-        return False
-    if not _has_training_inputs(path):
-        return False
-    if run.target == 'detect':
-        return True
-    return _has_target_manifest(path.parent, run.target, run.fingerprint)

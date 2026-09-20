@@ -17,9 +17,11 @@ from xxtrain.platform.contracts import AnnotationChanges, PlatformAccessError, P
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun
+from xxtrain.platform.training_input_compat import initialize_input_compatibility
 from xxtrain.platform.training_service import TrainingService
 from xxtrain.platform.training_store import TrainingRunStore
 from xxtrain.workspace_data import WorkspaceData
+from xxtrain.workspace_data.legacy_fingerprints import legacy_point_fingerprint
 from xxtrain.workspace_data.repository import AnnotationRepository
 
 
@@ -596,6 +598,58 @@ class TrainingServiceTests(unittest.TestCase):
 
         self.assertEqual(original.run.id, repeated.run.id)
         self.assertFalse((cache / 'dataset.yaml').exists())
+
+    def test_exact_legacy_input_with_unusable_publication_never_creates_a_second_run(self):
+        store = TrainingRunStore(self.store_path)
+        repository = AnnotationRepository(self.config.workspace_dir / 'annotations.db', point_task_definition())
+        images = self.data.images()
+        records = repository.annotations()
+        historical = {}
+        for target in ('classify', 'segment'):
+            fingerprint = legacy_point_fingerprint(target, images, records)
+            task_id = f'task-legacy-{target}'
+            run = store.create(
+                TrainingRun(
+                    str(uuid4()),
+                    self.owner,
+                    self.workspace_id,
+                    self.config.display_name,
+                    target,
+                    fingerprint,
+                    f'{fingerprint}/{target}',
+                    '2026-09-16T12:00:00+00:00',
+                    None,
+                    task_id,
+                    None,
+                    'point',
+                )
+            )
+            historical[target] = run
+            self.backend.tasks[task_id] = {'run_id': run.id, 'status': 'completed'}
+
+        damaged = self.config.runtime_dir / 'cache' / historical['segment'].cache_relative_path
+        damaged.mkdir(parents=True)
+        marker = damaged / 'preserve-marker'
+        marker.write_bytes(b'preserve')
+
+        initialize_input_compatibility(self.service)
+        submitted = {target: self.service.submit(self.owner, target) for target in historical}
+
+        self.assertEqual(
+            {target: run.id for target, run in historical.items()},
+            {target: view.run.id for target, view in submitted.items()},
+        )
+        self.assertEqual(2, len(store.list_user(self.owner)))
+        self.assertEqual([], self.backend.write_calls)
+        self.assertTrue(marker.is_file())
+        missing = self.config.runtime_dir / 'cache' / historical['classify'].cache_relative_path
+        self.assertFalse(missing.exists())
+        for target, run in historical.items():
+            stored = store.get(self.owner, run.id)
+            self.assertEqual(run.cache_relative_path, stored.cache_relative_path)
+            self.assertEqual('completed', submitted[target].execution.status)
+            with self.assertRaises(PlatformError):
+                self.service.require_cache_rebuild(self.workspace_id, target, self.data.training_fingerprint(target))
 
 
 if __name__ == '__main__':
