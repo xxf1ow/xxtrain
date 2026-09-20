@@ -154,11 +154,14 @@ class TargetSync:
 
 @dataclass(frozen=True)
 class EditAnnotation:
-    """One classification or shape annotation in edit-frame coordinates."""
+    """One classification, shape, or negative annotation in edit-frame coordinates.
+
+    Negative annotations use null label and geometry; all other kinds use a string business label.
+    """
 
     id: UUID | None
     kind: str
-    label: str
+    label: str | None
     geometry: JsonValue
     cvat_id: int | None = None
 

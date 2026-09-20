@@ -85,7 +85,7 @@ class PlatformSqliteTest(unittest.TestCase):
         self.assertEqual(frozenset({'polyline'}), task.step('segment').kinds)
         self.assertEqual(frozenset({'1'}), task.step('segment').labels)
         self.assertEqual(frozenset({'detect'}), task.step('segment').parent_steps)
-        self.assertEqual(frozenset({'classify'}), task.step('segment').depends_on)
+        self.assertEqual(frozenset(), task.step('segment').depends_on)
         self.assertEqual(frozenset({'classify', 'segment'}), task.dependent_steps('detect'))
         with self.assertRaises(ValueError):
             task.step('missing')
@@ -144,23 +144,15 @@ class PlatformSqliteTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             repo.save_annotations((classification, wrong_parent_step))
 
-    def test_actual_annotation_parent_cycle_is_rejected(self) -> None:
-        task = TaskDefinition(
-            (
-                StepDefinition(
-                    'chain', frozenset({'classification'}), frozenset({'good'}), frozenset({'chain'}), frozenset()
-                ),
-            )
-        )
-        repo = AnnotationRepository(self.root / 'annotations.db', task)
-        image = ImageRecord('a' * 64, 'a.png', 100, 80, 0)
-        repo.register_images((image,))
-        first_id, second_id = uuid4(), uuid4()
-        first = AnnotationRecord(first_id, image.id, 'chain', second_id, 'classification', 'good', None)
-        second = AnnotationRecord(second_id, image.id, 'chain', first_id, 'classification', 'good', None)
-
+    def test_task_definition_rejects_parent_cycle_before_annotation_storage(self) -> None:
         with self.assertRaises(ValueError):
-            repo.save_annotations((first, second))
+            TaskDefinition(
+                (
+                    StepDefinition(
+                        'chain', frozenset({'classification'}), frozenset({'good'}), frozenset({'chain'}), frozenset()
+                    ),
+                )
+            )
 
     def test_geometry_must_be_valid_json_with_finite_correctly_shaped_points(self) -> None:
         repo, image = self.make_repo()

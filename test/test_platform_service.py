@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from xxtrain.business_tasks.loader import DEFAULT_TASK_ENTRY
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.data import Bbox
 from xxtrain.platform.config import WorkspaceConfig, load_config
@@ -98,6 +99,15 @@ class PlatformConfigTest(unittest.TestCase):
             config = load_config(config_path)
             self.assertEqual((root / 'site').resolve(), config.workspace_dir)
             self.assertEqual((root / 'runtime').resolve(), config.runtime_dir)
+            self.assertEqual(DEFAULT_TASK_ENTRY, config.task_entry)
+            payload['task_entry'] = 'test.task_definitions:synthetic_task_definition'
+            config_path.write_text(json.dumps(payload), encoding='utf-8')
+            self.assertEqual(payload['task_entry'], load_config(config_path).task_entry)
+            for value in ('', 3):
+                with self.subTest(task_entry=value):
+                    config_path.write_text(json.dumps(payload | {'task_entry': value}), encoding='utf-8')
+                    with self.assertRaises(ValueError):
+                        load_config(config_path)
             for field, value in (('unexpected', True), ('owner_user_id', True), ('workspace_dir', '')):
                 with self.subTest(field=field):
                     config_path.write_text(json.dumps(payload | {field: value}), encoding='utf-8')

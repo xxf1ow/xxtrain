@@ -9,9 +9,17 @@ def validate_step_annotations(step: StepDefinition, annotations: tuple[EditAnnot
     """Validate annotations against one task-owned policy; empty partial work is valid."""
     policy = step.annotation
     assert policy is not None
+    if any(annotation.kind == 'negative' for annotation in annotations) and len(annotations) != 1:
+        raise ValueError(f'{step.display_name} negative annotation conflicts with other annotations')
     if policy.maximum_annotations is not None and len(annotations) > policy.maximum_annotations:
         raise ValueError(f'{step.display_name} allows at most {policy.maximum_annotations} annotations')
     for annotation in annotations:
+        if annotation.kind == 'negative':
+            if policy.negative_label is None:
+                raise ValueError(f'{step.display_name} does not allow negative annotations')
+            if annotation.label is not None or annotation.geometry is not None:
+                raise ValueError(f'{step.display_name} negative annotations require null label and geometry')
+            continue
         if annotation.kind not in step.kinds:
             raise ValueError(f'{step.display_name} does not allow annotation kind {annotation.kind!r}')
         if annotation.label not in step.labels:

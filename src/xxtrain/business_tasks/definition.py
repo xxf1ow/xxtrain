@@ -6,6 +6,12 @@ from xxtrain.training.settings import TrainingSettings
 
 @dataclass(frozen=True, slots=True)
 class AnnotationPolicy:
+    """Native CVAT metadata and per-sample annotation cardinality for one step.
+
+    ``negative_label`` enables an image-level negative record alongside rectangle annotations; the record
+    itself retains null business label and geometry.
+    """
+
     cvat_type: str
     workspace: str
     minimum_annotations: int = 1
@@ -56,10 +62,14 @@ class StepDefinition:
         if self.display_name is None:
             object.__setattr__(self, 'display_name', self.key)
         if self.annotation is None:
-            native = next(iter(self.kinds)) if len(self.kinds) == 1 else 'rectangle'
-            if native == 'classification':
-                native = 'tag'
-            object.__setattr__(self, 'annotation', AnnotationPolicy(native, 'STANDARD'))
+            if self.kinds == {'rectangle', 'negative'}:
+                policy = AnnotationPolicy('rectangle', 'STANDARD', negative_label='negative')
+            elif self.kinds == {'polygon', 'polyline'}:
+                policy = AnnotationPolicy('shapes', 'STANDARD')
+            else:
+                native = next(iter(self.kinds)) if len(self.kinds) == 1 else ''
+                policy = AnnotationPolicy('tag' if native == 'classification' else native, 'STANDARD')
+            object.__setattr__(self, 'annotation', policy)
 
 
 @dataclass(frozen=True)
@@ -73,7 +83,9 @@ class TaskDefinition:
     def __post_init__(self) -> None:
         keys = tuple(step.key for step in self.steps)
         safe_key = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
-        if not safe_key.fullmatch(self.key) or not self.display_name:
+        if not isinstance(self.key, str) or not safe_key.fullmatch(self.key):
+            raise ValueError('Task key must be a safe path component')
+        if not isinstance(self.display_name, str) or not self.display_name:
             raise ValueError('Task key must be a safe path component and display name must be non-empty')
         if not keys or any(not isinstance(key, str) or not safe_key.fullmatch(key) for key in keys):
             raise ValueError('Task steps require non-empty string keys')
@@ -81,7 +93,7 @@ class TaskDefinition:
             raise ValueError('Task step keys must be unique')
         known = frozenset(keys)
         for step in self.steps:
-            if not step.display_name:
+            if not isinstance(step.display_name, str) or not step.display_name:
                 raise ValueError(f'Task step {step.key!r} requires a display name')
             if (
                 isinstance(step.minimum_samples, bool)
@@ -99,6 +111,7 @@ class TaskDefinition:
                 'rectangle': frozenset({'rectangle'}),
                 'polyline': frozenset({'polyline'}),
                 'polygon': frozenset({'polygon'}),
+                'shapes': frozenset({'polygon', 'polyline'}),
             }.get(step.annotation.cvat_type)
             if expected_kinds is None:
                 raise ValueError(f'Task step {step.key!r} has unsupported native annotation type')
@@ -139,10 +152,15 @@ class TaskDefinition:
         return frozenset(dependents)
 
     def dependencies(self, key: str) -> frozenset[str]:
+        """Return the direct parent-source and extra-label dependencies for ``key``.
+
+        Unknown keys raise ``ValueError``.
+        """
         step = self.step(key)
         return step.parent_steps | step.depends_on
 
     def input_steps(self, key: str) -> frozenset[str]:
+        """Return ``key`` plus all transitive input ancestors; unknown keys raise ``ValueError``."""
         inputs: set[str] = set()
         pending = [key]
         while pending:
