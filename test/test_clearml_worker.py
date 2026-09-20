@@ -3,13 +3,22 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.integrations.clearml.worker import main
 from xxtrain.training.settings import TrainingProgress, TrainingResult
+
+
+def custom_task_definition():
+    point = point_task_definition()
+    detect = point.step('detect')
+    training = replace(detect.training, metric_key='custom/score', metric_name='Custom score')
+    return replace(point, key='custom-worker-test', steps=(replace(detect, training=training),))
 
 
 class ClearMLWorkerTests(unittest.TestCase):
@@ -148,6 +157,26 @@ class ClearMLWorkerTests(unittest.TestCase):
         self.assertEqual(manifest['target'], 'detect')
         self.assertEqual(manifest['metric_name'], '检测效果：mAP50-95')
         self.task.mark_completed.assert_called_once_with(ignore_errors=False)
+
+    @patch('xxtrain.integrations.clearml.worker._task_init')
+    @patch('xxtrain.integrations.clearml.worker.build_delivery')
+    @patch('xxtrain.integrations.clearml.worker.train_prepared')
+    def test_worker_uses_the_selected_task_factory_for_training_metric_and_delivery(self, train, build, task_init):
+        task_init.return_value = self.task
+        self.task.upload_artifact.return_value = True
+        train.return_value = TrainingResult(self.root / 'model.onnx', {0: 'Part'}, {'custom/score': 0.625})
+        build.return_value = self.root / 'delivery.zip'
+        argv = self.argv()
+        argv[argv.index('--task') + 1] = 'test.test_clearml_worker:custom_task_definition'
+
+        main(argv)
+
+        definition = custom_task_definition().step('detect').training
+        self.assertEqual(definition.settings, train.call_args.args[0])
+        self.assertEqual(definition.delivery, build.call_args.args[1])
+        self.task.get_logger.return_value.report_scalar.assert_any_call(
+            title='validation', series='Custom score', value=0.625, iteration=80
+        )
 
     @patch('xxtrain.integrations.clearml.worker._task_init')
     @patch('xxtrain.integrations.clearml.worker.build_delivery')

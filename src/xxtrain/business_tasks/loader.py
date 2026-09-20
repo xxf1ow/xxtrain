@@ -3,6 +3,7 @@ from importlib import import_module
 from .definition import TaskDefinition
 
 DEFAULT_TASK_ENTRY = 'xxtrain.business_tasks.point:point_task_definition'
+LEGACY_POINT_TASK_ENTRY = 'point'
 
 
 def load_task_definition(entry: str) -> TaskDefinition:
@@ -18,3 +19,9 @@ def load_task_definition(entry: str) -> TaskDefinition:
     if not isinstance(result, TaskDefinition):
         raise ValueError(f'Task factory {entry!r} did not return TaskDefinition')
     return result
+
+
+def load_training_task_definition(entry: str) -> TaskDefinition:
+    """Load a run's immutable task entry, including the frozen legacy Point selector."""
+    selected = DEFAULT_TASK_ENTRY if entry == LEGACY_POINT_TASK_ENTRY else entry
+    return load_task_definition(selected)

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from xxtrain.business_tasks.loader import load_training_task_definition
 from xxtrain.platform.config import WorkspaceConfig
 from xxtrain.platform.contracts import PlatformAccessError, PlatformConflictError, PlatformError
 from xxtrain.platform.service import AnnotationService
@@ -46,6 +47,7 @@ class TrainingService:
                         None,
                         None,
                         'execute',
+                        self.config.task_entry,
                     )
                 )
         self._reconcile_run(run)
@@ -90,21 +92,18 @@ class TrainingService:
             raise PlatformError('Training result download failed') from error
 
     def require_editable(self, workspace_id: str, target: str | None = None) -> None:
-        del target
         if workspace_id != self.config.workspace_id:
             raise PlatformAccessError('Workspace access denied')
-        for run in self.store.list_workspace(workspace_id):
-            view = self._view(run)
-            if _is_active(view):
-                raise PlatformConflictError('Workspace editing is disabled while training is active')
+        can_upload, locked_targets = self._edit_protection(workspace_id)
+        if (target is None and not can_upload) or (target is not None and target in locked_targets):
+            raise PlatformConflictError('Workspace editing is disabled while training is active')
 
     def require_cache_rebuild(self, workspace_id: str, target: str, fingerprint: str) -> None:
         """Reject rebuilding a publication referenced by any current or historical run."""
         if workspace_id != self.config.workspace_id:
             raise PlatformAccessError('Workspace access denied')
-        if any(
-            run.target == target and run.fingerprint == fingerprint for run in self.store.list_workspace(workspace_id)
-        ):
+        runs = self.store.list_workspace(workspace_id)
+        if any(self.store.find_input(run.user_id, workspace_id, target, fingerprint) is not None for run in runs):
             raise PlatformError('A training run references this cache publication')
 
     def workspace_view(self, user_id: int) -> dict[str, object]:
@@ -112,25 +111,52 @@ class TrainingService:
             workspace = self.annotations.view(user_id)
             user_runs = self.store.list_user(user_id)
             workspace_runs = self.store.list_workspace(self.config.workspace_id)
-            fingerprints = {}
-            for target in ('detect', 'classify', 'segment'):
-                fingerprints[target] = self.annotations.data.training_fingerprint(target)
-        visible_runs = tuple(self._view(run) for run in user_runs)
+            targets = tuple(step.key for step in self.annotations.data.task.steps)
+            training_targets = tuple(step.key for step in self.annotations.data.task.steps if step.training is not None)
+            fingerprints = {target: self.annotations.data.training_fingerprint(target) for target in training_targets}
         active_runs = tuple(self._view(run) for run in workspace_runs)
+        active_by_id = {view.run.id: view for view in active_runs}
+        visible_runs = tuple(active_by_id.get(run.id) or self._view(run) for run in user_runs)
+        can_upload, locked_targets = self._edit_protection_from_views(active_runs)
+        visible_by_id = {view.run.id: view for view in visible_runs}
         latest = {
-            target: next(
-                (
-                    view
-                    for view in reversed(visible_runs)
-                    if view.run.workspace_id == self.config.workspace_id
-                    and view.run.target == target
-                    and view.run.fingerprint == fingerprints[target]
-                ),
-                None,
+            target: (
+                None
+                if (run := self.store.find_input(user_id, self.config.workspace_id, target, fingerprints[target]))
+                is None
+                else visible_by_id[run.id]
             )
-            for target in ('detect', 'classify', 'segment')
+            for target in training_targets
         }
-        return {'workspace': workspace, 'editable': not any(map(_is_active, active_runs)), 'training': latest}
+        return {
+            'workspace': workspace,
+            'can_upload': can_upload,
+            'editable': can_upload,
+            'target_editable': {target: target not in locked_targets for target in targets},
+            'training': latest,
+        }
+
+    def _edit_protection(self, workspace_id: str) -> tuple[bool, frozenset[str]]:
+        views = tuple(self._view(run) for run in self.store.list_workspace(workspace_id))
+        return self._edit_protection_from_views(views)
+
+    def _edit_protection_from_views(self, views: tuple[TrainingRunView, ...]) -> tuple[bool, frozenset[str]]:
+        task = self.annotations.data.task
+        all_targets = frozenset(step.key for step in task.steps)
+        locked: set[str] = set()
+        active = False
+        for view in views:
+            if not _is_active(view):
+                continue
+            active = True
+            try:
+                run_task = load_training_task_definition(view.run.task_entry)
+                if run_task.key != task.key:
+                    raise ValueError('Training run belongs to another task definition')
+                locked.update(run_task.input_steps(view.run.target))
+            except ValueError:
+                locked.update(all_targets)
+        return not active, frozenset(locked)
 
     def _reconcile_run(self, run: TrainingRun) -> None:
         with self.annotations.mutation(run.user_id):

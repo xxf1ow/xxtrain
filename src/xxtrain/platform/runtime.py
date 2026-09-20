@@ -83,9 +83,7 @@ class RuntimeCache:
         if not _is_within(path, cache_root):
             raise ValueError('Training cache is not complete')
         manifest_path = publication / 'manifest.json'
-        if (target != 'detect' or manifest_path.exists()) and not _has_target_manifest(
-            publication, target, fingerprint
-        ):
+        if not manifest_path.exists() or not _has_target_manifest(publication, target, fingerprint):
             raise ValueError('Training cache is not complete')
         if not _has_training_inputs(path):
             raise ValueError('Training cache is not complete')

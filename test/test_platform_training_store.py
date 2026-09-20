@@ -295,8 +295,8 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as connection:
             row = connection.execute('SELECT * FROM training_runs WHERE id = ?', (bound.id,)).fetchone()
             columns = tuple(column[1] for column in connection.execute('PRAGMA table_info(training_runs)'))
-        self.assertEqual(self._run_values(bound) + (None,), row)
-        self.assertEqual('desired_action', columns[-1])
+        self.assertEqual(self._run_values(bound) + (None, 'point'), row)
+        self.assertEqual(('desired_action', 'task_entry'), columns[-2:])
 
     def test_run_table_contains_no_business_stage(self) -> None:
         TrainingRunStore(self.path)
@@ -306,6 +306,7 @@ class PlatformTrainingStoreTest(unittest.TestCase):
 
         self.assertIn('clearml_task_id', columns)
         self.assertIn('desired_action', columns)
+        self.assertIn('task_entry', columns)
         self.assertTrue(columns.isdisjoint({'status', 'stage', 'active_count', 'completed'}))
 
     def test_cache_path_requires_complete_published_training_inputs(self) -> None:
@@ -324,9 +325,8 @@ class PlatformTrainingStoreTest(unittest.TestCase):
             (publication / 'workspace').mkdir()
             (publication / 'workspace' / 'train.png').touch()
             (publication / 'workspace' / 'val.png').touch()
-            if target != 'detect':
-                manifest = {'fingerprint': fingerprint, 'target': target}
-                (publication.parent / 'manifest.json').write_text(str(manifest).replace("'", '"'), encoding='utf-8')
+            manifest = {'fingerprint': fingerprint, 'target': target}
+            (publication.parent / 'manifest.json').write_text(str(manifest).replace("'", '"'), encoding='utf-8')
             self.assertEqual(publication, runtime.cache_path(target, fingerprint))
 
     def test_cache_path_rejects_paths_outside_the_runtime_cache(self) -> None:
@@ -400,6 +400,9 @@ class PlatformTrainingStoreTest(unittest.TestCase):
         (target / 'val.txt').write_text('detect/workspace/val.png\n', encoding='utf-8')
         (workspace / 'train.png').touch()
         (workspace / 'val.png').touch()
+        (publication / 'manifest.json').write_text(
+            f'{{"fingerprint": "{fingerprint}", "target": "detect"}}', encoding='utf-8'
+        )
         return target
 
     @staticmethod

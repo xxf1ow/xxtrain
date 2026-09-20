@@ -19,6 +19,7 @@ class TrainingRun:
     create_attempted_at: str | None
     clearml_task_id: str | None
     desired_action: str | None = None
+    task_entry: str = 'point'
 
 
 @dataclass(frozen=True)

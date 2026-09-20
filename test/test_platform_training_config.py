@@ -125,9 +125,13 @@ class TrainingEntrypointTest(unittest.TestCase):
 
             captured: dict[str, object] = {}
 
+            def initialize(training: Training) -> None:
+                events.append(('initialize_input_compatibility', training))
+
             def make_app(
                 config: object, annotations: Annotation, cvat: object, *, training_service: Training | None = None
             ) -> object:
+                events.append(('create_app',))
                 captured['guard'] = annotations.require_editable
                 captured['cache_guard'] = annotations.require_cache_rebuild
                 captured['training'] = training_service
@@ -147,6 +151,7 @@ class TrainingEntrypointTest(unittest.TestCase):
                 patch('xxtrain.platform.__main__.TrainingRunStore', Resource),
                 patch('xxtrain.platform.__main__.ClearMLClient', Resource),
                 patch('xxtrain.platform.__main__.TrainingService', Training),
+                patch('xxtrain.platform.__main__.initialize_input_compatibility', side_effect=initialize),
                 patch('xxtrain.platform.__main__.create_app', side_effect=make_app),
                 patch('xxtrain.platform.__main__.httpx.Client', return_value=Http()),
                 patch('xxtrain.platform.__main__.uvicorn.run'),
@@ -156,6 +161,9 @@ class TrainingEntrypointTest(unittest.TestCase):
             self.assertIsNotNone(captured['training'])
             self.assertEqual(captured['training'].require_editable, captured['guard'])
             self.assertEqual(captured['training'].require_cache_rebuild, captured['cache_guard'])
+            self.assertLess(
+                events.index(('initialize_input_compatibility', captured['training'])), events.index(('create_app',))
+            )
             clearml_event = next(
                 event for event in events if event[0] == 'Resource' and event[1:3] == ('xxtrain', 'training')
             )

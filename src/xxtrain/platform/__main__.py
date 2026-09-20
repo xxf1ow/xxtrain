@@ -15,6 +15,7 @@ from xxtrain.platform.config import load_config
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_config import load_training_config
+from xxtrain.platform.training_input_compat import initialize_input_compatibility
 from xxtrain.platform.training_service import TrainingService
 from xxtrain.platform.training_store import TrainingRunStore
 from xxtrain.workspace_data import WorkspaceData
@@ -92,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 run_root=training_config.run_root,
             )
             training_service = TrainingService(config, service, store, clearml, training_config.shared_root)
+            initialize_input_compatibility(training_service)
             service.require_editable = training_service.require_editable
             service.require_cache_rebuild = training_service.require_cache_rebuild
         app = create_app(config, service, cvat, training_service=training_service)
