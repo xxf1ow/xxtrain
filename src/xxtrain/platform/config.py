@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,8 +39,9 @@ def load_config(path: Path) -> WorkspaceConfig:
     if any(not isinstance(payload[field], str) or not payload[field] for field in strings):
         raise ValueError('Workspace configuration string fields must be non-empty')
     task_entry = payload.get('task_entry', DEFAULT_TASK_ENTRY)
-    if not isinstance(task_entry, str) or not task_entry:
-        raise ValueError('Workspace configuration task_entry must be non-empty')
+    entry_pattern = r'(?:[A-Za-z_][A-Za-z0-9_]*\.)*[A-Za-z_][A-Za-z0-9_]*:[A-Za-z_][A-Za-z0-9_]*'
+    if not isinstance(task_entry, str) or re.fullmatch(entry_pattern, task_entry) is None:
+        raise ValueError('Workspace configuration task_entry must use module:factory syntax')
     owner_user_id = payload['owner_user_id']
     if isinstance(owner_user_id, bool) or not isinstance(owner_user_id, int) or owner_user_id <= 0:
         raise ValueError('Workspace owner_user_id must be a positive integer')

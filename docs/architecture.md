@@ -26,7 +26,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、共用模型与训练默认值、模型配置、训练、ONNX 导出和预测检查；
 - `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 遍历任务步骤，从数据库事实、传递输入依赖和步骤门槛派生计数与操作资格，并以一个非阻塞进程锁协调上传、CVAT Job 创建与同步及缓存生成；
-- `xxtrain.platform.app` 提供同源图片上传、三个 Point 目标的标注及缓存生成页面，以及可选训练服务的提交、查询、取消和部署产物下载 API；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌。训练提交只接受空对象，运行身份由服务端按用户、工作区、目标和输入指纹确定；训练 API 只返回用户运行、现场、目标、时间、取消请求及执行摘要，不返回持久意图、缓存路径、ClearML 任务身份或后端异常。启用训练时，应用生命周期拥有一个 `training_coordinator` 线程，启动立即从训练账本接续持久意图，不要求浏览器读取或重发请求；每轮结束后等待 5 秒，关闭等待在途协调结束。仅标注模式不创建该线程。上传文件在独立运行目录暂存，页面计数和按钮由服务返回的数据库派生结果驱动；
+- `xxtrain.platform.app` 按组合根注入的任务定义提供同源图片上传、有序目标标注与缓存生成页面，以及可选训练服务的提交、查询、取消和部署产物下载 API。HTTP 只接受当前定义声明的目标；工作区载荷返回任务、目标元数据、计数、服务端派生的操作权限、缓存状态和当前训练摘要，页面据此动态创建目标行。浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌。训练提交只接受空对象，运行身份由服务端按用户、工作区、目标和输入指纹确定；训练 API 只返回用户运行、现场、任务与目标展示名、主指标、时间、取消请求及执行摘要，不返回持久意图、缓存路径、ClearML 任务身份或后端异常。启用训练时，应用 lifespan 先执行输入兼容处理，再启动一个 `training_coordinator` 线程接续持久意图，不要求浏览器读取或重发请求；每轮结束后等待 5 秒，关闭等待在途协调结束。仅标注模式不创建该线程。上传文件在独立运行目录暂存，页面计数和按钮由服务返回的数据库派生结果驱动；
 - `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入，并由组合根显式注入业务任务定义。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；任务步骤选择原图或轴对齐矩形输入适配器，适配器从原图坐标中的权威标注派生 frame 映射，只有编辑入口需要图片时才生成可丢弃裁剪。摘要、正样本数和编辑指纹从同一映射及任务输入闭包派生；训练指纹再加入任务标识、有序输出标签、训练类型、负样本输出处理和显式转换键。对象级同步按持久 frame 映射还原几何与直接 parent UUID，通过 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响对象，并在同一事务内提交标注和映射。Point 旧指纹算法只供启动兼容处理计算迁移前身份；
 - `xxtrain.business_tasks` 定义任务与步骤规则、输入适配器选择、标注策略、父来源、额外标签依赖、训练设置、有序输出标签、数据集转换键、样本编码回调、主要指标与交付内容；配置加载受信任的 Python 定义入口，Point 定义保留五种框标签及检测、分类和分割规则；
 - `xxtrain.platform.training_contracts` 定义训练运行关联事实；`xxtrain.platform.training_store` 在调用者指定的平台元数据路径保存独立 SQLite 账本，按用户限制读取，并以可空的 `desired_action` 保存 `execute` 或 `cancel` 意图，但不存执行状态、计数或标注。每个新运行不可变地保存配置选择的任务入口；旧账本迁移为冻结的 Point 选择器。兼容输入别名以完整用户、工作区、目标和指纹键关联既有运行，不改写其指纹、缓存路径或任务 ID；`xxtrain.platform.runtime` 以编辑指纹保存可丢弃的 CVAT Job 引用，并只接受带精确清单及完整训练输入的新发布，无清单的旧 Point 发布也不由该通用入口接受；`xxtrain.platform.target_cache` 调用步骤定义的编码回调，从权威 frame 投影生成检测、分类、分割或嵌套矩形数据集，并写入精确目标与训练指纹清单后原子发布；
@@ -52,6 +52,6 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-公共组件的任务规则统一与 Point 并行依赖调整见[任务定义驱动提案](agent-notes/proposed/architecture/2026-09-19-task-definition-driven-platform.md)。任务规则、存储校验、工作区 frame 投影、同步、失效、当前输入指纹、平台标注协调、CVAT 组合、训练缓存、训练保护和 worker 已按定义派生；HTTP 动态路由和页面仍保留后续迁移范围。
+公共组件的任务规则统一与 Point 并行依赖调整见[任务定义驱动提案](agent-notes/proposed/architecture/2026-09-19-task-definition-driven-platform.md)。任务规则、存储校验、工作区 frame 投影、同步、失效、当前输入指纹、平台标注协调、CVAT 组合、训练缓存、训练保护、HTTP、页面和 worker 已按定义派生。该记录仍保留完整跨组件验证和决策生命周期范围。
 
 Point 工作区在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。全部原图已标注且至少 50 张有框原图后，平台同时开放分类和指针分割；两者只要求自身标注完整即可生成缓存，不依赖兄弟步骤或前一步缓存。配置训练服务后，“开始训练”提交当前目标并留在工作区，独立任务页面显示历史运行、实时状态和产物操作；仅标注启动仍生成所选目标的缓存。现场管理、管理员数据治理和模型推理尚未实现。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

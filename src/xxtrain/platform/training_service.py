@@ -21,6 +21,7 @@ class TrainingService:
     def __init__(self, config, annotations, store, clearml, shared_root) -> None:
         self.config: WorkspaceConfig = config
         self.annotations: AnnotationService = annotations
+        self.task = annotations.data.task
         self.store: TrainingRunStore = store
         self.clearml = clearml
         self.shared_root = Path(shared_root).resolve()
@@ -111,8 +112,8 @@ class TrainingService:
             workspace = self.annotations.view(user_id)
             user_runs = self.store.list_user(user_id)
             workspace_runs = self.store.list_workspace(self.config.workspace_id)
-            targets = tuple(step.key for step in self.annotations.data.task.steps)
-            training_targets = tuple(step.key for step in self.annotations.data.task.steps if step.training is not None)
+            targets = tuple(step.key for step in self.task.steps)
+            training_targets = tuple(step.key for step in self.task.steps if step.training is not None)
             fingerprints = {target: self.annotations.data.training_fingerprint(target) for target in training_targets}
         active_runs = tuple(self._view(run) for run in workspace_runs)
         active_by_id = {view.run.id: view for view in active_runs}
@@ -131,7 +132,6 @@ class TrainingService:
         return {
             'workspace': workspace,
             'can_upload': can_upload,
-            'editable': can_upload,
             'target_editable': {target: target not in locked_targets for target in targets},
             'training': latest,
         }
@@ -141,7 +141,7 @@ class TrainingService:
         return self._edit_protection_from_views(views)
 
     def _edit_protection_from_views(self, views: tuple[TrainingRunView, ...]) -> tuple[bool, frozenset[str]]:
-        task = self.annotations.data.task
+        task = self.task
         all_targets = frozenset(step.key for step in task.steps)
         locked: set[str] = set()
         active = False

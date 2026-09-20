@@ -130,7 +130,7 @@ class TrainingDependencyLocksTest(unittest.TestCase):
         before_observations = len(self.execution.observe_calls)
         view = self.training.workspace_view(self.config.owner_user_id)
         self.assertFalse(view['can_upload'])
-        self.assertFalse(view['editable'])
+        self.assertNotIn('editable', view)
         self.assertEqual({'regions': False, 'kind': True, 'needles': False}, view['target_editable'])
         self.assertEqual(1, len(self.execution.observe_calls) - before_observations)
 

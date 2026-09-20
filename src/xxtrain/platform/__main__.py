@@ -15,7 +15,6 @@ from xxtrain.platform.config import load_config
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_config import load_training_config
-from xxtrain.platform.training_input_compat import initialize_input_compatibility
 from xxtrain.platform.training_service import TrainingService
 from xxtrain.platform.training_store import TrainingRunStore
 from xxtrain.workspace_data import WorkspaceData
@@ -53,7 +52,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     client for the CVAT adapter and closes it when Uvicorn stops. Invalid arguments or a missing token terminate with
     argparse's nonzero usage error; configuration and startup failures remain visible to the operator.
     """
-    parser = argparse.ArgumentParser(prog='xxtrain-platform', description='Run the Point detection portal')
+    parser = argparse.ArgumentParser(prog='xxtrain-platform', description='Run the configured annotation portal')
     parser.add_argument('--config', type=Path, required=True, help='workspace JSON configuration')
     parser.add_argument('--training-config', type=Path, help='training JSON configuration')
     parser.add_argument('--host', type=_bind_host, default='127.0.0.1', help='private or loopback bind address')
@@ -77,7 +76,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error('training metadata_dir must be outside the disposable workspace runtime')
         if not training_config.worker_script.is_file():
             parser.error('training worker_script must name a deployable file')
-    data = WorkspaceData(config.workspace_dir, load_task_definition(config.task_entry))
+    task = load_task_definition(config.task_entry)
+    data = WorkspaceData(config.workspace_dir, task)
     runtime = RuntimeCache(config.runtime_dir)
     with httpx.Client() as http:
         cvat = CvatClient(config.cvat_internal_url, token, http)
@@ -93,10 +93,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 run_root=training_config.run_root,
             )
             training_service = TrainingService(config, service, store, clearml, training_config.shared_root)
-            initialize_input_compatibility(training_service)
             service.require_editable = training_service.require_editable
             service.require_cache_rebuild = training_service.require_cache_rebuild
-        app = create_app(config, service, cvat, training_service=training_service)
+        app = create_app(config, service, cvat, task=task, training_service=training_service)
         uvicorn.run(app, host=args.host, port=args.port, workers=1, proxy_headers=True, forwarded_allow_ips='*')
 
 

@@ -91,17 +91,10 @@ class AnnotationService:
                     sample_unit=step.sample_unit,
                 )
             )
-        detection = summaries.get('detect')
-        detection_complete = complete.get('detect', False)
-        detection_cache_ready = next((target.cache_ready for target in targets if target.id == 'detect'), False)
         return WorkspaceView(
             self.config.workspace_id,
             self.config.display_name,
-            detection.sample_count if detection is not None else 0,
-            detection.annotated_sample_count if detection is not None else 0,
-            detection.positive_sample_count if detection is not None else 0,
-            detection_complete,
-            detection_cache_ready,
+            len(self.data.images()),
             tuple(targets),
             self.data.task.key,
             self.data.task.display_name,
@@ -116,14 +109,6 @@ class AnnotationService:
             self._require_editable(None)
             self.data.admit(staged)
             return self.view(user_id)
-
-    def begin_detection(self, user_id: int) -> str:
-        """Return an unfinished current-input Job path, preparing a fresh task on a miss.
-
-        The runtime publishes a JobRef only after preparation and durable object binding both succeed. CVAT failures
-        surface as ``PlatformError``.
-        """
-        return self.begin_target(user_id, 'detect')
 
     def begin_target(self, user_id: int, target: str) -> str:
         """Return or prepare the current server-owned annotation Job for one model target."""
@@ -148,10 +133,6 @@ class AnnotationService:
             self.data.bind_job(prepared)
             self.runtime.remember_edit_job(target, fingerprint, edit_job)
             return self._annotation_path(prepared.ref, step.annotation.workspace)
-
-    def sync_detection(self, user_id: int) -> WorkspaceView:
-        """Invalidate dependent Jobs, publish the result fingerprint, then commit one database transaction."""
-        return self.sync_target(user_id, 'detect')
 
     def sync_target(self, user_id: int, target: str) -> WorkspaceView:
         """Validate, prepublish runtime mappings, and atomically commit one target Job."""
@@ -179,13 +160,6 @@ class AnnotationService:
             except (OSError, ValueError, PlatformError) as error:
                 raise PlatformError('无法取回或保存标注，请重试。') from error
             return self.view(user_id)
-
-    def generate_detection_cache(self, user_id: int) -> WorkspaceView:
-        """Publish a fingerprinted dataset when all images are annotated and at least 50 contain boxes.
-
-        Ineligible input raises ``PlatformError``; conversion and filesystem failures remain visible.
-        """
-        return self.generate_target_cache(user_id, 'detect')
 
     def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
         """Generate the selected target's cache when its fact-derived completeness gate is open."""

@@ -81,23 +81,22 @@ class NegativeTagTest(unittest.TestCase):
         config = WorkspaceConfig('test', 'Test', 17, self.root, self.root / 'runtime', 'http://cvat.test')
         service = AnnotationService(config, self.data, cvat.client, RuntimeCache(config.runtime_dir))
         cvat.expect(self.data.images('detect'))
-        service.begin_detection(17)
+        service.begin_target(17, 'detect')
         label_id = cvat.label_id('detect', '无检测目标')
         cvat.set_annotations('detect', tags=[{'id': 999, 'frame': 0, 'label_id': label_id, 'attributes': []}])
-        view = service.sync_detection(17)
-        self.assertEqual(
-            (1, 0, False), (view.annotated_image_count, view.boxed_image_count, view.can_generate_detection_cache)
-        )
+        view = service.sync_target(17, 'detect')
+        detect = next(target for target in view.targets if target.id == 'detect')
+        self.assertEqual((1, False), (detect.annotated_sample_count, detect.can_generate_cache))
         record = self.repo.annotations()[0]
         cvat.job('detect')['state'] = 'completed'
         cvat.expect(self.data.images('detect'))
-        service.begin_detection(17)
+        service.begin_target(17, 'detect')
         self.assertEqual(1, len(cvat.job('detect')['annotations']['tags']))
-        service.sync_detection(17)
+        service.sync_target(17, 'detect')
         self.assertEqual((record,), self.repo.annotations())
         cvat.set_annotations('detect')
-        view = service.sync_detection(17)
-        self.assertEqual(0, view.annotated_image_count)
+        view = service.sync_target(17, 'detect')
+        self.assertEqual(0, next(target for target in view.targets if target.id == 'detect').annotated_sample_count)
         self.assertEqual((), self.repo.annotations())
 
     def test_negative_label_cannot_be_used_as_a_rectangle(self):
@@ -155,7 +154,7 @@ class NegativeTagTest(unittest.TestCase):
         config = WorkspaceConfig('test', 'Test', 17, self.root, self.root / 'runtime', 'http://cvat.test')
         service = AnnotationService(config, self.data, Cvat(), runtime)
         with self.assertRaises(TargetValidationError) as raised:
-            service.sync_detection(17)
+            service.sync_target(17, 'detect')
         self.assertIn('无检测目标', str(raised.exception))
         self.assertEqual('/tasks/7/jobs/8?frame=0', raised.exception.annotation_url)
         self.assertEqual(fingerprint, self.data.detection_fingerprint())

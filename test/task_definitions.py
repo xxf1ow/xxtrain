@@ -1,4 +1,15 @@
-from xxtrain.business_tasks.definition import AnnotationPolicy, StepDefinition, TaskDefinition
+from dataclasses import replace
+
+from xxtrain.business_tasks.definition import (
+    AnnotationPolicy,
+    DeliveryDefinition,
+    StepDefinition,
+    TargetTrainingDefinition,
+    TaskDefinition,
+)
+from xxtrain.platform.cache_builders import encode_classification
+from xxtrain.task import TaskType
+from xxtrain.training.settings import TrainingSettings
 from xxtrain.workspace_data.inputs import AxisAlignedRectangleInputs, OriginalImageInputs
 
 
@@ -12,6 +23,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset(),
                 frozenset(),
                 display_name='Regions',
+                sample_unit='images',
                 annotation=AnnotationPolicy('rectangle', 'STANDARD'),
                 input_adapter=OriginalImageInputs(),
             ),
@@ -22,6 +34,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset({'regions'}),
                 frozenset(),
                 display_name='Kind',
+                sample_unit='crops',
                 annotation=AnnotationPolicy('tag', 'TAGS', maximum_annotations=1),
                 input_adapter=AxisAlignedRectangleInputs(),
             ),
@@ -32,6 +45,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset({'regions'}),
                 frozenset(),
                 display_name='Needles',
+                sample_unit='crops',
                 annotation=AnnotationPolicy('polyline', 'STANDARD', point_count=2),
                 input_adapter=AxisAlignedRectangleInputs(),
             ),
@@ -42,6 +56,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset({'regions'}),
                 frozenset(),
                 display_name='Subregions',
+                sample_unit='crops',
                 annotation=AnnotationPolicy('rectangle', 'STANDARD'),
                 input_adapter=AxisAlignedRectangleInputs(),
             ),
@@ -52,6 +67,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset({'subregions'}),
                 frozenset(),
                 display_name='Details',
+                sample_unit='crops',
                 annotation=AnnotationPolicy('tag', 'TAGS', maximum_annotations=1),
                 input_adapter=AxisAlignedRectangleInputs(),
             ),
@@ -63,3 +79,19 @@ def synthetic_task_definition() -> TaskDefinition:
 
 def not_a_definition() -> object:
     return object()
+
+
+def synthetic_training_task_definition() -> TaskDefinition:
+    task = synthetic_task_definition()
+    training = TargetTrainingDefinition(
+        settings=TrainingSettings(TaskType.CLASSIFY),
+        metric_key='synthetic/kind',
+        metric_name='Synthetic kind quality',
+        delivery=DeliveryDefinition(labels=True, reference_images=True),
+        labels=('a', 'b'),
+        conversion_key='synthetic-kind-v1',
+        encode_sample=encode_classification,
+    )
+    return replace(
+        task, steps=tuple(replace(step, training=training) if step.key == 'kind' else step for step in task.steps)
+    )

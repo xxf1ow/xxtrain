@@ -125,16 +125,19 @@ class TrainingEntrypointTest(unittest.TestCase):
 
             captured: dict[str, object] = {}
 
-            def initialize(training: Training) -> None:
-                events.append(('initialize_input_compatibility', training))
-
             def make_app(
-                config: object, annotations: Annotation, cvat: object, *, training_service: Training | None = None
+                config: object,
+                annotations: Annotation,
+                cvat: object,
+                *,
+                task: object,
+                training_service: Training | None = None,
             ) -> object:
                 events.append(('create_app',))
                 captured['guard'] = annotations.require_editable
                 captured['cache_guard'] = annotations.require_cache_rebuild
                 captured['training'] = training_service
+                captured['task'] = task
                 return object()
 
             environment = {
@@ -151,7 +154,6 @@ class TrainingEntrypointTest(unittest.TestCase):
                 patch('xxtrain.platform.__main__.TrainingRunStore', Resource),
                 patch('xxtrain.platform.__main__.ClearMLClient', Resource),
                 patch('xxtrain.platform.__main__.TrainingService', Training),
-                patch('xxtrain.platform.__main__.initialize_input_compatibility', side_effect=initialize),
                 patch('xxtrain.platform.__main__.create_app', side_effect=make_app),
                 patch('xxtrain.platform.__main__.httpx.Client', return_value=Http()),
                 patch('xxtrain.platform.__main__.uvicorn.run'),
@@ -161,13 +163,34 @@ class TrainingEntrypointTest(unittest.TestCase):
             self.assertIsNotNone(captured['training'])
             self.assertEqual(captured['training'].require_editable, captured['guard'])
             self.assertEqual(captured['training'].require_cache_rebuild, captured['cache_guard'])
-            self.assertLess(
-                events.index(('initialize_input_compatibility', captured['training'])), events.index(('create_app',))
-            )
+            self.assertIs(events[0][2], captured['task'])
             clearml_event = next(
                 event for event in events if event[0] == 'Resource' and event[1:3] == ('xxtrain', 'training')
             )
             self.assertEqual((root / 'runs').resolve(), clearml_event[-1]['run_root'])
+
+    def test_workspace_config_rejects_invalid_task_entry_syntax(self) -> None:
+        from xxtrain.platform.config import load_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'workspace.json'
+            path.write_text(
+                json.dumps(
+                    {
+                        'workspace_id': 'line-3',
+                        'display_name': 'Line 3',
+                        'owner_user_id': 17,
+                        'workspace_dir': 'workspace',
+                        'runtime_dir': 'runtime',
+                        'cvat_internal_url': 'http://cvat.test',
+                        'task_entry': 'not-a-factory-entry',
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            with self.assertRaisesRegex(ValueError, 'task_entry'):
+                load_config(path)
 
     def test_training_startup_rejects_unsafe_paths_and_missing_clearml_keys(self) -> None:
         from xxtrain.platform.__main__ import main

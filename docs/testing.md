@@ -43,6 +43,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
+任务定义的 HTTP 组合检查使用五目标非 Point 定义，验证定义限制的路由、有序工作区载荷、训练展示元数据、真实 lifespan 启动顺序及动态 DOM 行：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_task_definition_http -v
+```
+
 训练 HTTP、严格运行配置和组合根使用 `platform` 与 `clearml` 可选依赖；该检查通过真实 ASGI 认证与 CSRF 路径覆盖严格空提交、安全投影、用户归属、取消、已删除的重训路由和下载，并验证仅标注启动保持可用：
 
 ```powershell

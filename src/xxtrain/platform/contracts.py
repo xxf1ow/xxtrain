@@ -236,13 +236,9 @@ class WorkspaceView:
     workspace_id: str
     name: str
     image_count: int
-    annotated_image_count: int
-    boxed_image_count: int
-    can_generate_detection_cache: bool
-    detection_cache_ready: bool
     targets: tuple[TargetView, ...] = ()
-    task_id: str = 'point'
-    task_name: str = 'Point'
+    task_id: str = 'task'
+    task_name: str = 'Task'
 
 
 class PlatformError(Exception):

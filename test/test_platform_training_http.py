@@ -12,7 +12,13 @@ import httpx
 
 from xxtrain.platform.app import create_app
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, PlatformConflictError, PlatformError, WorkspaceView
+from xxtrain.platform.contracts import (
+    PlatformAccessError,
+    PlatformConflictError,
+    PlatformError,
+    TargetView,
+    WorkspaceView,
+)
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun, TrainingRunView
 
 
@@ -39,18 +45,21 @@ class AsgiClient:
 
 class AnnotationStub:
     def view(self, user_id: int) -> WorkspaceView:
-        return WorkspaceView('line-3', 'Line 3', 0, 0, 0, False, False)
+        return WorkspaceView(
+            'line-3',
+            'Line 3',
+            0,
+            (
+                TargetView('detect', 0, 0, False, False, False, '检测', '张图片'),
+                TargetView('classify', 0, 0, False, False, False, '分类', '张裁剪图'),
+                TargetView('segment', 0, 0, False, False, False, '指针分割', '张裁剪图'),
+            ),
+        )
 
     def upload(self, user_id: int, staged: tuple[Path, ...]) -> WorkspaceView:
         return self.view(user_id)
 
     def sync_target(self, user_id: int, target: str) -> WorkspaceView:
-        return self.view(user_id)
-
-    def sync_detection(self, user_id: int) -> WorkspaceView:
-        return self.view(user_id)
-
-    def generate_detection_cache(self, user_id: int) -> WorkspaceView:
         return self.view(user_id)
 
     def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
@@ -99,7 +108,8 @@ class TrainingStub:
         self.calls.append(('workspace', user_id))
         return {
             'workspace': AnnotationStub().view(user_id),
-            'editable': False,
+            'can_upload': False,
+            'target_editable': {'detect': False, 'classify': True, 'segment': True},
             'training': {'detect': self.view, 'classify': None, 'segment': None},
         }
 
@@ -202,8 +212,9 @@ class PlatformTrainingHttpTest(unittest.TestCase):
                 self.assertEqual(200, response.status_code)
                 payload = response.json()
                 self.assertTrue(payload['training_enabled'])
-                self.assertTrue(payload['editing_locked'])
-                self.assertEqual(self.training.view.run.id, payload['training']['detect']['id'])
+                self.assertFalse(payload['can_upload'])
+                self.assertFalse(payload['targets'][0]['editable'])
+                self.assertEqual(self.training.view.run.id, payload['targets'][0]['training']['id'])
 
     def test_unknown_and_cross_user_run_ids_have_the_same_forbidden_response(self) -> None:
         unknown = self.client.get(f'/platform/api/training-runs/{uuid4()}')
@@ -258,8 +269,8 @@ class PlatformTrainingHttpTest(unittest.TestCase):
 
     def test_projection_failures_after_annotation_mutations_are_safely_reported(self) -> None:
         routes = (
-            '/platform/api/detection/sync',
-            '/platform/api/detection/cache',
+            '/platform/api/targets/detect/sync',
+            '/platform/api/targets/detect/cache',
             '/platform/api/targets/classify/sync',
             '/platform/api/targets/classify/cache',
         )
@@ -277,9 +288,11 @@ class PlatformTrainingHttpTest(unittest.TestCase):
     def test_real_asgi_lifespan_starts_training_coordination_without_a_request(self) -> None:
         entered = threading.Event()
         release = threading.Event()
+        events: list[str] = []
 
         class LifecycleTraining(TrainingStub):
             def reconcile_pending(self) -> None:
+                events.append('coordinate')
                 entered.set()
                 release.wait()
 
@@ -298,9 +311,15 @@ class PlatformTrainingHttpTest(unittest.TestCase):
                 self.cvat,
                 training_service=training,
             )
-            async with app.router.lifespan_context(app):
-                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
-                release.set()
+            with patch(
+                'xxtrain.platform.app.initialize_input_compatibility',
+                side_effect=lambda service: events.append('compatibility'),
+                create=True,
+            ):
+                async with app.router.lifespan_context(app):
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                    release.set()
+                    self.assertEqual(['compatibility', 'coordinate'], events)
 
         try:
             asyncio.run(consume())

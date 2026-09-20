@@ -240,7 +240,8 @@ class TrainingServiceTests(unittest.TestCase):
 
         state = self.service.workspace_view(self.owner)
 
-        self.assertFalse(state['editable'])
+        self.assertFalse(state['can_upload'])
+        self.assertNotIn('editable', state)
         self.assertIsNone(state['training']['detect'])
         self.assertEqual((other_workspace,), tuple(view.run for view in self.service.list_runs(self.owner)))
         with self.assertRaises(PlatformAccessError):
@@ -553,12 +554,12 @@ class TrainingServiceTests(unittest.TestCase):
     def test_workspace_projection_and_write_guard_share_active_rule(self):
         run = self._store_run(desired_action='execute')
 
-        self.assertFalse(self.service.workspace_view(self.owner)['editable'])
+        self.assertFalse(self.service.workspace_view(self.owner)['can_upload'])
         with self.assertRaises(PlatformConflictError):
             self.service.require_editable(self.workspace_id)
 
         self.service.cancel(self.owner, run.id)
-        self.assertTrue(self.service.workspace_view(self.owner)['editable'])
+        self.assertTrue(self.service.workspace_view(self.owner)['can_upload'])
         self.service.require_editable(self.workspace_id)
 
     def test_cancel_conflicts_with_inflight_coordination_and_no_enqueue_follows_saved_cancel(self):

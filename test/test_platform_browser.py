@@ -61,7 +61,7 @@ class PlatformBrowserTest(unittest.TestCase):
         self.client = AsgiTestClient(create_app(config, self.service, self.cvat))
         self.addCleanup(self.client.close)
 
-    def test_page_serves_the_point_utility_layout_and_local_assets(self) -> None:
+    def test_page_serves_the_dynamic_utility_layout_and_local_assets(self) -> None:
         page = self.client.get('/platform/')
         style = self.client.get('/platform/style.css')
         script = self.client.get('/platform/app.js')
@@ -73,11 +73,9 @@ class PlatformBrowserTest(unittest.TestCase):
         self.assertIn('method="post" action="/platform/api/login"', page.text)
         self.assertIn('id="workspace-panel"', page.text)
         self.assertIn('aria-live="polite"', page.text)
-        self.assertIn('Point', page.text)
-        self.assertIn('检测', page.text)
-        self.assertIn('分类', page.text)
-        self.assertIn('分割', page.text)
-        self.assertIn('每张裁剪图只选择一个分类标签', page.text)
+        self.assertIn('id="target-rail"', page.text)
+        self.assertNotIn('data-target=', page.text)
+        self.assertNotIn('Point', page.text)
         self.assertIn('href="/platform/style.css"', page.text)
         self.assertIn('src="/platform/app.js"', page.text)
         self.assertNotIn('http://', page.text)
@@ -113,18 +111,23 @@ globalThis.setTimeout = (callback) => {{ timers.set(++timerId, callback); return
 globalThis.clearTimeout = (id) => timers.delete(id);
 const elements = new Map();
 const ids = {json.dumps(re.findall(r'id="([^"]+)"', self.client.get('/platform/').text))};
-function makeElement(id) {{
+function makeElement(id, tag='div') {{
   return {{
     id,
+    tagName: tag,
+    children: [],
     hidden: false,
     disabled: false,
     textContent: '',
+    className: '',
     value: '',
     files: [],
     listeners: {{}},
     dataset: {{}},
     classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
     addEventListener(name, callback) {{ this.listeners[name] = callback; }},
+    append(...nodes) {{ this.children.push(...nodes); }},
+    replaceChildren(...nodes) {{ this.children = [...nodes]; }},
     setAttribute() {{}},
     removeAttribute() {{}},
     reset() {{}},
@@ -138,6 +141,18 @@ globalThis.document = {{
     return elements.get(id) || null;
   }},
   querySelectorAll() {{ return []; }},
+  querySelector(selector) {{
+    const prefix = '[data-target="';
+    const marker = '"] .';
+    const split = selector.indexOf(marker);
+    if (!selector.startsWith(prefix) || split < 0) return null;
+    const target = selector.slice(prefix.length, split);
+    const className = selector.slice(split + marker.length);
+    const walk = (node) => [node, ...node.children.flatMap(walk)];
+    const card = walk(elements.get('target-rail')).find((node) => node.dataset.target === target);
+    return walk(card).find((node) => node.className.split(' ').includes(className)) || null;
+  }},
+  createElement(tag) {{ return makeElement('', tag); }},
   addEventListener(name, callback) {{ if (name === 'DOMContentLoaded') loaded = callback; }},
 }};
 let assigned = null;
@@ -155,19 +170,19 @@ globalThis.sessionStorage = {{
   removeItem(key) {{ stored.delete(key); }},
 }};
 const workspace = {{
-  workspace_id: 'line-3', name: '三号现场', image_count: 10, annotated_image_count: 7, boxed_image_count: 7,
-  can_generate_detection_cache: {json.dumps(ready)}, detection_cache_ready: false,
+  workspace_id: 'line-3', name: '三号现场', image_count: 10, can_upload: true,
   task: {{id: 'point', name: 'Point'}},
   targets: [
-    {{id: 'detect', name: '检测', available: true, sample_count: 10, annotated_sample_count: 7,
-      can_annotate: true, can_generate_cache: {json.dumps(ready)}, cache_ready: false}},
-    {{id: 'classify', name: '分类', available: true, sample_count: 7, annotated_sample_count: 4,
-      can_annotate: true, can_generate_cache: {json.dumps(classify_ready)}, cache_ready: false}},
-    {{id: 'segment', name: '分割', available: true, sample_count: 7, annotated_sample_count: 0,
-      can_annotate: false, can_generate_cache: false, cache_ready: false}},
+    {{id: 'detect', name: '检测', sample_unit: '张图片', sample_count: 10, annotated_sample_count: 7,
+      can_annotate: true, can_generate_cache: {json.dumps(ready)}, cache_ready: false, editable: true,
+      training: {json.dumps(training_run)}}},
+    {{id: 'classify', name: '分类', sample_unit: '张裁剪图', sample_count: 7, annotated_sample_count: 4,
+      can_annotate: true, can_generate_cache: {json.dumps(classify_ready)}, cache_ready: false, editable: true,
+      training: null}},
+    {{id: 'segment', name: '指针分割', sample_unit: '张裁剪图', sample_count: 7, annotated_sample_count: 0,
+      can_annotate: false, can_generate_cache: false, cache_ready: false, editable: true, training: null}},
   ],
   training_enabled: {json.dumps(training_run is not None or submission_run is not None)},
-  training: {{detect: {json.dumps(training_run)}, classify: null, segment: null}},
 }};
 let release;
 let hold = false;
@@ -202,20 +217,48 @@ globalThis.fetch = async (url, options = {{}}) => {{
       : target);
   const body = url.endsWith('/session')
     ? {{authenticated: true, user_id: 17}}
-    : url.endsWith('/sync') ? {{...workspace, image_count: 50, annotated_image_count: 50,
-        boxed_image_count: 50, can_generate_detection_cache: true, targets: completedTargets}}
+    : url.endsWith('/sync') ? {{...workspace, image_count: 50, targets: completedTargets}}
     : url.endsWith('/images') ? {{...workspace, image_count: 12,
         targets: workspace.targets.map((target) => target.id === 'detect' ? {{...target, sample_count: 12}} : target)}}
-    : url.endsWith('/cache') ? {{...workspace, detection_cache_ready: true,
+    : url.endsWith('/cache') ? {{...workspace,
         targets: workspace.targets.map((target) => url.includes(`/targets/${{target.id}}/`)
           ? {{...target, cache_ready: true}} : target)}}
     : url.endsWith('/start') ? {{annotation_url: '/tasks/41/jobs/73'}}
-    : submittedRun ? {{...workspace, training: {{...workspace.training, detect: submittedRun}}}} : workspace;
+    : submittedRun ? {{...workspace, targets: workspace.targets.map((target) =>
+        target.id === submittedRun.target ? {{...target, training: submittedRun}} : target)}} : workspace;
   return {{ok: true, status: 200, json: async () => body}};
 }};
 eval({json.dumps(script.text)});
 {load_actions}
-const get = (id) => elements.get(id);
+function all(node) {{ return [node, ...node.children.flatMap(all)]; }}
+function targetPart(target, part) {{
+  const card = all(elements.get('target-rail')).find((node) => node.dataset.target === target);
+  const buttons = all(card).filter((node) => node.tagName === 'button');
+  if (part === 'annotate') return buttons[0];
+  if (part === 'cache') return buttons[1];
+  if (part === 'annotated') return all(card).find((node) => node.tagName === 'strong');
+  if (part === 'total') return all(card).filter((node) => node.tagName === 'span')[2];
+  return all(card).find((node) => node.className === part);
+}}
+const legacy = {{
+  'primary-action': () => targetPart('detect', 'annotate'),
+  'cache-action': () => targetPart('detect', 'cache'),
+  'annotated-image-count': () => targetPart('detect', 'annotated'),
+  'workspace-error': () => targetPart('detect', 'error-message operation-error'),
+  'detect-correction': () => targetPart('detect', 'correction-link operation-error'),
+}};
+for (const target of ['detect', 'classify', 'segment']) {{
+  legacy[`${{target}}-image-total`] = () => targetPart(target, 'total');
+  legacy[`${{target}}-progress`] = () => targetPart(target, 'operation-progress');
+  if (target !== 'detect') {{
+    legacy[`${{target}}-annotated-count`] = () => targetPart(target, 'annotated');
+    legacy[`${{target}}-annotate-action`] = () => targetPart(target, 'annotate');
+    legacy[`${{target}}-cache-action`] = () => targetPart(target, 'cache');
+    legacy[`${{target}}-error`] = () => targetPart(target, 'error-message operation-error');
+    legacy[`${{target}}-correction`] = () => targetPart(target, 'correction-link operation-error');
+  }}
+}}
+const get = (id) => elements.get(id) || legacy[id]?.();
 const snapshot = () => ({{
   images: get('image-count')?.textContent,
   annotated: get('annotated-image-count')?.textContent,
@@ -793,9 +836,10 @@ class PlatformFixtureTest(unittest.TestCase):
                     service.sync_target(17, active['target'])
 
             def click(selector):
-                if selector.endswith('-cache-action'):
-                    service.generate_target_cache(17, selector.split('-')[0][1:])
-                elif selector.endswith('-correction'):
+                target_match = re.search(r'data-target="([^"]+)"', selector)
+                if target_match and 'button:nth-child(2)' in selector:
+                    service.generate_target_cache(17, target_match.group(1))
+                elif target_match and 'correction-link' in selector:
                     job = cvat.job(active['target'])
                     page.url = f'/tasks/{job["task_id"]}/jobs/{job["id"]}'
 
@@ -1084,7 +1128,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.wait_for_function("!document.getElementById('workspace-panel').hidden")
 
     def _open_target(self, page: Page, target: str) -> None:
-        action = '#primary-action' if target == 'detect' else f'#{target}-annotate-action'
+        action = f'[data-target="{target}"] .target-actions button:first-child'
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.locator(action).click()
         expect(page.locator('.cvat-canvas-container')).to_be_visible()
@@ -1096,8 +1140,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             """(target) => !document.getElementById('workspace-panel').hidden
               && !new URLSearchParams(location.search).has('returned')
               && sessionStorage.getItem('xxtrain-return-target') === null
-              && document.getElementById(target === 'detect' ? 'workspace-error' : `${target}-error`).hidden
-              && document.getElementById(`${target}-progress`).hidden""",
+              && document.querySelector(`[data-target="${target}"] .error-message`).hidden
+              && document.querySelector(`[data-target="${target}"] .operation-progress`).hidden""",
             arg=target,
         )
 
@@ -1223,16 +1267,16 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(52, len(malformed_classification['tags']))
         self.assertEqual(invalid_classification['tags'], malformed_classification['tags'][:-1])
         self._complete_malformed_via_api(page)
-        expect(page.locator('#classify-error')).to_contain_text('只能保留一个分类标签')
+        expect(page.locator('[data-target="classify"] .error-message')).to_contain_text('只能保留一个分类标签')
         self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
         self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
-        correction = page.locator('#classify-correction')
+        correction = page.locator('[data-target="classify"] .correction-link')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
         self._delete_last_object(page)
         self._complete_with_plugin(page, 'classify')
-        expect(page.locator('#classify-annotated-count')).to_have_text('51')
+        expect(page.locator('[data-target="classify"] .target-summary strong')).to_have_text('51')
         self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
         self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
 
@@ -1292,17 +1336,17 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(55, len(malformed_segment['shapes']))
         self.assertEqual(invalid_segment['shapes'], malformed_segment['shapes'][:-1])
         self._complete_malformed_via_api(page)
-        expect(page.locator('#segment-error')).to_contain_text('必须恰好有两个点')
+        expect(page.locator('[data-target="segment"] .error-message')).to_contain_text('必须恰好有两个点')
         self.assertEqual(segment_records, repository.annotations(step_key='segment'))
         self.assertEqual(segment_bindings_before, repository.bindings(segment_job.ref))
-        correction = page.locator('#segment-correction')
+        correction = page.locator('[data-target="segment"] .correction-link')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
         self._delete_last_object(page)
         self._draw_two_point_polyline(page)
         self._complete_with_plugin(page, 'segment')
-        expect(page.locator('#segment-annotated-count')).to_have_text('51')
+        expect(page.locator('[data-target="segment"] .target-summary strong')).to_have_text('51')
         corrected_segment_records = repository.annotations(step_key='segment')
         self.assertEqual(55, len(corrected_segment_records))
         self.assertTrue({record.id for record in segment_records} < {record.id for record in corrected_segment_records})
@@ -1314,10 +1358,12 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             all(parents[record.parent_id] == record.image_id for record in records if record.step_key != 'detect')
         )
         self.assertTrue(all(frame.image_id == parents[frame.parent_id] for frame in segment_job.frames))
-        page.locator('#classify-cache-action').click()
-        expect(page.locator('#classify-cache-action')).to_have_text('训练缓存已生成')
-        page.locator('#segment-cache-action').click()
-        expect(page.locator('#segment-cache-action')).to_have_text('训练缓存已生成')
+        classify_cache = page.locator('[data-target="classify"] .target-actions button:nth-child(2)')
+        classify_cache.click()
+        expect(classify_cache).to_have_text('训练缓存已生成')
+        segment_cache = page.locator('[data-target="segment"] .target-actions button:nth-child(2)')
+        segment_cache.click()
+        expect(segment_cache).to_have_text('训练缓存已生成')
         for target in ('classify', 'segment'):
             fingerprint = data.training_fingerprint(target)
             publication = Path(self.receipt['runtime_dir']) / 'cache' / fingerprint

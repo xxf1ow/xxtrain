@@ -2,7 +2,6 @@
   'use strict';
 
   const apiRoot = '/platform/api';
-  const targetIds = ['detect', 'classify', 'segment'];
   const returnTargetKey = 'xxtrain-return-target';
   const trainingStatuses = {pending: '等待确认', queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
   const elements = {
@@ -12,34 +11,23 @@
     workspacePanel: document.getElementById('workspace-panel'), workspaceName: document.getElementById('workspace-name'),
     taskName: document.getElementById('task-name'), imageCount: document.getElementById('image-count'),
     imageFiles: document.getElementById('image-files'), workspaceMessage: document.getElementById('workspace-message'),
-    uploadError: document.getElementById('upload-error'), sessionTools: document.getElementById('session-tools'),
-    sessionUser: document.getElementById('session-user'), logoutButton: document.getElementById('logout-button'),
+    uploadError: document.getElementById('upload-error'), uploadProgress: document.getElementById('upload-progress'),
+    sessionTools: document.getElementById('session-tools'), sessionUser: document.getElementById('session-user'),
+    logoutButton: document.getElementById('logout-button'), targetRail: document.getElementById('target-rail'),
   };
-  const targetElements = {
-    detect: {
-      annotated: document.getElementById('annotated-image-count'), total: document.getElementById('detect-image-total'),
-      annotate: document.getElementById('primary-action'), cache: document.getElementById('cache-action'),
-      progress: document.getElementById('detect-progress'), error: document.getElementById('workspace-error'),
-      correction: document.getElementById('detect-correction'),
-    },
-    classify: {
-      annotated: document.getElementById('classify-annotated-count'), total: document.getElementById('classify-image-total'),
-      annotate: document.getElementById('classify-annotate-action'), cache: document.getElementById('classify-cache-action'),
-      progress: document.getElementById('classify-progress'), error: document.getElementById('classify-error'),
-      correction: document.getElementById('classify-correction'),
-    },
-    segment: {
-      annotated: document.getElementById('segment-annotated-count'), total: document.getElementById('segment-image-total'),
-      annotate: document.getElementById('segment-annotate-action'), cache: document.getElementById('segment-cache-action'),
-      progress: document.getElementById('segment-progress'), error: document.getElementById('segment-error'),
-      correction: document.getElementById('segment-correction'),
-    },
-  };
+  const targetElements = new Map();
 
   let workspace = null;
   let busy = false;
   let busyTarget = null;
   let notificationTimer;
+
+  function makeElement(tag, className = '', content = '') {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (content) node.textContent = content;
+    return node;
+  }
 
   function notify(message) {
     clearTimeout(notificationTimer);
@@ -97,36 +85,96 @@
     return new URLSearchParams(location.search).get('returned') === '1';
   }
 
-  function storedReturnTarget() {
-    const value = sessionStorage.getItem(returnTargetKey);
-    return targetIds.includes(value) ? value : 'detect';
-  }
-
   function targetView(target) {
     return workspace?.targets?.find((item) => item.id === target) || null;
+  }
+
+  function storedReturnTarget() {
+    const value = sessionStorage.getItem(returnTargetKey);
+    if (value && targetView(value)) return value;
+    return workspace?.targets?.[0]?.id || null;
+  }
+
+  function trainingLabel(run) {
+    if (run.execution?.active && run.cancellation_requested) return '取消请求已保存，等待停止';
+    if (run.execution?.status === 'completed' && !run.execution.download_ready) return '训练已结束，产物不可用';
+    return trainingStatuses[run.execution?.status] || '查看训练任务';
+  }
+
+  function createTargetRow(target, index) {
+    const card = makeElement('article', 'target');
+    card.dataset.target = target.id;
+    const targetIndex = makeElement('div', 'target-index', String(index + 1).padStart(2, '0'));
+    targetIndex.setAttribute('aria-hidden', 'true');
+    const summary = makeElement('div', 'target-summary');
+    summary.append(makeElement('h2', '', target.name));
+    const counts = makeElement('p');
+    counts.append(makeElement('span', '', '标注进度：'));
+    const annotated = makeElement('strong');
+    const total = makeElement('span');
+    counts.append(annotated, makeElement('span', '', ' / '), total, makeElement('span', '', ` ${target.sample_unit}`));
+    summary.append(counts);
+    const actions = makeElement('div', 'target-actions');
+    const annotate = makeElement('button', 'primary-button', '开始标注');
+    annotate.type = 'button';
+    const cache = makeElement('button', 'primary-button', '开始训练');
+    cache.type = 'button';
+    actions.append(annotate, cache);
+    const help = makeElement('p', 'target-help', '请按当前任务规则完成标注；服务端会在条件满足后开放训练。');
+    const progress = makeElement('p', 'operation-progress');
+    progress.setAttribute('role', 'status');
+    progress.setAttribute('aria-live', 'polite');
+    progress.hidden = true;
+    const error = makeElement('p', 'error-message operation-error');
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const correction = makeElement('a', 'correction-link operation-error', '返回问题帧修正');
+    correction.hidden = true;
+    card.append(targetIndex, summary, actions, help, progress, error, correction);
+    annotate.addEventListener('click', () => beginTarget(target.id));
+    cache.addEventListener('click', () => workspace?.training_enabled ? trainTarget(target.id) : generateCache(target.id));
+    const showTaskLabel = () => {
+      if (cache.dataset.runId) cache.textContent = '查看训练任务';
+    };
+    const restoreTaskLabel = () => {
+      const run = targetView(target.id)?.training;
+      if (run) cache.textContent = trainingLabel(run);
+    };
+    cache.addEventListener('mouseenter', showTaskLabel);
+    cache.addEventListener('mouseleave', restoreTaskLabel);
+    cache.addEventListener('focus', showTaskLabel);
+    cache.addEventListener('blur', restoreTaskLabel);
+    targetElements.set(target.id, {card, annotated, total, annotate, cache, progress, error, correction});
+    return card;
+  }
+
+  function ensureTargetRows(targets) {
+    const current = [...targetElements.keys()];
+    if (current.length === targets.length && current.every((id, index) => id === targets[index].id)) return;
+    targetElements.clear();
+    elements.targetRail.replaceChildren(...targets.map(createTargetRow));
+    elements.targetRail.setAttribute('aria-label', `${workspace.task.name} 模型目标`);
   }
 
   function setBusy(value, message = '', area = null) {
     busy = value;
     busyTarget = value ? area : null;
     const blocked = value || returnedAnnotationsPending();
-    const editingLocked = Boolean(workspace?.editing_locked);
-    elements.imageFiles.disabled = blocked || editingLocked;
+    elements.imageFiles.disabled = blocked || !workspace?.can_upload;
     elements.loginButton.disabled = value;
     elements.logoutButton.disabled = value;
-    for (const target of targetIds) {
-      const facts = targetView(target);
-      const row = targetElements[target];
-      const run = workspace?.training?.[target];
-      row.annotate.disabled = blocked || editingLocked || !facts?.can_annotate;
-      row.cache.disabled = blocked || (!run && (!facts?.can_generate_cache || (!workspace?.training_enabled && facts?.cache_ready)));
-      row.progress.textContent = value && target === area ? message : '';
+    for (const facts of workspace?.targets || []) {
+      const row = targetElements.get(facts.id);
+      if (!row) continue;
+      const run = facts.training;
+      row.annotate.disabled = blocked || !facts.editable || !facts.can_annotate;
+      row.cache.disabled = blocked || (!run && (!facts.can_generate_cache || (!workspace.training_enabled && facts.cache_ready)));
+      row.progress.textContent = value && facts.id === area ? message : '';
       row.progress.hidden = !row.progress.textContent;
-      row.annotate.textContent = value && target === area && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
+      row.annotate.textContent = value && facts.id === area && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
     }
-    const uploadProgress = document.getElementById('upload-progress');
-    uploadProgress.textContent = value && area === 'upload' ? message : '';
-    uploadProgress.hidden = !uploadProgress.textContent;
+    elements.uploadProgress.textContent = value && area === 'upload' ? message : '';
+    elements.uploadProgress.hidden = !elements.uploadProgress.textContent;
     if (value) {
       clearTimeout(notificationTimer);
       elements.workspaceMessage.hidden = true;
@@ -143,30 +191,18 @@
   }
 
   function renderTargets(targets) {
-    const definitions = new Map(targets.map((target) => [target.id, target]));
-    document.querySelectorAll('[data-target]').forEach((card) => {
-      const facts = definitions.get(card.dataset.target);
-      card.classList.toggle('target-active', Boolean(facts?.available));
-      card.setAttribute('aria-disabled', facts?.can_annotate ? 'false' : 'true');
-      const availability = card.querySelector('.availability');
-      if (availability) availability.textContent = facts?.available ? '可用' : '未开放';
-    });
-    for (const target of targetIds) {
-      const facts = definitions.get(target);
-      const row = targetElements[target];
-      row.annotated.textContent = String(facts?.annotated_sample_count ?? 0);
-      row.total.textContent = String(facts?.sample_count ?? 0);
-      const run = workspace?.training?.[target];
+    ensureTargetRows(targets);
+    for (const facts of targets) {
+      const row = targetElements.get(facts.id);
+      row.card.classList.toggle('target-active', facts.can_annotate);
+      row.card.setAttribute('aria-disabled', String(!facts.can_annotate || !facts.editable));
+      row.annotated.textContent = String(facts.annotated_sample_count);
+      row.total.textContent = String(facts.sample_count);
+      const run = facts.training;
       row.cache.textContent = run ? trainingLabel(run)
-        : facts?.cache_ready && !workspace?.training_enabled ? '训练缓存已生成' : '开始训练';
+        : facts.cache_ready && !workspace.training_enabled ? '训练缓存已生成' : '开始训练';
       row.cache.dataset.runId = run?.id || '';
     }
-  }
-
-  function trainingLabel(run) {
-    if (run.execution?.active && run.cancellation_requested) return '取消请求已保存，等待停止';
-    if (run.execution?.status === 'completed' && !run.execution.download_ready) return '训练已结束，产物不可用';
-    return trainingStatuses[run.execution?.status] || '查看训练任务';
   }
 
   function submissionFeedback(run) {
@@ -189,14 +225,14 @@
   }
 
   async function trainTarget(target) {
-    const run = workspace?.training?.[target];
+    const facts = targetView(target);
+    const run = facts?.training;
     if (run) {
       location.assign(`/platform/training/?run=${run.id}`);
       return;
     }
-    const facts = targetView(target);
     if (busy || !workspace?.training_enabled || !facts?.can_generate_cache) return;
-    const row = targetElements[target];
+    const row = targetElements.get(target);
     clearError(row.error);
     setBusy(true, '正在加入训练队列…', target);
     let submitted = null;
@@ -207,10 +243,10 @@
       submissionError = error;
     }
     try {
-      const next = await requestApiWorkspace();
-      renderWorkspace(next);
+      renderWorkspace(await request('/workspace'));
+      const observed = targetView(target)?.training;
       if (submissionError) showError(row.error, submissionError.message);
-      else if (next.training?.[target]?.id !== submitted.run_id) showError(row.error, '训练任务状态尚未确认，请重试。');
+      else if (observed?.id !== submitted.run_id) showError(row.error, '训练任务状态尚未确认，请重试。');
       else notify(submissionFeedback(submitted.run));
     } catch (error) {
       workspace = null;
@@ -218,10 +254,6 @@
     } finally {
       setBusy(false);
     }
-  }
-
-  function requestApiWorkspace() {
-    return request('/workspace');
   }
 
   function renderWorkspace(next) {
@@ -232,17 +264,18 @@
     elements.workspaceName.textContent = next.name;
     elements.taskName.textContent = next.task.name;
     elements.imageCount.textContent = String(next.image_count);
-    for (const target of targetIds) {
-      clearError(targetElements[target].error);
-      targetElements[target].correction.hidden = true;
-      targetElements[target].correction.removeAttribute('href');
-    }
     renderTargets(next.targets);
+    for (const row of targetElements.values()) {
+      clearError(row.error);
+      row.correction.hidden = true;
+      row.correction.removeAttribute('href');
+    }
     setBusy(busy, '', busyTarget);
   }
 
   async function syncAnnotations(target) {
-    const row = targetElements[target];
+    const row = targetElements.get(target);
+    if (!row) return;
     clearError(row.error);
     row.correction.hidden = true;
     setBusy(true, '正在保存到平台…', target);
@@ -266,12 +299,14 @@
     const session = await request('/session');
     elements.sessionUser.textContent = `用户 ${session.user_id}`;
     renderWorkspace(await request('/workspace'));
-    if (returnedAnnotationsPending()) await syncAnnotations(storedReturnTarget());
+    const returnedTarget = storedReturnTarget();
+    if (returnedAnnotationsPending() && returnedTarget) await syncAnnotations(returnedTarget);
   }
 
   async function beginTarget(target) {
-    if (busy || returnedAnnotationsPending() || !targetView(target)?.can_annotate) return;
-    const row = targetElements[target];
+    const facts = targetView(target);
+    if (busy || returnedAnnotationsPending() || !facts?.editable || !facts.can_annotate) return;
+    const row = targetElements.get(target);
     clearError(row.error);
     setBusy(true, '正在准备标注任务…', target);
     try {
@@ -287,7 +322,7 @@
   async function generateCache(target) {
     const facts = targetView(target);
     if (busy || returnedAnnotationsPending() || !facts?.can_generate_cache || facts.cache_ready) return;
-    const row = targetElements[target];
+    const row = targetElements.get(target);
     clearError(row.error);
     setBusy(true, '正在生成训练缓存…', target);
     try {
@@ -318,24 +353,8 @@
     }
   });
 
-  for (const target of targetIds) {
-    targetElements[target].annotate.addEventListener('click', () => beginTarget(target));
-    targetElements[target].cache.addEventListener('click', () => workspace?.training_enabled ? trainTarget(target) : generateCache(target));
-    const showTaskLabel = () => {
-      if (targetElements[target].cache.dataset.runId) targetElements[target].cache.textContent = '查看训练任务';
-    };
-    const restoreTaskLabel = () => {
-      const run = workspace?.training?.[target];
-      if (run) targetElements[target].cache.textContent = trainingLabel(run);
-    };
-    targetElements[target].cache.addEventListener('mouseenter', showTaskLabel);
-    targetElements[target].cache.addEventListener('mouseleave', restoreTaskLabel);
-    targetElements[target].cache.addEventListener('focus', showTaskLabel);
-    targetElements[target].cache.addEventListener('blur', restoreTaskLabel);
-  }
-
   elements.imageFiles.addEventListener('change', async () => {
-    if (busy || returnedAnnotationsPending() || elements.imageFiles.files.length === 0) return;
+    if (busy || returnedAnnotationsPending() || !workspace?.can_upload || elements.imageFiles.files.length === 0) return;
     const files = new FormData();
     for (const file of elements.imageFiles.files) files.append('images', file);
     const selectedCount = elements.imageFiles.files.length;
@@ -361,7 +380,8 @@
       await platformPost('/logout', {});
       showLogin();
     } catch (error) {
-      showError(targetElements.detect.error, error.message);
+      const first = targetElements.values().next().value;
+      showError(first?.error || elements.uploadError, error.message);
     } finally {
       setBusy(false);
     }

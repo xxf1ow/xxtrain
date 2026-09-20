@@ -104,7 +104,7 @@ class TaskAnnotationServiceTest(unittest.TestCase):
 
         rows = {row.id: row for row in view.targets}
         self.assertEqual(('synthetic', 'Synthetic task'), (view.task_id, view.task_name))
-        self.assertEqual(('Kind', '个样本'), (rows['kind'].display_name, rows['kind'].sample_unit))
+        self.assertEqual(('Kind', 'crops'), (rows['kind'].display_name, rows['kind'].sample_unit))
         self.assertTrue(rows['kind'].can_annotate)
         self.assertTrue(rows['needles'].can_annotate)
         self.assertTrue(rows['subregions'].can_annotate)
