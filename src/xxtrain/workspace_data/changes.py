@@ -58,7 +58,8 @@ def plan_changes(
         if record.parent_id is not None:
             anchor_ids.add(record.parent_id)
         for candidate in current:
-            if candidate.step_key in dependents and candidate.parent_id in anchor_ids:
+            shares_source = candidate.image_id == record.image_id and candidate.parent_id == record.parent_id
+            if candidate.step_key in dependents and (candidate.parent_id in anchor_ids or shares_source):
                 deleted.update(_subtree(candidate.id, children))
 
     return AnnotationChanges(

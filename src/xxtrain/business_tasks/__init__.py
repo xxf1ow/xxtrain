@@ -1,5 +1,12 @@
 from .annotation_rules import step_complete, target_complete, validate_step_annotations, validate_target_annotations
-from .definition import AnnotationPolicy, DeliveryDefinition, StepDefinition, TargetTrainingDefinition, TaskDefinition
+from .definition import (
+    AnnotationPolicy,
+    DeliveryDefinition,
+    InputAdapter,
+    StepDefinition,
+    TargetTrainingDefinition,
+    TaskDefinition,
+)
 from .loader import DEFAULT_TASK_ENTRY, load_task_definition
 from .point import (
     MODEL_TARGETS,
@@ -13,6 +20,7 @@ __all__ = [
     'AnnotationPolicy',
     'DEFAULT_TASK_ENTRY',
     'DeliveryDefinition',
+    'InputAdapter',
     'MODEL_TARGETS',
     'POINT_BOX_LABELS',
     'POINT_CLASSIFY_OVERRIDES',

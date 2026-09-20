@@ -38,7 +38,7 @@ class PlatformDataTest(unittest.TestCase):
         self.staging_dir = self.root / 'staging'
         self.images_dir.mkdir()
         self.staging_dir.mkdir()
-        self.workspace = WorkspaceData(self.root)
+        self.workspace = WorkspaceData(self.root, point_task_definition())
 
     def repository(self) -> AnnotationRepository:
         return AnnotationRepository(self.root / 'annotations.db', point_task_definition())
@@ -135,7 +135,7 @@ class PlatformDataTest(unittest.TestCase):
         self.repository().save_annotations((record,))
 
         with patch('xxtrain.workspace_data.store.Image.open', side_effect=AssertionError('unexpected decode')):
-            restored = self.workspace.images()[0]
+            restored = self.workspace.images('detect')[0]
 
         self.assertEqual((64, 48), (restored.width, restored.height))
         self.assertEqual(record.id, restored.boxes[0].geometry.id)
@@ -151,7 +151,7 @@ class PlatformDataTest(unittest.TestCase):
 
         self.assertEqual(DetectionSummary(2, 2, 1), self.workspace.detection_summary())
 
-    def test_fingerprint_uses_business_content_not_uuid_mapping_or_display_extra(self) -> None:
+    def test_fingerprint_uses_stable_identity_and_business_content_not_runtime_mapping(self) -> None:
         image = self.accept_image()
         original = self.box_record(image.sample_id)
         repository = self.repository()
@@ -163,7 +163,7 @@ class PlatformDataTest(unittest.TestCase):
 
         replacement = self.box_record(image.sample_id)
         repository.save_annotations((replacement,), delete_ids=frozenset({original.id}))
-        self.assertEqual(before, self.workspace.detection_fingerprint())
+        self.assertNotEqual(before, self.workspace.detection_fingerprint())
 
         changed = self.box_record(image.sample_id, replacement.id, x1=4)
         repository.save_annotations((changed,))
@@ -376,7 +376,7 @@ class PlatformDataTest(unittest.TestCase):
     def test_workspace_requires_the_images_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(PlatformAccessError):
-                WorkspaceData(Path(directory))
+                WorkspaceData(Path(directory), point_task_definition())
 
 
 if __name__ == '__main__':

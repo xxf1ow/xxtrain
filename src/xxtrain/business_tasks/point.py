@@ -5,6 +5,7 @@ from xxtrain.pipeline.processors import EncodeDetection, FilterLabels, ReadImage
 from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
 from xxtrain.training.settings import TrainingSettings, standard_train_args
+from xxtrain.workspace_data.inputs import AxisAlignedRectangleInputs, OriginalImageInputs
 
 from .definition import AnnotationPolicy, DeliveryDefinition, StepDefinition, TargetTrainingDefinition, TaskDefinition
 
@@ -26,6 +27,7 @@ def point_task_definition() -> TaskDefinition:
                 display_name='检测',
                 annotation=AnnotationPolicy('rectangle', 'STANDARD', negative_label='negative'),
                 minimum_samples=50,
+                input_adapter=OriginalImageInputs(),
                 training=TargetTrainingDefinition(
                     settings=TrainingSettings(TaskType.DETECT, train_args=standard_train_args(TaskType.DETECT)),
                     metric_key='metrics/mAP50-95(B)',
@@ -41,6 +43,7 @@ def point_task_definition() -> TaskDefinition:
                 depends_on=frozenset(),
                 display_name='分类',
                 annotation=AnnotationPolicy('tag', 'TAGS', maximum_annotations=1),
+                input_adapter=AxisAlignedRectangleInputs(),
                 training=TargetTrainingDefinition(
                     settings=TrainingSettings(
                         TaskType.CLASSIFY, train_args=standard_train_args(TaskType.CLASSIFY) | POINT_CLASSIFY_OVERRIDES
@@ -58,6 +61,7 @@ def point_task_definition() -> TaskDefinition:
                 depends_on=frozenset(),
                 display_name='指针分割',
                 annotation=AnnotationPolicy('polyline', 'STANDARD', point_count=2),
+                input_adapter=AxisAlignedRectangleInputs(),
                 training=TargetTrainingDefinition(
                     settings=TrainingSettings(TaskType.SEGMENT, train_args=standard_train_args(TaskType.SEGMENT)),
                     metric_key='metrics/mAP50-95(M)',

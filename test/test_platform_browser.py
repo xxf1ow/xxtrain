@@ -526,7 +526,7 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
             config = load_config(Path(receipt['config_path']))
-            data = WorkspaceData(config.workspace_dir)
+            data = WorkspaceData(config.workspace_dir, point_task_definition())
             repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
             cvat = HttpxCvatFixture()
             self.addCleanup(cvat.close)
@@ -611,7 +611,15 @@ await operation;
         payload = json.loads(path.read_text(encoding='utf-8'))
 
         self.assertEqual(
-            {'workspace_id', 'display_name', 'owner_user_id', 'workspace_dir', 'runtime_dir', 'cvat_internal_url'},
+            {
+                'workspace_id',
+                'display_name',
+                'owner_user_id',
+                'workspace_dir',
+                'runtime_dir',
+                'cvat_internal_url',
+                'task_entry',
+            },
             set(payload),
         )
         config = load_config(path)
@@ -745,7 +753,7 @@ await operation;
 
 class PlatformFixtureTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline acceptance sequence')
-    def test_live_scenario_preserves_current_bindings_and_restores_invalidated_pointers(self) -> None:
+    def test_live_scenario_preserves_parallel_step_pointers(self) -> None:
         import copy
 
         from xxtrain.platform.contracts import TargetValidationError
@@ -756,7 +764,7 @@ class PlatformFixtureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
             config = load_config(Path(receipt['config_path']))
-            data = WorkspaceData(config.workspace_dir)
+            data = WorkspaceData(config.workspace_dir, point_task_definition())
             cvat = HttpxCvatFixture()
             self.addCleanup(cvat.close)
             service = AnnotationService(config, data, cvat.client, RuntimeCache(config.runtime_dir))
@@ -767,7 +775,9 @@ class PlatformFixtureTest(unittest.TestCase):
             active = {}
 
             def open_target(_page, target):
-                cvat.expect(data.images() if target == 'detect' else data.target_frames(target, config.runtime_dir))
+                cvat.expect(
+                    data.images('detect') if target == 'detect' else data.target_frames(target, config.runtime_dir)
+                )
                 page.url = service.begin_target(17, target)
                 active['target'] = target
 
@@ -855,7 +865,7 @@ globalThis.fetch = async (url, options = {{}}) => {{
     def test_live_job_lookup_distinguishes_detection_from_edit_targets(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
-            data = WorkspaceData(Path(receipt['root']) / 'workspace')
+            data = WorkspaceData(Path(receipt['root']) / 'workspace', point_task_definition())
             runtime = RuntimeCache(Path(receipt['runtime_dir']))
             detection = JobRef(101, 201, tuple(image.sample_id for image in data.images()))
             runtime.remember_job('detect', data.detection_fingerprint(), detection)
@@ -903,7 +913,7 @@ globalThis.fetch = async (url, options = {{}}) => {{
                 self.assertTrue(path.is_relative_to(root))
                 self.assertEqual(immutable['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
 
-            workspace = WorkspaceData(root / 'workspace')
+            workspace = WorkspaceData(root / 'workspace', point_task_definition())
             self.assertEqual(
                 [image['sample_id'] for image in receipt['images']], [image.sample_id for image in workspace.images()]
             )
@@ -1133,7 +1143,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         expect(page.locator('#annotated-image-count')).to_have_text('50')
         initial_ids = self.receipt['initial_annotation_ids']
         repository = AnnotationRepository(Path(self.receipt['database_path']), point_task_definition())
-        data = WorkspaceData(Path(self.receipt['root']) / 'workspace')
+        data = WorkspaceData(Path(self.receipt['root']) / 'workspace', point_task_definition())
         runtime = RuntimeCache(Path(self.receipt['runtime_dir']))
 
         self._open_target(page, 'detect')
@@ -1194,10 +1204,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             binding for binding in classify_bindings_after if binding.annotation_id == changed_after.id
         )
         self.assertIn(changed_binding.object_id, native_tag_ids)
-        retained_segments = tuple(record for record in initial_segments if record.parent_id != changed_after.parent_id)
-        removed_segment_ids = {record.id for record in initial_segments if record.parent_id == changed_after.parent_id}
-        self.assertEqual(2, len(removed_segment_ids))
-        self.assertEqual(50, len(retained_segments))
+        retained_segments = initial_segments
+        self.assertEqual(52, len(retained_segments))
         self.assertEqual(retained_segments, repository.annotations(step_key='segment'))
 
         previous_classify_ref = classify_job.ref
@@ -1238,9 +1246,9 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         )
         self.assertEqual({'polyline'}, {label['type'] for label in labels['results']})
         segmentation = self._job_annotations(page)
-        self.assertEqual(50, len(segmentation['shapes']))
+        self.assertEqual(52, len(segmentation['shapes']))
         existing_shape_ids = {shape['id'] for shape in segmentation['shapes']}
-        self.assertEqual(50, len(existing_shape_ids))
+        self.assertEqual(52, len(existing_shape_ids))
         segment_job = _acceptance_job(runtime, data, 'segment')
         self.assertIsNotNone(segment_job)
         assert segment_job is not None
@@ -1252,9 +1260,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self._draw_two_point_polyline(page)
         self._complete_with_plugin(page, 'segment')
         segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(52, len(segment_records))
+        self.assertEqual(54, len(segment_records))
         self.assertTrue({record.id for record in retained_segments} < {record.id for record in segment_records})
-        self.assertTrue(removed_segment_ids.isdisjoint(record.id for record in segment_records))
         new_segments = tuple(
             record for record in segment_records if record.id not in {item.id for item in segment_records_before}
         )
@@ -1282,7 +1289,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         invalid_line['points'] = [60, 140, 120, 100, 180, 60]
         self._create_malformed_annotations(page, {'tags': [], 'shapes': [invalid_line], 'tracks': []})
         malformed_segment = self._job_annotations(page)
-        self.assertEqual(53, len(malformed_segment['shapes']))
+        self.assertEqual(55, len(malformed_segment['shapes']))
         self.assertEqual(invalid_segment['shapes'], malformed_segment['shapes'][:-1])
         self._complete_malformed_via_api(page)
         expect(page.locator('#segment-error')).to_contain_text('必须恰好有两个点')
@@ -1297,7 +1304,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self._complete_with_plugin(page, 'segment')
         expect(page.locator('#segment-annotated-count')).to_have_text('51')
         corrected_segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(53, len(corrected_segment_records))
+        self.assertEqual(55, len(corrected_segment_records))
         self.assertTrue({record.id for record in segment_records} < {record.id for record in corrected_segment_records})
         self.assertTrue(set(segment_bindings_before) < set(repository.bindings(segment_job.ref)))
 

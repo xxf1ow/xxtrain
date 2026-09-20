@@ -238,7 +238,7 @@ class AnnotationService:
         ref = self.runtime.job_for('detect', fingerprint)
         if ref is not None and self.cvat.job_is_unfinished(ref):
             return self.cvat.job_path(ref)
-        images = self.data.images()
+        images = self.data.images('detect')
         if not images:
             raise PlatformError('Upload images before starting detection annotation')
         task_id = self.cvat.create_task(self.config.display_name, POINT_BOX_LABELS)

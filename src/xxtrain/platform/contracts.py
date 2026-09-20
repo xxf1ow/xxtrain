@@ -210,10 +210,11 @@ class EditJob:
 
 @dataclass(frozen=True)
 class TargetSummary:
-    """Counts target samples and samples with complete annotations."""
+    """Count target samples, completed samples, and completed positive samples."""
 
     sample_count: int
     annotated_sample_count: int
+    positive_sample_count: int
 
 
 @dataclass(frozen=True)

@@ -65,7 +65,15 @@ def validate_target_annotations(target: str, annotations: tuple[EditAnnotation, 
 
     if target not in {'classify', 'segment'}:
         raise ValueError(f'Unknown annotation target: {target!r}')
-    validate_step_annotations(point_task_definition().step(target), annotations)
+    try:
+        validate_step_annotations(point_task_definition().step(target), annotations)
+    except ValueError as error:
+        legacy_messages = {
+            '分类 allows at most 1 annotations': 'Point classification requires at most one annotation',
+            'Annotation geometry requires exactly 2 points': 'Point segmentation lines require exactly two points',
+            '指针分割 line points must be distinct': 'Point segmentation lines require two distinct points',
+        }
+        raise ValueError(legacy_messages.get(str(error), str(error))) from error
 
 
 def target_complete(target: str, annotations: tuple[EditAnnotation, ...]) -> bool:

@@ -149,7 +149,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         receipt = create_fixture(self.root, owner_user_id=17, cvat_internal_url='http://cvat.test')
         self.config = load_config(Path(receipt['config_path']))
         self.owner = self.config.owner_user_id
-        self.data = WorkspaceData(self.config.workspace_dir)
+        self.data = WorkspaceData(self.config.workspace_dir, point_task_definition())
         self.repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
         self.cvat = HttpxCvatFixture()
         self.addCleanup(self.cvat.close)
@@ -317,7 +317,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertEqual(2, len(self.store.list_user(self.owner)))
 
     def test_unknown_cancel_confirmation_last_terminal_and_stale_sync_gate(self) -> None:
-        self.cvat.expect(self.data.images())
+        self.cvat.expect(self.data.images('detect'))
         started = self.client.post('/platform/api/targets/detect/start', json={}, headers=self._headers(self.client))
         self.assertEqual(200, started.status_code)
         runs = [self._submit(target).json() for target in ('detect', 'classify', 'segment')]

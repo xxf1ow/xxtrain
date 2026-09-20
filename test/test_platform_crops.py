@@ -71,7 +71,7 @@ class PlatformCropsTest(unittest.TestCase):
         (workspace / 'images').mkdir(parents=True)
         candidate = self.root / 'candidate.png'
         candidate.write_bytes(self.image_path.read_bytes())
-        data = WorkspaceData(workspace)
+        data = WorkspaceData(workspace, point_task_definition())
         data.admit((candidate,))
         (sample,) = data.images()
         detection_id = UUID('11111111-1111-1111-1111-111111111111')
@@ -79,7 +79,7 @@ class PlatformCropsTest(unittest.TestCase):
         repository.save_annotations(
             (AnnotationRecord(detection_id, sample.sample_id, 'detect', None, 'rectangle', 'tl', [[1, 1], [7, 7]]),)
         )
-        first = crop_frames(data.images(), self.root / 'runtime')[0]
+        first = crop_frames(data.images('detect'), self.root / 'runtime')[0]
         cached_time = 1_700_000_000_000_000_000
         os.utime(first.image_path, ns=(cached_time, cached_time))
 
@@ -91,7 +91,7 @@ class PlatformCropsTest(unittest.TestCase):
                 ),
             )
         )
-        second = crop_frames(data.images(), self.root / 'runtime')[0]
+        second = crop_frames(data.images('detect'), self.root / 'runtime')[0]
 
         self.assertEqual(first.image_path, second.image_path)
         self.assertEqual(cached_time, second.image_path.stat().st_mtime_ns)

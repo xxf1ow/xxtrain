@@ -46,7 +46,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
                     image.putpixel((x, y), ((x * 3) % 256, (y * 5) % 256, (x + y) % 256))
             image.save(image_path)
 
-        self.data = WorkspaceData(self.workspace_root)
+        self.data = WorkspaceData(self.workspace_root, point_task_definition())
         self.repository = AnnotationRepository(self.workspace_root / 'annotations.db', point_task_definition())
         self.image = ImageRecord('a' * 64, 'images/source.png', 100, 80, 0)
         self.repository.register_images((self.image,))

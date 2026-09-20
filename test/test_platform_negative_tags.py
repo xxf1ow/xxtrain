@@ -32,7 +32,7 @@ class NegativeTagTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / 'images').mkdir()
-        self.data = WorkspaceData(self.root)
+        self.data = WorkspaceData(self.root, point_task_definition())
         staged = self.root / 'upload.png'
         Image.new('RGB', (32, 24)).save(staged)
         self.data.admit((staged,))
@@ -52,11 +52,11 @@ class NegativeTagTest(unittest.TestCase):
         self.assertEqual(1, self.data.detection_summary().annotated_image_count)
         self.assertEqual((), self.data.target_frames('classify', self.root / 'runtime'))
         fingerprint = self.data.detection_fingerprint()
-        payload = encode_mapped_annotations(self.data.images(), LABELS)
+        payload = encode_mapped_annotations(self.data.images('detect'), LABELS)
         self.assertEqual([], payload['shapes'])
         self.assertEqual([(0, 42)], [(tag['frame'], tag['label_id']) for tag in payload['tags']])
         payload['tags'][0]['id'] = 102
-        self.assertEqual((), decode_initial_bindings(payload, self.data.images(), self.ref, LABELS))
+        self.assertEqual((), decode_initial_bindings(payload, self.data.images('detect'), self.ref, LABELS))
         self.data.commit_detection_sync(self.ref, self.data.prepare_detection_sync(self.ref, results))
         self.assertEqual((record,), self.repo.annotations())
         self.assertEqual(fingerprint, self.data.detection_fingerprint())
@@ -72,14 +72,14 @@ class NegativeTagTest(unittest.TestCase):
             (AnnotationRecord(uuid4(), self.image.sample_id, 'detect', None, 'negative', None, None),)
         )
         with self.assertRaisesRegex(ValueError, 'negative'):
-            decode_initial_bindings({'shapes': [], 'tags': []}, self.data.images(), self.ref, LABELS)
+            decode_initial_bindings({'shapes': [], 'tags': []}, self.data.images('detect'), self.ref, LABELS)
 
     def test_real_client_and_service_rebuild_negative_job_and_revoke_confirmation(self):
         cvat = HttpxCvatFixture()
         self.addCleanup(cvat.close)
         config = WorkspaceConfig('test', 'Test', 17, self.root, self.root / 'runtime', 'http://cvat.test')
         service = AnnotationService(config, self.data, cvat.client, RuntimeCache(config.runtime_dir))
-        cvat.expect(self.data.images())
+        cvat.expect(self.data.images('detect'))
         service.begin_detection(17)
         label_id = cvat.label_id('detect', '无检测目标')
         cvat.set_annotations('detect', tags=[{'id': 999, 'frame': 0, 'label_id': label_id, 'attributes': []}])
@@ -89,7 +89,7 @@ class NegativeTagTest(unittest.TestCase):
         )
         record = self.repo.annotations()[0]
         cvat.job('detect')['state'] = 'completed'
-        cvat.expect(self.data.images())
+        cvat.expect(self.data.images('detect'))
         service.begin_detection(17)
         self.assertEqual(1, len(cvat.job('detect')['annotations']['tags']))
         service.sync_detection(17)

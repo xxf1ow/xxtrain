@@ -60,7 +60,7 @@ def create_fixture(parent: Path, *, owner_user_id: int, cvat_internal_url: str) 
         _write_image(image_path, index)
         staged_images.append(image_path)
 
-    workspace = WorkspaceData(workspace_dir)
+    workspace = WorkspaceData(workspace_dir, point_task_definition())
     admission = workspace.admit(tuple(staged_images))
     if admission.accepted_count != 50:
         raise RuntimeError('Synthetic fixture textures must admit as 50 distinct images')

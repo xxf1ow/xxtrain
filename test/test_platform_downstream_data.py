@@ -40,7 +40,7 @@ class PlatformDownstreamDataTest(unittest.TestCase):
                     image.putpixel((x, y), (x, y, (x + y) % 256))
             image.save(image_path)
 
-        self.data = WorkspaceData(self.workspace_root)
+        self.data = WorkspaceData(self.workspace_root, point_task_definition())
         self.repository = AnnotationRepository(self.workspace_root / 'annotations.db', point_task_definition())
         self.image = ImageRecord('a' * 64, 'images/original.png', 100, 80, 0)
         self.repository.register_images((self.image,))
@@ -141,8 +141,8 @@ class PlatformDownstreamDataTest(unittest.TestCase):
             tuple(annotation.geometry for annotation in segment[0].annotations),
         )
         self.assertEqual((), segment[1].annotations)
-        self.assertEqual(TargetSummary(2, 2), self.data.target_summary('classify'))
-        self.assertEqual(TargetSummary(2, 1), self.data.target_summary('segment'))
+        self.assertEqual(TargetSummary(2, 2, 2), self.data.target_summary('classify'))
+        self.assertEqual(TargetSummary(2, 1, 1), self.data.target_summary('segment'))
 
     def test_segment_sync_copies_preserves_and_deletes_native_identities(self) -> None:
         _, _, first_line, second_line = self.add_targets()
@@ -189,7 +189,7 @@ class PlatformDownstreamDataTest(unittest.TestCase):
             (first_line.id,), tuple(record.id for record in self.repository.annotations(step_key='segment'))
         )
 
-    def test_classification_change_invalidates_only_its_parent_lines_and_noop_preserves_them(self) -> None:
+    def test_classification_change_and_noop_preserve_parallel_segment_lines(self) -> None:
         category, other_category, first_line, second_line = self.add_targets()
         other_line = AnnotationRecord(
             UUID('30000000-0000-0000-0000-000000000003'),
@@ -212,6 +212,10 @@ class PlatformDownstreamDataTest(unittest.TestCase):
         )
 
         no_op = self.data.prepare_target_sync('classify', job, unchanged)
+        self.assertEqual(
+            ((), frozenset(), frozenset()),
+            (no_op.changes.upserts, no_op.changes.delete_ids, no_op.changes.invalidated_steps),
+        )
         self.data.commit_target_sync(job, no_op)
         self.assertEqual(
             {first_line.id, second_line.id, other_line.id},
@@ -228,7 +232,8 @@ class PlatformDownstreamDataTest(unittest.TestCase):
         self.assertEqual('tc', self.repository.annotations(step_key='classify')[0].label)
         self.assertEqual(other_category.id, self.repository.annotations(step_key='classify')[1].id)
         self.assertEqual(
-            (other_line.id,), tuple(record.id for record in self.repository.annotations(step_key='segment'))
+            {first_line.id, second_line.id, other_line.id},
+            {record.id for record in self.repository.annotations(step_key='segment')},
         )
         self.assertEqual(category.id, self.repository.annotations(step_key='classify')[0].id)
 
@@ -305,7 +310,7 @@ class PlatformDownstreamDataTest(unittest.TestCase):
             ),
             EditFrameResult(classify_frames[1].mapping.frame_id, ()),
         )
-        with self.assertRaisesRegex(ValueError, 'at most one'):
+        with self.assertRaisesRegex(ValueError, 'at most 1'):
             self.data.prepare_target_sync('classify', classify_job, multiple)
 
     def test_old_mapping_cannot_authorize_same_content_replacement(self) -> None:
@@ -329,7 +334,7 @@ class PlatformDownstreamDataTest(unittest.TestCase):
         category, _, _, _ = self.add_targets()
         job, frames = self.edit_job('classify', 70)
         self.bind_existing(job, 'tag', (101, 102), frames)
-        reopened = WorkspaceData(self.workspace_root)
+        reopened = WorkspaceData(self.workspace_root, point_task_definition())
         results = (
             EditFrameResult(frames[0].mapping.frame_id, ()),
             EditFrameResult(
@@ -342,7 +347,7 @@ class PlatformDownstreamDataTest(unittest.TestCase):
         reopened.commit_target_sync(job, sync)
 
         self.assertNotIn(category.id, {record.id for record in self.repository.annotations(step_key='classify')})
-        self.assertEqual(TargetSummary(2, 1), reopened.target_summary('classify'))
+        self.assertEqual(TargetSummary(2, 1, 1), reopened.target_summary('classify'))
 
     def test_transaction_failure_keeps_annotations_and_bindings_equal(self) -> None:
         self.add_targets()
@@ -390,7 +395,7 @@ class PlatformDownstreamDataTest(unittest.TestCase):
         other_repository = AnnotationRepository(second_root / 'annotations.db', point_task_definition())
         other_repository.register_images((self.image,))
         other_repository.save_annotations(tuple(reversed(ordered)))
-        self.assertEqual(before, WorkspaceData(second_root).target_fingerprint('segment'))
+        self.assertEqual(before, WorkspaceData(second_root, point_task_definition()).target_fingerprint('segment'))
 
         third_root = self.root / 'third-workspace'
         (third_root / 'images').mkdir(parents=True)
@@ -400,13 +405,13 @@ class PlatformDownstreamDataTest(unittest.TestCase):
         third_repository = AnnotationRepository(third_root / 'annotations.db', point_task_definition())
         third_repository.register_images((self.image, ImageRecord('b' * 64, 'images/second.png', 100, 80, 1)))
         third_repository.save_annotations(ordered)
-        self.assertNotEqual(before, WorkspaceData(third_root).target_fingerprint('segment'))
+        self.assertEqual(before, WorkspaceData(third_root, point_task_definition()).target_fingerprint('segment'))
 
         category = next(
             record for record in self.repository.annotations(step_key='classify') if record.parent_id == self.first.id
         )
         self.repository.save_annotations((replace(category, label='tc'),))
-        self.assertNotEqual(before, self.data.target_fingerprint('segment'))
+        self.assertEqual(before, self.data.target_fingerprint('segment'))
 
 
 if __name__ == '__main__':

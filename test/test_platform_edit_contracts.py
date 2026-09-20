@@ -28,12 +28,14 @@ class PlatformEditContractsTest(unittest.TestCase):
         frame = EditFrame(mapping, Path('crop.png'), 20, 20, (annotation,))
         result = EditFrameResult(mapping.frame_id, (annotation,))
         job = EditJob(JobRef(11, 12, (mapping.image_id,)), (mapping,))
-        summary = TargetSummary(3, 2)
+        summary = TargetSummary(3, 2, 2)
 
         self.assertEqual((annotation,), frame.annotations)
         self.assertEqual(mapping.frame_id, result.frame_id)
         self.assertEqual((mapping,), job.frames)
-        self.assertEqual((3, 2), (summary.sample_count, summary.annotated_sample_count))
+        self.assertEqual(
+            (3, 2, 2), (summary.sample_count, summary.annotated_sample_count, summary.positive_sample_count)
+        )
         with self.assertRaises(FrozenInstanceError):
             setattr(annotation, 'label', 'tl')
 

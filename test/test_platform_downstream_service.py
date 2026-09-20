@@ -67,7 +67,7 @@ class DownstreamServiceTest(unittest.TestCase):
         self.workspace = self.root / 'workspace'
         (self.workspace / 'images').mkdir(parents=True)
         self.config = WorkspaceConfig('line-3', 'Line 3', 17, self.workspace, self.root / 'runtime', 'http://cvat.test')
-        self.data = WorkspaceData(self.workspace)
+        self.data = WorkspaceData(self.workspace, point_task_definition())
         self.repository = AnnotationRepository(self.workspace / 'annotations.db', point_task_definition())
         self.runtime = RuntimeCache(self.config.runtime_dir)
         self.cvat = FakeEditCvat()
@@ -164,7 +164,10 @@ class DownstreamServiceTest(unittest.TestCase):
         self.assertEqual(tuple(dict.fromkeys(box.image_id for box in boxes)), job.ref.sample_ids)
         self.assertEqual(tuple(str(box.id) for box in boxes), tuple(frame.frame_id for frame in job.frames))
         restarted = AnnotationService(
-            self.config, WorkspaceData(self.workspace), self.cvat, RuntimeCache(self.config.runtime_dir)
+            self.config,
+            WorkspaceData(self.workspace, point_task_definition()),
+            self.cvat,
+            RuntimeCache(self.config.runtime_dir),
         )
         self.assertEqual(annotation_url, restarted.begin_target(17, 'classify'))
         self.assertEqual(1, len(self.cvat.create_calls))

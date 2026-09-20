@@ -1,4 +1,5 @@
 from xxtrain.business_tasks.definition import AnnotationPolicy, StepDefinition, TaskDefinition
+from xxtrain.workspace_data.inputs import AxisAlignedRectangleInputs, OriginalImageInputs
 
 
 def synthetic_task_definition() -> TaskDefinition:
@@ -12,6 +13,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset(),
                 display_name='Regions',
                 annotation=AnnotationPolicy('rectangle', 'STANDARD'),
+                input_adapter=OriginalImageInputs(),
             ),
             StepDefinition(
                 'kind',
@@ -21,6 +23,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset(),
                 display_name='Kind',
                 annotation=AnnotationPolicy('tag', 'TAGS', maximum_annotations=1),
+                input_adapter=AxisAlignedRectangleInputs(),
             ),
             StepDefinition(
                 'needles',
@@ -30,6 +33,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset(),
                 display_name='Needles',
                 annotation=AnnotationPolicy('polyline', 'STANDARD', point_count=2),
+                input_adapter=AxisAlignedRectangleInputs(),
             ),
             StepDefinition(
                 'subregions',
@@ -39,6 +43,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset(),
                 display_name='Subregions',
                 annotation=AnnotationPolicy('rectangle', 'STANDARD'),
+                input_adapter=AxisAlignedRectangleInputs(),
             ),
             StepDefinition(
                 'details',
@@ -48,6 +53,7 @@ def synthetic_task_definition() -> TaskDefinition:
                 frozenset(),
                 display_name='Details',
                 annotation=AnnotationPolicy('tag', 'TAGS', maximum_annotations=1),
+                input_adapter=AxisAlignedRectangleInputs(),
             ),
         ),
         key='synthetic',

@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 
+from xxtrain.business_tasks.loader import load_task_definition
 from xxtrain.integrations.clearml import ClearMLClient
 from xxtrain.integrations.cvat import CvatClient
 from xxtrain.platform.app import create_app
@@ -75,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error('training metadata_dir must be outside the disposable workspace runtime')
         if not training_config.worker_script.is_file():
             parser.error('training worker_script must name a deployable file')
-    data = WorkspaceData(config.workspace_dir)
+    data = WorkspaceData(config.workspace_dir, load_task_definition(config.task_entry))
     runtime = RuntimeCache(config.runtime_dir)
     with httpx.Client() as http:
         cvat = CvatClient(config.cvat_internal_url, token, http)

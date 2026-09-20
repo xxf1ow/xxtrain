@@ -227,7 +227,7 @@ class AnnotationServiceTest(unittest.TestCase):
         self.images = self.workspace / 'images'
         self.images.mkdir(parents=True)
         self.config = WorkspaceConfig('line-3', 'Line 3', 17, self.workspace, self.root / 'runtime', 'http://cvat.test')
-        self.data = WorkspaceData(self.workspace)
+        self.data = WorkspaceData(self.workspace, point_task_definition())
         self.repository = AnnotationRepository(self.workspace / 'annotations.db', point_task_definition())
         self.runtime = RuntimeCache(self.config.runtime_dir)
         self.cvat = FakeCvatClient()
@@ -263,7 +263,10 @@ class AnnotationServiceTest(unittest.TestCase):
         self.assertEqual((50, 50, 49), (view.image_count, view.annotated_image_count, view.boxed_image_count))
         self.assertFalse(view.can_generate_detection_cache)
         restarted = AnnotationService(
-            self.config, WorkspaceData(self.workspace), self.cvat, RuntimeCache(self.config.runtime_dir)
+            self.config,
+            WorkspaceData(self.workspace, point_task_definition()),
+            self.cvat,
+            RuntimeCache(self.config.runtime_dir),
         )
         self.assertEqual(view, restarted.view(17))
 
@@ -352,7 +355,10 @@ class AnnotationServiceTest(unittest.TestCase):
         fingerprint = self.data.detection_fingerprint()
         self.assertEqual(ref, RuntimeCache(self.config.runtime_dir).job_for('detect', fingerprint))
         restarted = AnnotationService(
-            self.config, WorkspaceData(self.workspace), self.cvat, RuntimeCache(self.config.runtime_dir)
+            self.config,
+            WorkspaceData(self.workspace, point_task_definition()),
+            self.cvat,
+            RuntimeCache(self.config.runtime_dir),
         )
         self.assertEqual(view, restarted.view(17))
         self.assertEqual('/tasks/41/jobs/73', restarted.begin_detection(17))
@@ -360,7 +366,7 @@ class AnnotationServiceTest(unittest.TestCase):
     def test_sync_invalidates_empty_downstream_jobs_and_reverting_does_not_restore_them(self):
         (sample,) = self.create_workspace(boxed=1)
         self.service.begin_detection(17)
-        original = self.data.images()[0].boxes[0]
+        original = self.data.images('detect')[0].boxes[0]
         old_classify = JobRef(80, 81, (sample.sample_id,))
         old_segment = JobRef(82, 83, (sample.sample_id,))
         self.runtime.remember_job('classify', 'old', old_classify)

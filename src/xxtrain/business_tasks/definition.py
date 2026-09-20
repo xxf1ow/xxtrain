@@ -1,7 +1,30 @@
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from xxtrain.training.settings import TrainingSettings
+
+if TYPE_CHECKING:
+    from xxtrain.platform.contracts import AnnotationRecord, EditFrame, FrameMapping, ImageInput, JsonValue
+
+
+class InputAdapter(Protocol):
+    """Project one step's authoritative inputs into editable frames."""
+
+    def mappings(
+        self, images: tuple[ImageInput, ...], records: tuple[AnnotationRecord, ...], step: StepDefinition
+    ) -> tuple[FrameMapping, ...]: ...
+
+    def materialize(
+        self, images: tuple[ImageInput, ...], mappings: tuple[FrameMapping, ...], runtime_root: Path
+    ) -> tuple[EditFrame, ...]: ...
+
+    def to_local(self, mapping: FrameMapping, geometry: JsonValue) -> JsonValue: ...
+
+    def to_original(self, mapping: FrameMapping, geometry: JsonValue) -> JsonValue: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +81,7 @@ class StepDefinition:
     display_name: str | None = None
     annotation: AnnotationPolicy | None = None
     minimum_samples: int = 0
+    input_adapter: InputAdapter | None = None
 
     def __post_init__(self) -> None:
         if self.display_name is None:

@@ -143,7 +143,7 @@ class TrainingServiceTests(unittest.TestCase):
         self.config = load_config(Path(receipt['config_path']))
         self.workspace_id = self.config.workspace_id
         self.owner = self.config.owner_user_id
-        self.data = WorkspaceData(self.config.workspace_dir)
+        self.data = WorkspaceData(self.config.workspace_dir, point_task_definition())
         self.annotations = AnnotationService(
             self.config, self.data, _UnusedCvat(), RuntimeCache(self.config.runtime_dir)
         )

@@ -533,7 +533,7 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
 
             service = AnnotationService(
                 config,
-                WorkspaceData(workspace),
+                WorkspaceData(workspace, point_task_definition()),
                 cvat,
                 RuntimeCache(config.runtime_dir),
                 require_editable=require_editable,
@@ -562,7 +562,9 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             (workspace / 'images').mkdir(parents=True)
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
             cvat = FakeCvat()
-            service = AnnotationService(config, WorkspaceData(workspace), cvat, RuntimeCache(config.runtime_dir))
+            service = AnnotationService(
+                config, WorkspaceData(workspace, point_task_definition()), cvat, RuntimeCache(config.runtime_dir)
+            )
             with AsgiTestClient(create_app(config, service, cvat)) as client:
                 client.cookies.set('sessionid', 'active')
                 client.get('/platform/')
@@ -582,7 +584,9 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             Image.new('RGB', (64, 48), 'white').save(candidate)
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
             cvat = FakeCvat()
-            service = AnnotationService(config, WorkspaceData(workspace), cvat, RuntimeCache(config.runtime_dir))
+            service = AnnotationService(
+                config, WorkspaceData(workspace, point_task_definition()), cvat, RuntimeCache(config.runtime_dir)
+            )
             with AsgiTestClient(create_app(config, service, cvat)) as client:
                 client.get('/platform/')
                 client.cookies.set('sessionid', 'active')
@@ -608,7 +612,7 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             images.mkdir()
             staged = root / 'frame.jpg'
             Image.new('RGB', (64, 48), 'white').save(staged)
-            data = WorkspaceData(root)
+            data = WorkspaceData(root, point_task_definition())
             data.admit((staged,))
             sample_id = data.images()[0].sample_id
             runtime = RuntimeCache(root / 'runtime')
