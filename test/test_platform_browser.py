@@ -1066,9 +1066,15 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             page.get_by_label('密码').fill('')
             self.fail(f'login failed: {error}; request checks: {observed_request}')
         expect(page.locator('#workspace-name')).to_have_text(self.receipt['display_name'])
-        expect(page.locator('[data-target="detect"]')).to_have_attribute('aria-disabled', 'false')
-        expect(page.locator('[data-target="classify"]')).to_have_attribute('aria-disabled', 'false')
-        expect(page.locator('[data-target="segment"]')).to_have_attribute('aria-disabled', 'false')
+        expect(page.locator('[data-target="detect"] .target-actions button:first-child')).to_have_attribute(
+            'aria-disabled', 'false'
+        )
+        expect(page.locator('[data-target="classify"] .target-actions button:first-child')).to_have_attribute(
+            'aria-disabled', 'false'
+        )
+        expect(page.locator('[data-target="segment"] .target-actions button:first-child')).to_have_attribute(
+            'aria-disabled', 'false'
+        )
 
     def _assert_immutable_inputs(self) -> None:
         for immutable in [*self.receipt['images'], self.receipt['baseline']]:

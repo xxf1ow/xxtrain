@@ -198,6 +198,7 @@ class TaskDefinitionHttpTest(unittest.TestCase):
             'target': 'kind',
             'execution': {'status': 'queued', 'active': True, 'download_ready': False},
         }
+        payload['targets'][1]['editable'] = False
         harness = f"""
 (async () => {{
 class Element {{
@@ -234,15 +235,25 @@ const rail=elements.get('target-rail');
 const kind=all(rail).find((node)=>node.dataset.target==='kind');
 const buttons=all(kind).filter((node)=>node.tagName==='button');
 await buttons[1].fire('click');
-process.stdout.write(JSON.stringify({{annotateDisabled:buttons[0].disabled,trainDisabled:buttons[1].disabled,assigned}}));
+process.stdout.write(JSON.stringify({{
+  cardAriaDisabled:kind.attributes['aria-disabled'] ?? null,
+  annotateDisabled:buttons[0].disabled,
+  annotateAriaDisabled:buttons[0].attributes['aria-disabled'],
+  trainDisabled:buttons[1].disabled,
+  trainAriaDisabled:buttons[1].attributes['aria-disabled'],
+  assigned,
+}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
 """
         completed = subprocess.run(['node', '-e', harness], text=True, encoding='utf-8', capture_output=True)
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         result = json.loads(completed.stdout)
-        self.assertFalse(result['annotateDisabled'])
+        self.assertIsNone(result['cardAriaDisabled'])
+        self.assertTrue(result['annotateDisabled'])
+        self.assertEqual('true', result['annotateAriaDisabled'])
         self.assertFalse(result['trainDisabled'])
+        self.assertEqual('false', result['trainAriaDisabled'])
         self.assertEqual(f'/platform/training/?run={run_id}', result['assigned'])
 
 

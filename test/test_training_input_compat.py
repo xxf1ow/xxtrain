@@ -19,6 +19,7 @@ from xxtrain.platform.training_input_compat import initialize_input_compatibilit
 from xxtrain.platform.training_service import TrainingService
 from xxtrain.platform.training_store import TrainingRunStore
 from xxtrain.workspace_data import WorkspaceData
+from xxtrain.workspace_data.inputs import AxisAlignedRectangleInputs
 from xxtrain.workspace_data.legacy_fingerprints import legacy_point_fingerprint
 from xxtrain.workspace_data.repository import AnnotationRepository
 
@@ -30,6 +31,24 @@ class _NoClearMLWrites:
     @staticmethod
     def observe(task_id: str) -> ExecutionView:
         return ExecutionView(task_id, 'completed', False, None, None, None, None, True, None)
+
+
+class _RecordingClearML(_NoClearMLWrites):
+    def create(self, run: TrainingRun) -> str:
+        self.created.append(run.id)
+        return 'clearml-new'
+
+    @staticmethod
+    def enqueue(task_id: str, run: TrainingRun) -> None:
+        del task_id, run
+
+
+class _PaddedAxisAlignedRectangleInputs(AxisAlignedRectangleInputs):
+    def mappings(self, images, records, step):
+        return tuple(
+            replace(mapping, bounds=(mapping.bounds[0] - 1, mapping.bounds[1] - 1, *mapping.bounds[2:]))
+            for mapping in super().mappings(images, records, step)
+        )
 
 
 class TrainingInputCompatibilityTest(unittest.TestCase):
@@ -206,6 +225,47 @@ class TrainingInputCompatibilityTest(unittest.TestCase):
         initialize_input_compatibility(service)
 
         self.assertIsNone(store.find_input(17, 'line-1', 'detect', changed_data.training_fingerprint('detect')))
+
+    def test_changed_input_projection_is_not_aliased_and_submit_creates_a_new_run(self) -> None:
+        second_parent = AnnotationRecord(
+            UUID(int=4), self.image.id, 'detect', None, 'rectangle', 'Point', [[31, 2], [50, 40]]
+        )
+        second_category = AnnotationRecord(
+            UUID(int=5), self.image.id, 'classify', second_parent.id, 'classification', 'tc', None
+        )
+        self.repository.save_annotations((second_parent, second_category))
+        old_run = self._old_run('classify')
+        self._write_prechange_run(old_run)
+        self._publish(old_run, complete=False)
+        store = TrainingRunStore(self.store_path)
+        classify = self.task.step('classify')
+        changed_task = replace(
+            self.task,
+            steps=tuple(
+                replace(step, input_adapter=_PaddedAxisAlignedRectangleInputs())
+                if step.key == 'classify'
+                else replace(step, minimum_samples=0)
+                if step.key == 'detect'
+                else step
+                for step in self.task.steps
+            ),
+        )
+        changed_data = WorkspaceData(self.workspace, changed_task)
+        changed_annotations = AnnotationService(
+            self.config, changed_data, object(), RuntimeCache(self.config.runtime_dir)
+        )
+        clearml = _RecordingClearML()
+        service = TrainingService(self.config, changed_annotations, store, clearml, self.config.runtime_dir / 'cache')
+        current_fingerprint = changed_data.training_fingerprint(classify.key)
+        self.assertNotEqual(self.data.training_fingerprint(classify.key), current_fingerprint)
+
+        initialize_input_compatibility(service)
+        submitted = service.submit(17, classify.key)
+
+        self.assertNotEqual(old_run.id, submitted.run.id)
+        self.assertEqual(current_fingerprint, submitted.run.fingerprint)
+        self.assertEqual(2, len(store.list_user(17)))
+        self.assertEqual([submitted.run.id], clearml.created)
 
     def test_manifest_free_detection_does_not_weaken_runtime_manifest_requirement(self) -> None:
         old_run = self._old_run('detect')

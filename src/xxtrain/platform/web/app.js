@@ -169,6 +169,8 @@
       const run = facts.training;
       row.annotate.disabled = blocked || !facts.editable || !facts.can_annotate;
       row.cache.disabled = blocked || (!run && (!facts.can_generate_cache || (!workspace.training_enabled && facts.cache_ready)));
+      row.annotate.setAttribute('aria-disabled', String(row.annotate.disabled));
+      row.cache.setAttribute('aria-disabled', String(row.cache.disabled));
       row.progress.textContent = value && facts.id === area ? message : '';
       row.progress.hidden = !row.progress.textContent;
       row.annotate.textContent = value && facts.id === area && message === '正在准备标注任务…' ? '正在准备…' : '开始标注';
@@ -195,7 +197,6 @@
     for (const facts of targets) {
       const row = targetElements.get(facts.id);
       row.card.classList.toggle('target-active', facts.can_annotate);
-      row.card.setAttribute('aria-disabled', String(!facts.can_annotate || !facts.editable));
       row.annotated.textContent = String(facts.annotated_sample_count);
       row.total.textContent = String(facts.sample_count);
       const run = facts.training;
