@@ -5,37 +5,61 @@ from xxtrain.platform.contracts import EditAnnotation, JsonValue
 from .definition import StepDefinition
 
 
+class AnnotationValidationError(ValueError):
+    """A task-rule validation failure with a stable, presentation-safe reason code."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 def validate_step_annotations(step: StepDefinition, annotations: tuple[EditAnnotation, ...]) -> None:
     """Validate annotations against one task-owned policy; empty partial work is valid."""
     policy = step.annotation
     assert policy is not None
     if any(annotation.kind == 'negative' for annotation in annotations) and len(annotations) != 1:
-        raise ValueError(f'{step.display_name} negative annotation conflicts with other annotations')
+        raise AnnotationValidationError(
+            'negative_conflict', f'{step.display_name} negative annotation conflicts with other annotations'
+        )
     if policy.maximum_annotations is not None and len(annotations) > policy.maximum_annotations:
-        raise ValueError(f'{step.display_name} allows at most {policy.maximum_annotations} annotations')
+        raise AnnotationValidationError(
+            'cardinality', f'{step.display_name} allows at most {policy.maximum_annotations} annotations'
+        )
     for annotation in annotations:
         if annotation.kind == 'negative':
             if policy.negative_label is None:
-                raise ValueError(f'{step.display_name} does not allow negative annotations')
+                raise AnnotationValidationError(
+                    'annotation_type', f'{step.display_name} does not allow negative annotations'
+                )
             if annotation.label is not None or annotation.geometry is not None:
-                raise ValueError(f'{step.display_name} negative annotations require null label and geometry')
+                raise AnnotationValidationError(
+                    'geometry', f'{step.display_name} negative annotations require null label and geometry'
+                )
             continue
         if annotation.kind not in step.kinds:
-            raise ValueError(f'{step.display_name} does not allow annotation kind {annotation.kind!r}')
+            raise AnnotationValidationError(
+                'annotation_type', f'{step.display_name} does not allow annotation kind {annotation.kind!r}'
+            )
         if annotation.label not in step.labels:
-            raise ValueError(f'{step.display_name} does not allow label {annotation.label!r}')
+            raise AnnotationValidationError('label', f'{step.display_name} does not allow label {annotation.label!r}')
         if annotation.kind == 'classification':
             if annotation.geometry is not None:
-                raise ValueError(f'{step.display_name} classification annotations require null geometry')
+                raise AnnotationValidationError(
+                    'geometry', f'{step.display_name} classification annotations require null geometry'
+                )
         elif annotation.kind == 'polyline':
             points = _points(annotation.geometry, policy.point_count)
             if len(points) == 2 and points[0] == points[1]:
-                raise ValueError(f'{step.display_name} line points must be distinct')
+                raise AnnotationValidationError(
+                    'coincident_points', f'{step.display_name} line points must be distinct'
+                )
         elif annotation.kind == 'rectangle':
             _points(annotation.geometry, 2)
         elif annotation.kind == 'polygon':
             if len(_points(annotation.geometry, None)) < 3:
-                raise ValueError(f'{step.display_name} polygons require at least three points')
+                raise AnnotationValidationError(
+                    'point_count', f'{step.display_name} polygons require at least three points'
+                )
 
 
 def step_complete(step: StepDefinition, annotations: tuple[EditAnnotation, ...]) -> bool:
@@ -46,16 +70,16 @@ def step_complete(step: StepDefinition, annotations: tuple[EditAnnotation, ...])
 
 def _points(geometry: JsonValue, point_count: int | None) -> tuple[tuple[float, float], ...]:
     if not isinstance(geometry, list) or (point_count is not None and len(geometry) != point_count):
-        raise ValueError(f'Annotation geometry requires exactly {point_count} points')
+        raise AnnotationValidationError('point_count', f'Annotation geometry requires exactly {point_count} points')
     points: list[tuple[float, float]] = []
     for point in geometry:
         if not isinstance(point, list) or len(point) != 2:
-            raise ValueError('Annotation points require exactly two coordinates')
+            raise AnnotationValidationError('geometry', 'Annotation points require exactly two coordinates')
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in point):
-            raise ValueError('Annotation coordinates must be numbers')
+            raise AnnotationValidationError('geometry', 'Annotation coordinates must be numbers')
         numeric = (float(point[0]), float(point[1]))
         if not all(isfinite(value) for value in numeric):
-            raise ValueError('Annotation coordinates must be finite')
+            raise AnnotationValidationError('geometry', 'Annotation coordinates must be finite')
         points.append(numeric)
     return tuple(points)
 

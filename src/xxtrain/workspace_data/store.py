@@ -27,7 +27,13 @@ from xxtrain.platform.contracts import (
 )
 from xxtrain.workspace_data.changes import plan_changes
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, image_sha256, perceptual_hash
-from xxtrain.workspace_data.editing import fingerprint_target, prepare_sync, project_target_frames, summarize_target
+from xxtrain.workspace_data.editing import (
+    fingerprint_target,
+    fingerprint_training,
+    prepare_sync,
+    project_target_frames,
+    summarize_target,
+)
 from xxtrain.workspace_data.repository import AnnotationRepository
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
@@ -155,6 +161,10 @@ class WorkspaceData:
     def target_fingerprint(self, target: str) -> str:
         """Hash one downstream target's current input facts and stable associations."""
         return fingerprint_target(target, self.images(), self._repository.annotations(), self._task)
+
+    def training_fingerprint(self, target: str) -> str:
+        """Hash current target facts plus task-declared dataset conversion semantics."""
+        return fingerprint_training(self.target_fingerprint(target), target, self._task)
 
     def detection_fingerprint(self) -> str:
         """Hash registered image identities and normalized detection business content."""

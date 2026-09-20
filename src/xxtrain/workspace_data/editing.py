@@ -106,6 +106,33 @@ def fingerprint_target(
     return sha256(payload).hexdigest()
 
 
+def fingerprint_training(target_fingerprint: str, target: str, task: TaskDefinition) -> str:
+    """Hash editable input identity with stable task-declared conversion semantics."""
+    step = task.step(target)
+    training = step.training
+    if training is None:
+        raise ValueError(f'Task step {target!r} does not define training conversion')
+    assert step.annotation is not None
+    payload = json.dumps(
+        {
+            'input': target_fingerprint,
+            'task': task.key,
+            'target': target,
+            'conversion': {
+                'key': training.conversion_key,
+                'labels': list(training.labels),
+                'task_type': training.settings.task_type.value,
+                'reserve_no_label': step.annotation.negative_label is not None,
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+        allow_nan=False,
+    ).encode('utf-8')
+    return sha256(payload).hexdigest()
+
+
 def prepare_sync(
     target: str,
     job: EditJob,

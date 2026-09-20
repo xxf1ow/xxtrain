@@ -70,6 +70,7 @@ class TargetTrainingDefinition:
     metric_name: str
     delivery: DeliveryDefinition
     labels: tuple[str, ...]
+    conversion_key: str
     encode_sample: Callable[[EditFrame, int, Context], EncodeOutput | ClassifyOutput]
 
 
@@ -139,6 +140,13 @@ class TaskDefinition:
                 raise ValueError(f'Task step {step.key!r} requires annotation kinds')
             if not step.labels:
                 raise ValueError(f'Task step {step.key!r} requires labels')
+            if step.training is not None and (
+                not isinstance(step.training.conversion_key, str)
+                or not step.training.conversion_key
+                or not step.training.labels
+                or any(not isinstance(label, str) or not label for label in step.training.labels)
+            ):
+                raise ValueError(f'Task step {step.key!r} requires training labels and a conversion key')
             assert step.annotation is not None
             expected_kinds = {
                 'tag': frozenset({'classification'}),

@@ -65,6 +65,7 @@ class TaskAnnotationServiceTest(unittest.TestCase):
                 metric_name='Regions',
                 delivery=DeliveryDefinition(labels=False, reference_images=False),
                 labels=('part',),
+                conversion_key='synthetic-rectangles-v1',
                 encode_sample=encode_rectangles,
             ),
             'kind': TargetTrainingDefinition(
@@ -73,6 +74,7 @@ class TaskAnnotationServiceTest(unittest.TestCase):
                 metric_name='Kind',
                 delivery=DeliveryDefinition(labels=True, reference_images=True),
                 labels=('a', 'b'),
+                conversion_key='synthetic-classification-v1',
                 encode_sample=encode_classification,
             ),
             'subregions': TargetTrainingDefinition(
@@ -81,6 +83,7 @@ class TaskAnnotationServiceTest(unittest.TestCase):
                 metric_name='Subregions',
                 delivery=DeliveryDefinition(labels=False, reference_images=False),
                 labels=('part',),
+                conversion_key='synthetic-nested-rectangles-v1',
                 encode_sample=encode_rectangles,
             ),
         }
@@ -114,6 +117,73 @@ class TaskAnnotationServiceTest(unittest.TestCase):
 
         self._admit_image('second.png', 23)
         self.assertFalse({row.id: row for row in self.service.view(17).targets}['details'].can_annotate)
+
+    def test_training_fingerprint_is_conversion_scoped_without_changing_edit_job_identity(self) -> None:
+        image_id = self._admit_image()
+        region_id = uuid4()
+        self.repository.save_annotations(
+            (AnnotationRecord(region_id, image_id, 'regions', None, 'rectangle', 'part', [[2, 3], [26, 20]]),)
+        )
+        task = self._cache_task()
+        data = WorkspaceData(self.workspace, task)
+        raw_fingerprint = data.target_fingerprint('kind')
+        training_fingerprint = data.training_fingerprint('kind')
+        frames = data.target_frames('kind', self.config.runtime_dir)
+        job = EditJob(JobRef(7, 8, (image_id,)), tuple(frame.mapping for frame in frames))
+        runtime = RuntimeCache(self.config.runtime_dir)
+        runtime.remember_edit_job('kind', raw_fingerprint, job)
+        base_training = task.step('kind').training
+        assert base_training is not None
+
+        def replace_kind(**changes) -> TaskDefinition:
+            training = replace(base_training, **changes)
+            return replace(
+                task,
+                steps=tuple(replace(step, training=training) if step.key == 'kind' else step for step in task.steps),
+            )
+
+        changed_tasks = (
+            replace_kind(labels=('b', 'a')),
+            replace_kind(conversion_key='synthetic-classification-v2'),
+            replace(task, key='synthetic-v2'),
+            replace_kind(settings=replace(base_training.settings, task_type=TaskType.DETECT)),
+        )
+        for changed in changed_tasks:
+            with self.subTest(task=changed.key, training=changed.step('kind').training):
+                changed_data = WorkspaceData(self.workspace, changed)
+                self.assertEqual(raw_fingerprint, changed_data.target_fingerprint('kind'))
+                self.assertNotEqual(training_fingerprint, changed_data.training_fingerprint('kind'))
+                self.assertEqual(job, runtime.edit_job_for('kind', changed_data.target_fingerprint('kind')))
+
+        settings_only = replace_kind(
+            settings=replace(base_training.settings, model_version='v11', model_scale='s', train_args={'epochs': 1})
+        )
+        callback_only = replace_kind(
+            encode_sample=lambda frame, index, context: encode_classification(frame, index, context)
+        )
+        for unchanged in (settings_only, callback_only):
+            self.assertEqual(
+                training_fingerprint, WorkspaceData(self.workspace, unchanged).training_fingerprint('kind')
+            )
+
+        region_step = task.step('regions')
+        assert region_step.annotation is not None
+        negative_task = replace(
+            task,
+            steps=tuple(
+                replace(
+                    step,
+                    kinds=frozenset({'rectangle', 'negative'}),
+                    annotation=replace(region_step.annotation, negative_label='empty'),
+                )
+                if step.key == 'regions'
+                else step
+                for step in task.steps
+            ),
+        )
+        negative_data = WorkspaceData(self.workspace, negative_task)
+        self.assertEqual(data.target_fingerprint('regions'), negative_data.target_fingerprint('regions'))
+        self.assertNotEqual(data.training_fingerprint('regions'), negative_data.training_fingerprint('regions'))
 
     def test_cvat_task_creation_uses_policy_native_types_and_negative_label(self) -> None:
         requests = []
@@ -280,7 +350,7 @@ class TaskAnnotationServiceTest(unittest.TestCase):
 
         for target in ('regions', 'kind', 'subregions'):
             with self.subTest(target=target):
-                fingerprint = data.target_fingerprint(target)
+                fingerprint = data.training_fingerprint(target)
                 destination = self.config.runtime_dir / 'cache' / fingerprint
                 report = build_target_cache(data, target, self.config.runtime_dir, destination)
                 self.assertTrue(report.train_items)

@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
-from xxtrain.business_tasks import validate_step_annotations
+from xxtrain.business_tasks import AnnotationValidationError, validate_step_annotations
+from xxtrain.business_tasks.definition import StepDefinition
 from xxtrain.platform.config import WorkspaceConfig
 from xxtrain.platform.contracts import (
     EditFrameResult,
     EditJob,
+    FrameMapping,
     JobRef,
     PlatformAccessError,
     PlatformConflictError,
@@ -75,7 +77,7 @@ class AnnotationService:
             can_annotate = summary.sample_count > 0 and dependencies_complete
             can_generate_cache = can_annotate and complete[step.key] and step.training is not None
             cache_ready = can_generate_cache and self.runtime.has_target_cache(
-                step.key, self.data.target_fingerprint(step.key)
+                step.key, self.data.training_fingerprint(step.key)
             )
             targets.append(
                 TargetView(
@@ -200,7 +202,7 @@ class AnnotationService:
         target_view = self._target_view(view, target)
         if not target_view.can_generate_cache:
             raise PlatformError(f'{target.title()} cache requires every input sample to be annotated')
-        fingerprint = self.data.target_fingerprint(target)
+        fingerprint = self.data.training_fingerprint(target)
         if not target_view.cache_ready:
             if self.require_cache_rebuild is not None:
                 self.require_cache_rebuild(self.config.workspace_id, target, fingerprint)
@@ -212,9 +214,9 @@ class AnnotationService:
     def _validate_edit_results(self, target: str, job: EditJob, results: tuple[EditFrameResult, ...]) -> None:
         if tuple(result.frame_id for result in results) != tuple(frame.frame_id for frame in job.frames):
             raise ValueError('Edit results do not match the current frame order')
+        step = self.data.task.step(target)
         for index, (frame, result) in enumerate(zip(job.frames, results, strict=True)):
             try:
-                step = self.data.task.step(target)
                 validate_step_annotations(step, result.annotations)
                 width = frame.bounds[2] - frame.bounds[0]
                 height = frame.bounds[3] - frame.bounds[1]
@@ -222,15 +224,11 @@ class AnnotationService:
                     if annotation.geometry is not None:
                         for point in annotation.geometry:
                             if not 0 <= float(point[0]) <= width or not 0 <= float(point[1]) <= height:
-                                raise ValueError('Annotation point lies outside the frame')
+                                raise AnnotationValidationError('bounds', 'Annotation point lies outside the frame')
             except (TypeError, ValueError) as error:
                 assert step.annotation is not None
                 path = self._annotation_path(job.ref, step.annotation.workspace, frame=index)
-                negative = step.annotation.negative_label
-                if negative is not None and any(item.kind == 'negative' for item in result.annotations):
-                    reason = f'“{negative}”标签不能与其他标注同时存在。'
-                else:
-                    reason = '标注数量、类型、标签或坐标不符合当前任务规则。'
+                reason = _safe_validation_reason(step, frame, error)
                 raise TargetValidationError(f'样本 {index + 1}：{reason}请返回当前任务修正。', path) from error
 
     def _annotation_path(self, ref: JobRef, workspace: str, *, frame: int | None = None) -> str:
@@ -267,3 +265,32 @@ class AnnotationService:
     def _require_owner(self, user_id: int) -> None:
         if user_id != self.config.owner_user_id:
             raise PlatformAccessError('Workspace access denied')
+
+
+def _safe_validation_reason(step: StepDefinition, frame: FrameMapping, error: Exception) -> str:
+    """Format one structured task-rule failure without exposing backend diagnostics."""
+    if not isinstance(error, AnnotationValidationError):
+        return '标注数量、类型、标签或坐标不符合当前任务规则。'
+    assert step.annotation is not None
+    policy = step.annotation
+    if error.reason == 'negative_conflict' and policy.negative_label is not None:
+        return f'“{policy.negative_label}”标签不能与其他标注同时存在。'
+    if error.reason == 'cardinality':
+        if policy.maximum_annotations == 1 and policy.cvat_type == 'tag':
+            return f'每{step.sample_unit}只能保留一个{step.display_name}标签，请删除多余标签。'
+        return f'每{step.sample_unit}最多允许 {policy.maximum_annotations} 条标注，请删除多余标注。'
+    if error.reason == 'point_count':
+        if policy.point_count == 2:
+            return '每条线必须恰好有两个点，请删除错误线并用两点重新绘制。'
+        if policy.point_count is not None:
+            return f'每个标注必须恰好有 {policy.point_count} 个点，请重新绘制。'
+        return '标注点数量不符合当前任务规则，请重新绘制。'
+    if error.reason == 'coincident_points':
+        return '线的两个端点不能重合，请重新绘制有长度的线。'
+    if error.reason == 'bounds':
+        subject = {'polyline': '线的端点', 'rectangle': '矩形端点', 'polygon': '多边形顶点'}.get(
+            policy.cvat_type, '标注点'
+        )
+        image_kind = '裁剪图' if frame.parent_id is not None else '图片'
+        return f'{subject}必须位于{image_kind}内，请将越界点移回图内。'
+    return '标注数量、类型、标签或坐标不符合当前任务规则。'

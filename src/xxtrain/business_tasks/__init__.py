@@ -1,4 +1,10 @@
-from .annotation_rules import step_complete, target_complete, validate_step_annotations, validate_target_annotations
+from .annotation_rules import (
+    AnnotationValidationError,
+    step_complete,
+    target_complete,
+    validate_step_annotations,
+    validate_target_annotations,
+)
 from .definition import (
     AnnotationPolicy,
     DeliveryDefinition,
@@ -12,6 +18,7 @@ from .point import MODEL_TARGETS, POINT_BOX_LABELS, POINT_CLASSIFY_OVERRIDES, po
 
 __all__ = [
     'AnnotationPolicy',
+    'AnnotationValidationError',
     'DEFAULT_TASK_ENTRY',
     'DeliveryDefinition',
     'InputAdapter',

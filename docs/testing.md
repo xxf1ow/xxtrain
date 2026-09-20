@@ -63,7 +63,7 @@ Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQ
 uv run --locked --extra platform python -m unittest test.test_platform_point_workflow -v
 ```
 
-任务定义驱动的标注协调回归使用非 Point 定义和真实 SQLite、HTTPX CVAT 传输及缓存发布，覆盖并行与嵌套依赖、根与裁剪矩形、分类、负样本 Tag 和三类缓存：
+任务定义驱动的标注协调回归使用非 Point 定义和真实 SQLite、HTTPX CVAT 传输及缓存发布，覆盖并行与嵌套依赖、根与裁剪矩形、分类、负样本 Tag、三类缓存，以及编辑与训练指纹分离。该回归验证任务标识、训练类型、有序标签、负样本处理和显式转换键改变训练身份但不丢弃待回收 Job，并验证模型设置与 callable 身份不影响训练输入：
 
 ```powershell
 uv run --locked --extra platform python -m unittest test.test_task_annotation_service -v
@@ -75,7 +75,7 @@ uv run --locked --extra platform python -m unittest test.test_task_annotation_se
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_workflow -v
 ```
 
-负样本 Tag 的往返、撤销、初始化核对、类型约束和冲突原子性运行 `python -m unittest test.test_platform_negative_tags -v`；分类默认布局及修正链接同时运行 `test.test_platform_downstream_service` 和 `test.test_platform_browser`。训练空标签与门槛由 `test.test_platform_data`、`test.test_platform_service` 覆盖，真实 CVAT 工具显示仍需部署验收。
+负样本 Tag 的往返、撤销、初始化核对、类型约束和冲突原子性运行 `python -m unittest test.test_platform_negative_tags -v`；分类默认布局及修正链接同时运行 `test.test_platform_downstream_service` 和 `test.test_platform_browser`。页面回收回归分别断言分类数量、line 点数、端点重合、裁剪边界和负样本冲突的安全修正说明，未知后端异常只能返回通用说明。训练空标签与门槛由 `test.test_platform_data`、`test.test_platform_service` 覆盖，真实 CVAT 工具显示仍需部署验收。
 
 HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与错误脱敏、严格目标路由及安全修正响应，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖 SQLite 派生计数、50 张有框原图门槛、裁剪图完成条件、稳定对象身份、下游 Job 失效、同步失败顺序、重启恢复、跨线程读取和三个缓存发布。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、三行计数、写操作互斥、逐行缓存按钮、每标签页返回目标、修正链接及同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT 的 tag/polyline 编辑与返回修正、浏览器布局、镜像注入和代理连通性属于部署验收。
 

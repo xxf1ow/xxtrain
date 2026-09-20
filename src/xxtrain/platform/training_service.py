@@ -27,11 +27,7 @@ class TrainingService:
     def submit(self, user_id: int, target: str) -> TrainingRunView:
         """Return the canonical run for the user's current target input, creating it when absent."""
         with self.annotations.mutation(user_id):
-            fingerprint = (
-                self.annotations.data.detection_fingerprint()
-                if target == 'detect'
-                else self.annotations.data.target_fingerprint(target)
-            )
+            fingerprint = self.annotations.data.training_fingerprint(target)
             existing = self.store.find_input(user_id, self.config.workspace_id, target, fingerprint)
             if existing is not None:
                 run = existing
@@ -118,11 +114,7 @@ class TrainingService:
             workspace_runs = self.store.list_workspace(self.config.workspace_id)
             fingerprints = {}
             for target in ('detect', 'classify', 'segment'):
-                fingerprints[target] = (
-                    self.annotations.data.detection_fingerprint()
-                    if target == 'detect'
-                    else self.annotations.data.target_fingerprint(target)
-                )
+                fingerprints[target] = self.annotations.data.training_fingerprint(target)
         visible_runs = tuple(self._view(run) for run in user_runs)
         active_runs = tuple(self._view(run) for run in workspace_runs)
         latest = {

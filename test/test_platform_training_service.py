@@ -171,7 +171,7 @@ class TrainingServiceTests(unittest.TestCase):
         clearml_task_id=None,
         submitted_at='2026-09-17T12:00:00+00:00',
     ):
-        fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
+        fingerprint = self.data.training_fingerprint(target)
         return TrainingRunStore(self.store_path).create(
             TrainingRun(
                 str(uuid4()),
@@ -197,8 +197,13 @@ class TrainingServiceTests(unittest.TestCase):
         self.backend.complete(runs[2].run.clearml_task_id)
         self.service.require_editable(self.workspace_id)
 
+    def test_submit_uses_training_conversion_fingerprint(self):
+        submitted = self.service.submit(self.owner, 'classify')
+
+        self.assertEqual(self.data.training_fingerprint('classify'), submitted.run.fingerprint)
+
     def test_workspace_view_uses_workspace_runs_for_lock_and_user_runs_for_visibility(self):
-        fingerprint = self.data.detection_fingerprint()
+        fingerprint = self.data.training_fingerprint('detect')
         store = TrainingRunStore(self.store_path)
         other_workspace = store.create(
             TrainingRun(

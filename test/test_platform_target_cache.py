@@ -115,7 +115,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
         frames = self.data.target_frames('classify', self.runtime_root)
         crop_mtimes = {frame.image_path: frame.image_path.stat().st_mtime_ns for frame in frames}
         database_before = (self.workspace_root / 'annotations.db').read_bytes()
-        destination = self.runtime_root / 'cache' / self.data.target_fingerprint('classify')
+        destination = self.runtime_root / 'cache' / self.data.training_fingerprint('classify')
 
         report = build_target_cache(self.data, 'classify', self.runtime_root, destination)
 
@@ -170,7 +170,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
     def test_builds_segment_with_existing_triangle_encoder_and_independent_crop_copies(self) -> None:
         frames = self.data.target_frames('segment', self.runtime_root)
         database_before = (self.workspace_root / 'annotations.db').read_bytes()
-        destination = self.runtime_root / 'cache' / self.data.target_fingerprint('segment')
+        destination = self.runtime_root / 'cache' / self.data.training_fingerprint('segment')
 
         report = build_target_cache(self.data, 'segment', self.runtime_root, destination)
 
@@ -219,7 +219,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
         self.assertEqual(2, len(lines))
 
     def test_runtime_readiness_requires_exact_manifest_and_target_directory(self) -> None:
-        fingerprint = self.data.target_fingerprint('classify')
+        fingerprint = self.data.training_fingerprint('classify')
         destination = self.runtime_root / 'cache' / fingerprint
         runtime = RuntimeCache(self.runtime_root)
         self.assertFalse(runtime.has_target_cache('classify', fingerprint))
@@ -244,7 +244,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
         self.assertTrue(runtime.has_target_cache('classify', fingerprint))
 
     def test_publication_failure_does_not_mark_cache_ready(self) -> None:
-        fingerprint = self.data.target_fingerprint('segment')
+        fingerprint = self.data.training_fingerprint('segment')
         destination = self.runtime_root / 'cache' / fingerprint
         with patch('xxtrain.platform.target_cache.os.replace', side_effect=OSError('publish failed')):
             with self.assertRaisesRegex(OSError, 'publish failed'):

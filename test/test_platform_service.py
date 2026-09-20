@@ -346,7 +346,7 @@ class AnnotationServiceTest(unittest.TestCase):
         self.create_workspace(boxed=50, negatives=1)
         view = self.service.generate_detection_cache(17)
         self.assertTrue(view.detection_cache_ready)
-        output = self.config.runtime_dir / 'cache' / self.data.detection_fingerprint() / 'detect'
+        output = self.config.runtime_dir / 'cache' / self.data.training_fingerprint('detect') / 'detect'
         labels = list((output / 'workspace').glob('*.txt'))
         self.assertEqual(51, len(labels))
         self.assertEqual(50, sum(bool(path.read_text(encoding='utf-8')) for path in labels))

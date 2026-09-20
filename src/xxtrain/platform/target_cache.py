@@ -45,7 +45,7 @@ def build_target_cache(data: WorkspaceData, target: str, runtime_root: Path, des
         _rewrite_report_paths(context.report, temporary, destination)
         sink.finalize(context)
         _rewrite_dataset_root(temporary, target, destination)
-        manifest = {'fingerprint': data.target_fingerprint(target), 'target': target}
+        manifest = {'fingerprint': data.training_fingerprint(target), 'target': target}
         (temporary / 'manifest.json').write_text(
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(',', ':')), encoding='utf-8'
         )

@@ -541,15 +541,14 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                 cvat.expect(data.target_frames(target, config.runtime_dir))
                 service.begin_target(17, target)
             cases = (
-                ('classify', None),
-                ('segment', [20, 20, 50, 50, 80, 80]),
-                ('segment', [20, 20, 20, 20]),
-                ('segment', [20, 20, 999, 999]),
+                ('classify', None, '只能保留一个分类标签'),
+                ('segment', [20, 20, 50, 50, 80, 80], '必须恰好有两个点'),
+                ('segment', [20, 20, 20, 20], '两个端点不能重合'),
+                ('segment', [20, 20, 999, 999], '端点必须位于裁剪图内'),
             )
             originals = {target: copy.deepcopy(cvat.job(target)['annotations']) for target in ('classify', 'segment')}
-            reason = '标注数量、类型、标签或坐标不符合当前任务规则'
-            for target, points in cases:
-                with self.subTest(target=target, points=points):
+            for target, points, reason in cases:
+                with self.subTest(reason=reason):
                     payload = copy.deepcopy(originals[target])
                     if target == 'classify':
                         payload['tags'].append({**payload['tags'][0], 'id': 9999})
@@ -579,7 +578,7 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
             with patch('xxtrain.platform.service.validate_step_annotations', side_effect=ValueError(secret)):
                 response = client.post('/platform/api/targets/classify/sync', headers=headers, json={})
             self.assertEqual(409, response.status_code)
-            self.assertIn(reason, response.json()['detail'])
+            self.assertIn('标注数量、类型、标签或坐标不符合当前任务规则', response.json()['detail'])
             self.assertNotIn(secret, response.text)
             self.assertNotIn('password', response.text)
 
@@ -1320,7 +1319,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.locator('#segment-cache-action').click()
         expect(page.locator('#segment-cache-action')).to_have_text('训练缓存已生成')
         for target in ('classify', 'segment'):
-            fingerprint = data.target_fingerprint(target)
+            fingerprint = data.training_fingerprint(target)
             publication = Path(self.receipt['runtime_dir']) / 'cache' / fingerprint
             self.assertEqual(
                 {'fingerprint': fingerprint, 'target': target},

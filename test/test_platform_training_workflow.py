@@ -207,7 +207,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         create_attempted_at: str | None = None,
         clearml_task_id: str | None = None,
     ) -> TrainingRun:
-        fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
+        fingerprint = self.data.training_fingerprint(target)
         cache_path = self.annotations.ensure_target_cache(self.owner, target)
         cache_relative_path = cache_path.resolve().relative_to((self.config.runtime_dir / 'cache').resolve()).as_posix()
         return TrainingRunStore(self.store_path).create(
