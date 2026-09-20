@@ -41,10 +41,13 @@ class PlatformSqliteTest(unittest.TestCase):
                 ),
                 StepDefinition(
                     'segment',
-                    frozenset({'polygon', 'polyline'}),
+                    frozenset({'polygon'}),
                     frozenset({'mask'}),
                     frozenset({'detect'}),
                     frozenset({'classify'}),
+                ),
+                StepDefinition(
+                    'lines', frozenset({'polyline'}), frozenset({'mask'}), frozenset({'detect'}), frozenset()
                 ),
             )
         )
@@ -166,7 +169,7 @@ class PlatformSqliteTest(unittest.TestCase):
         )
         for kind, geometry in invalid_geometry:
             label = 'box' if kind == 'rectangle' else 'mask'
-            step = 'detect' if kind == 'rectangle' else 'segment'
+            step = {'rectangle': 'detect', 'polygon': 'segment', 'polyline': 'lines'}[kind]
             parent_id = None
             if step == 'segment':
                 parent = AnnotationRecord(uuid4(), image.id, 'detect', None, 'rectangle', 'box', [[1, 2], [30, 40]])

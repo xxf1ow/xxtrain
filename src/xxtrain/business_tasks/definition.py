@@ -9,7 +9,8 @@ class AnnotationPolicy:
     """Native CVAT metadata and per-sample annotation cardinality for one step.
 
     ``negative_label`` enables an image-level negative record alongside rectangle annotations; the record
-    itself retains null business label and geometry.
+    itself retains null business label and geometry. Construction raises ``ValueError`` for empty or non-string
+    CVAT metadata, negative or non-integer cardinalities, or a maximum below the minimum.
     """
 
     cvat_type: str
@@ -20,7 +21,7 @@ class AnnotationPolicy:
     negative_label: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.cvat_type or not self.workspace:
+        if any(not isinstance(value, str) or not value for value in (self.cvat_type, self.workspace)):
             raise ValueError('Annotation policy type and workspace must be non-empty')
         for name in ('minimum_annotations', 'maximum_annotations', 'point_count'):
             value = getattr(self, name)
@@ -64,8 +65,6 @@ class StepDefinition:
         if self.annotation is None:
             if self.kinds == {'rectangle', 'negative'}:
                 policy = AnnotationPolicy('rectangle', 'STANDARD', negative_label='negative')
-            elif self.kinds == {'polygon', 'polyline'}:
-                policy = AnnotationPolicy('shapes', 'STANDARD')
             else:
                 native = next(iter(self.kinds)) if len(self.kinds) == 1 else ''
                 policy = AnnotationPolicy('tag' if native == 'classification' else native, 'STANDARD')
@@ -111,7 +110,6 @@ class TaskDefinition:
                 'rectangle': frozenset({'rectangle'}),
                 'polyline': frozenset({'polyline'}),
                 'polygon': frozenset({'polygon'}),
-                'shapes': frozenset({'polygon', 'polyline'}),
             }.get(step.annotation.cvat_type)
             if expected_kinds is None:
                 raise ValueError(f'Task step {step.key!r} has unsupported native annotation type')
