@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-本文是已生效的设计与审查规范，不代表所有代码自动符合。训练意图协调与新建 CVAT Task 准备已有离线实现和联合回归，[训练意图协调与 CVAT 准备简化](../../proposed/simplification/2026-09-18-authoritative-state-coordination.md)记录具体机制及仍待完成的真实服务验收；[训练输入唯一性](../../proposed/simplification/2026-09-17-training-input-identity.md)继续拥有运行身份与输入规则。
+本文是已生效的设计与审查规范，不代表所有代码自动符合。训练意图协调与新建 CVAT Task 准备已有离线实现和联合回归，[训练意图协调与 CVAT 准备简化](../simplification/2026-09-18-authoritative-state-coordination.md)记录具体机制及验收覆盖边界；[训练输入唯一性](../simplification/2026-09-17-training-input-identity.md)继续拥有运行身份与输入规则。
 
 ### Authority and derivation
 
@@ -45,7 +45,7 @@ Status: implemented
 | 根据保存的 `initializing` / `initialized` 决定覆盖或读取 CVAT 标注 | 执行阶段取代对实际标注的核实，可能阻断恢复或重复初始化 | 无恢复需求时删除检查点接口；需要恢复时核实实际产物，歧义时不覆盖 |
 | 页面和后端分别维护是否可编辑，提交与读取各有恢复分支 | 相同事实产生不同权限或不同外部动作 | 共用派生规则与执行协调入口 |
 
-审查基线 `ade684d` 的 `TrainingService` 与 ClearML 适配器曾包含训练读取恢复、取消意图缺失及执行结束与产物耦合；当时的 CVAT 准备接口也混合实际图片核验与阶段检查点。当前实现按[训练意图协调与 CVAT 准备简化](../../proposed/simplification/2026-09-18-authoritative-state-coordination.md)分离查询与协调、保存训练意图并删除未使用的 CVAT 阶段接口。该提案记录离线实现证据和仍待完成的真实服务验收；本规范只拥有通用设计规则。
+审查基线 `ade684d` 的 `TrainingService` 与 ClearML 适配器曾包含训练读取恢复、取消意图缺失及执行结束与产物耦合；当时的 CVAT 准备接口也混合实际图片核验与阶段检查点。当前实现按[训练意图协调与 CVAT 准备简化](../simplification/2026-09-18-authoritative-state-coordination.md)分离查询与协调、保存训练意图并删除未使用的 CVAT 阶段接口。该记录保留离线回归证据与真实验收覆盖边界；本规范只拥有通用设计规则。
 
 ### Review and verification
 
@@ -69,4 +69,4 @@ Status: implemented
 
 现有训练提案保留其产品与部署约束；本文替代其中“认证读取恢复入队”的设计许可。训练查询保持只读，持久意图由命令和应用生命周期协调。运行行为的离线证据与真实服务验收差距由具体修正提案承担。
 
-具体修正范围由[训练意图协调与 CVAT 准备简化](../../proposed/simplification/2026-09-18-authoritative-state-coordination.md)所有；本文不复制协调周期、持久字段或迁移细节。
+具体修正范围由[训练意图协调与 CVAT 准备简化](../simplification/2026-09-18-authoritative-state-coordination.md)所有；本文不复制协调周期、持久字段或迁移细节。

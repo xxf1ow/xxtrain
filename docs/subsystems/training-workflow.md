@@ -42,6 +42,8 @@
 
 `train_prepared()` 直接消费已发布的数据集目录。它在独立 `run_dir` 中以配置模型名生成 YAML，并生成 split 列表、标签副本和一次性图片副本；模型 basename 使 Ultralytics 选择 `model_scale` 对应的结构，其他副本使图片修复、cache、run、checkpoint 和 ONNX 写入都不触及发布树。每次运行仍只从共用默认权重缓存初始化，不使用历史训练 checkpoint。训练回调以从 1 开始的已完成 epoch 上报进度；best checkpoint 存在时，导出和验证指标均来自该 checkpoint。这些副本增加每次运行的传输与磁盘占用，但只属于当次 run，不是持久从机数据缓存。
 
+图片列表保留缓存入口路径：图片可以是软链接，配套 `.txt` 标签仍从该入口旁读取，不能先解析图片链接再推导标签路径。`on_validation` 只在训练中的实际验证完成后返回该轮 epoch 和新指标；跳过验证的轮次不触发，最终 best checkpoint 的指标由返回值提供。ClearML worker 在每 5 轮的验证完成事件上更新主要指标，训练完成后以实际交付模型的验证结果覆盖；验证频率改为每 10 轮时，中间轮次保留上次已上报结果，不复制旧指标为新观测，也不额外执行验证。
+
 ## Export and review
 
 `xxtrain export` 从已有 checkpoint 独立导出带时间戳的 ONNX。分类模型同时从生成数据集的每个训练类别复制一张参考图片；类别目录没有可用图片时导出失败。

@@ -164,6 +164,55 @@ class ClearMLWorkerTests(unittest.TestCase):
         self.task.mark_failed.assert_called_once()
         self.task.mark_completed.assert_not_called()
 
+    def test_worker_reports_fresh_validation_every_five_epochs_and_final_best_result(self):
+        for interval in (1, 10):
+            with self.subTest(validation_interval=interval):
+                task = Mock()
+                logger = task.get_logger.return_value
+
+                def train(_settings, _dataset, _run, *, on_progress, on_validation):
+                    for epoch in range(1, 81):
+                        progress = TrainingProgress(epoch, 80)
+                        on_progress(progress)
+                        if epoch % interval == 0:
+                            on_validation(progress, {'metrics/mAP50-95(B)': epoch / 100})
+                    return TrainingResult(self.root / 'model.onnx', {0: 'Point'}, {'metrics/mAP50-95(B)': 0.9})
+
+                argv = self.argv()
+                argv[argv.index('--run-id') + 1] = str(uuid4())
+                with (
+                    patch('xxtrain.integrations.clearml.worker._task_init', return_value=task),
+                    patch('xxtrain.integrations.clearml.worker.train_prepared', side_effect=train),
+                    patch('xxtrain.integrations.clearml.worker.build_delivery', return_value=self.root / 'model.onnx'),
+                ):
+                    main(argv)
+
+                actual = [
+                    (call.kwargs['iteration'], call.kwargs['value'])
+                    for call in logger.report_scalar.call_args_list
+                    if call.kwargs['title'] == 'validation'
+                ]
+                cadence = 5 if interval == 1 else 10
+                self.assertEqual([(epoch, epoch / 100) for epoch in range(cadence, 81, cadence)] + [(80, 0.9)], actual)
+                self.assertEqual(('xxtrain/metric', 0.9), task.set_parameter.call_args.args)
+
+    def test_missing_final_metric_does_not_leave_an_intermediate_score_as_final(self):
+        def train(_settings, _dataset, _run, *, on_progress, on_validation):
+            on_validation(TrainingProgress(5, 80), {'metrics/mAP50-95(B)': 0.0})
+            on_validation(TrainingProgress(10, 80), {})
+            return TrainingResult(self.root / 'model.onnx', {0: 'Point'}, {})
+
+        with (
+            patch('xxtrain.integrations.clearml.worker._task_init', return_value=self.task),
+            patch('xxtrain.integrations.clearml.worker.train_prepared', side_effect=train),
+            patch('xxtrain.integrations.clearml.worker.build_delivery', return_value=self.root / 'model.onnx'),
+        ):
+            main(self.argv())
+
+        reports = self.task.get_logger.return_value.report_scalar.call_args_list
+        self.assertEqual([(5, 0.0)], [(call.kwargs['iteration'], call.kwargs['value']) for call in reports])
+        self.assertEqual(('xxtrain/metric', None), self.task.set_parameter.call_args.args)
+
     @patch('xxtrain.integrations.clearml.worker._task_init')
     @patch('xxtrain.integrations.clearml.worker.build_delivery')
     @patch('xxtrain.integrations.clearml.worker.train_prepared')

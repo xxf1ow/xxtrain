@@ -18,7 +18,13 @@ def train_prepared(
     run_dir: Path,
     *,
     on_progress: Callable[[TrainingProgress], None] | None = None,
+    on_validation: Callable[[TrainingProgress, Mapping[str, float]], None] | None = None,
 ) -> TrainingResult:
+    """Train from an isolated copy and export the best checkpoint.
+
+    Progress follows training epochs. Validation callbacks carry only newly computed in-training metrics;
+    skipped validations emit nothing, and final best-checkpoint metrics are returned in the result.
+    """
     dataset_dir = Path(dataset_dir).resolve()
     run_dir = Path(run_dir).resolve()
     _validate_separate_trees(dataset_dir, run_dir)
@@ -36,6 +42,16 @@ def train_prepared(
         model.add_callback(
             'on_train_epoch_end', lambda trainer: on_progress(TrainingProgress(trainer.epoch + 1, trainer.epochs))
         )
+    if on_validation is not None:
+
+        def validation_complete(validator):
+            if validator.training:
+                on_validation(
+                    TrainingProgress(model.trainer.epoch + 1, model.trainer.epochs),
+                    _numeric_metrics(validator.metrics.results_dict),
+                )
+
+        model.add_callback('on_val_end', validation_complete)
 
     arguments = training_arguments(settings)
     arguments.update(project=run_dir, name='training')
@@ -112,7 +128,8 @@ def _resolve_metadata_path(dataset_dir: Path, value: str) -> Path:
 
 
 def _read_paths(path: Path) -> list[Path]:
-    return [Path(line.strip()).resolve() for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    # Labels belong beside the listed cache entry, not beside a symlink's source image.
+    return [Path(line.strip()).absolute() for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
 def _copy_image(source: Path, target: Path) -> None:

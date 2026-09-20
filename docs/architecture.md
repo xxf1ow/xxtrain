@@ -2,7 +2,7 @@
 
 ## Scope
 
-xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射，以及供现场人员完成检测、分类、指针分割标注和自助训练的可恢复业务流程。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)和 [Point 三模型数据准备](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md)均已通过离线回归和真实人工验收。训练提交协调、工作区编辑保护和独立用户任务页面已有离线实现；真实 ClearML 服务验收尚未完成。
+xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射，以及供现场人员完成检测、分类、指针分割标注和自助训练的可恢复业务流程。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)和 [Point 三模型数据准备](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md)均已通过离线回归和真实人工验收。训练提交协调、工作区编辑保护和独立用户任务页面通过离线回归，三个模型完成真实 ClearML、Agent、GPU 训练及人工验收；证据与限制见 [训练闭环记录](agent-notes/implemented/feature/2026-09-17-point-training-loop.md#live-acceptance-and-limitations)。
 
 项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测、分类和指针分割标注入口。
 
@@ -33,7 +33,7 @@ Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合�
 - `xxtrain.platform.training_service` 在标注写互斥内计算当前输入指纹，返回该用户和目标已有的输入运行，或在资格与缓存准备完成后创建带执行意图的服务端运行身份；提交和取消先持久保存意图，再由同一协调入口根据原 ClearML 任务事实创建、绑定、核验启动配置、入队或停止。只有命令和生命周期协调可以执行这些写操作；列表、详情和工作区投影只观察本地与远端事实，不修复关联或触发 ClearML 写入。工作区编辑保护检查配置工作区的全部运行，按钮只投影当前用户、当前工作区和当前输入，用户历史仍可显示其其他工作区运行。未尝试的执行意图显示为待处理并锁定编辑，未尝试的取消意图可由本地事实确认未执行，旧 NULL 意图只供观察。终态执行与部署产物资格分别派生，远端缺失、歧义、启动配置不完整或执行查询失败继续锁定编辑；完成但缺少部署产物的运行解除编辑限制但不能下载。提供训练配置时，平台组合根在独立元数据目录构造运行账本和使用有限请求边界的 ClearML 适配器，并把实时编辑保护及运行引用缓存的重建保护绑定到 `AnnotationService`；省略训练配置时保留仅标注启动方式；
 - `xxtrain.integrations.clearml` 通过可选 ClearML SDK 创建、核验、入队、观察和取消训练任务，并提供普通 Agent 执行入口；任务使用运行 UUID 作为初始名称恢复关联，创建部分成功时只补齐同一未执行任务的无冲突启动事实。Agent 从任务 `Args/*` 参数取得输入身份，从共享发布缓存调用训练核心，只上传固定名称的部署产物；
 - `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换检测矩形与图片级负样本 Tag；负样本按原图映射回收，删除 Tag 撤销确认，框与负样本冲突时返回修正链接且不写入。`xxtrain.integrations.cvat.edit_codec` 按 `EditJob.frames` 的精确顺序转换分类 tag 和指针 polyline。需要对象身份的标注只在初始化时用临时 UUID 令牌关联 CVAT 原生 ID，常规回收只返回原生 ID；
-- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并只为 Task 响应以整数 `0` 明确证明无图片的新建 Task 顺序上传检测或编辑图片、轮询请求、核对实际 frame、单次初始化标注、解码原生对象映射并分配 Job；未知或非零图片数量在上传前被拒绝，只有完整对象映射建立后才返回可发布的 Job。浏览器会话与服务令牌隔离。平台依据运行目录中当前输入指纹对应的 Job 和 frame 来源映射回收分类及指针结果；同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
+- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并只为 Task 响应明确证明无图片或未关联数据的新建 Task 顺序上传检测或编辑图片、轮询请求、核对实际 frame、单次初始化标注、解码原生对象映射并分配 Job；未知或非零图片数量在上传前被拒绝，只有完整对象映射建立后才返回可发布的 Job。浏览器会话与服务令牌隔离。平台依据运行目录中当前输入指纹对应的 Job 和 frame 来源映射回收分类及指针结果；同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
 - `xxtrain.cli` 只把命令参数传给训练包 API，不重新实现数据或训练逻辑。
 
 三个子系统页面完整描述各自契约；本文只维护它们之间的运行关系和所有权边界。
@@ -52,4 +52,4 @@ Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同
 
 ## Future direction
 
-Point 工作区在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。检测满足全部原图已标注且至少 50 张有框原图后开放分类，全部裁剪图各有一个分类后开放指针分割；进入后续步骤不依赖前一步缓存。配置训练服务后，“开始训练”提交当前目标并留在工作区，独立任务页面显示历史运行、实时状态和产物操作；仅标注启动仍生成所选目标的缓存。现场管理、管理员数据治理、模型推理和真实 ClearML 服务验收尚未完成。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
+Point 工作区在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。检测满足全部原图已标注且至少 50 张有框原图后开放分类，全部裁剪图各有一个分类后开放指针分割；进入后续步骤不依赖前一步缓存。配置训练服务后，“开始训练”提交当前目标并留在工作区，独立任务页面显示历史运行、实时状态和产物操作；仅标注启动仍生成所选目标的缓存。现场管理、管理员数据治理和模型推理尚未实现。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

@@ -194,7 +194,7 @@ class CvatClientTest(unittest.TestCase):
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path, request.url.query, request.content))
                 if request.url.path == '/api/tasks/7':
-                    return httpx.Response(200, json={'id': 7, 'size': 0})
+                    return httpx.Response(200, json={'id': 7, 'mode': '', 'jobs': {'count': 0}})
                 if request.url.path == '/api/tasks/7/data':
                     body = request.content
                     self.assertIn(b'name="client_files[0]"; filename="00000000.jpg"', body)
@@ -332,7 +332,7 @@ class CvatClientTest(unittest.TestCase):
             def respond(request: httpx.Request) -> httpx.Response:
                 requests.append((request.method, request.url.path))
                 if request.url.path == '/api/tasks/7':
-                    return httpx.Response(200, json={'id': 7, 'size': 0})
+                    return httpx.Response(200, json={'id': 7, 'mode': '', 'jobs': {'count': 0}})
                 if request.url.path == '/api/tasks/7/data':
                     self.assertIn(b'filename="00000000.png"', request.content)
                     self.assertIn(b'filename="00000001.png"', request.content)
@@ -414,9 +414,15 @@ class CvatClientTest(unittest.TestCase):
 
         self.assertEqual(requests, [('GET', '/api/tasks/7')])
 
-    def test_prepare_rejects_task_without_proven_integer_zero_size(self):
+    def test_prepare_rejects_task_without_evidence_of_no_data(self):
         for payload in (
             {'id': 7},
+            {'id': 7, 'mode': '', 'jobs': {'count': 0}, 'data': 1},
+            {'id': 7, 'mode': 'annotation', 'jobs': {'count': 0}},
+            {'id': 7, 'mode': '', 'jobs': {'count': 1}},
+            {'id': 7, 'mode': '', 'jobs': {'count': False}},
+            {'id': 7, 'mode': '', 'jobs': None},
+            {'id': 7, 'mode': '', 'jobs': {'count': 0}, 'size': None},
             {'id': 7, 'size': None},
             {'id': 7, 'size': False},
             {'id': 7, 'size': '0'},

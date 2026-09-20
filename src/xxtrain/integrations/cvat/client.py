@@ -221,7 +221,18 @@ class CvatClient:
         )
         if not isinstance(task, dict):
             raise PlatformError(f'CVAT /api/tasks/{task_id} returned an invalid size')
-        size = self._integer_field(task, 'size', f'/api/tasks/{task_id}')
+        # CVAT omits data-derived fields until the Task has an attached Data record.
+        jobs = task.get('jobs')
+        unattached = (
+            'size' not in task
+            and 'data' not in task
+            and task.get('id') == task_id
+            and task.get('mode') == ''
+            and isinstance(jobs, dict)
+            and type(jobs.get('count')) is int
+            and jobs['count'] == 0
+        )
+        size = 0 if unattached else self._integer_field(task, 'size', f'/api/tasks/{task_id}')
         if size != 0:
             raise PlatformError(f'CVAT task {task_id} is not fresh and cannot be prepared')
 

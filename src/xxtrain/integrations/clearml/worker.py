@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -53,17 +53,23 @@ def main(argv: Sequence[str] | None = None) -> None:
             task.set_parameter('xxtrain/epoch', progress.epoch)
             task.set_parameter('xxtrain/total_epochs', progress.total_epochs)
 
-        result = train_prepared(definition.settings, dataset_dir, run_dir, on_progress=report_progress)
+        def report_metric(metric: float | None, epoch: int) -> None:
+            if metric is not None:
+                logger.report_scalar(title='validation', series=definition.metric_name, value=metric, iteration=epoch)
+                task.set_parameter('xxtrain/metric', metric)
+
+        def report_validation(progress: Any, metrics: Mapping[str, float]) -> None:
+            if progress.epoch % 5 == 0:
+                report_metric(metrics.get(definition.metric_key), progress.epoch)
+
+        result = train_prepared(
+            definition.settings, dataset_dir, run_dir, on_progress=report_progress, on_validation=report_validation
+        )
         delivery = build_delivery(result, definition.delivery, dataset_dir, run_dir / 'delivery')
         metric = result.metrics.get(definition.metric_key)
-        if metric is not None:
-            logger.report_scalar(
-                title='validation',
-                series=definition.metric_name,
-                value=metric,
-                iteration=int(definition.settings.train_args['epochs']),
-            )
-            task.set_parameter('xxtrain/metric', metric)
+        report_metric(metric, int(definition.settings.train_args['epochs']))
+        if metric is None:
+            task.set_parameter('xxtrain/metric', None)
         manifest = {
             'filename': delivery.name,
             'target': arguments.target,

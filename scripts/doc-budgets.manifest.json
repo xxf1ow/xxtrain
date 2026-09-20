@@ -8,12 +8,12 @@
   "docs/subsystems/dataset-pipeline.md": 900,
   "docs/subsystems/training-workflow.md": 900,
   "docs/agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md": 2200,
-  "docs/agent-notes/proposed/feature/2026-09-17-point-training-loop.md": 3200,
-  "docs/agent-notes/proposed/simplification/2026-09-17-training-input-identity.md": 1600,
+  "docs/agent-notes/implemented/feature/2026-09-17-point-training-loop.md": 3200,
+  "docs/agent-notes/implemented/simplification/2026-09-17-training-input-identity.md": 1600,
   "docs/agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md": 2200,
   "docs/agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md": 2600,
   "docs/agent-notes/implemented/process/2026-08-31-uv-python-environment.md": 900,
   "docs/agent-notes/implemented/process/2026-08-31-project-documentation-authority.md": 1400,
   "docs/agent-notes/implemented/process/2026-09-18-state-design-rules.md": 2200,
-  "docs/agent-notes/proposed/simplification/2026-09-18-authoritative-state-coordination.md": 2600
+  "docs/agent-notes/implemented/simplification/2026-09-18-authoritative-state-coordination.md": 2600
 }

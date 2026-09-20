@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import yaml
@@ -119,6 +120,84 @@ class PreparedTrainingTest(unittest.TestCase):
                     train_prepared(TrainingSettings(TaskType.DETECT, model_scale=scale), dataset, run_dir)
 
                 self.assertEqual([scale], loaded_scales)
+
+    def test_detection_symlink_uses_label_beside_cache_entry_not_source_image(self) -> None:
+        dataset = self._write_dataset(TaskType.DETECT)
+        image = dataset / 'sample.png'
+        source = self.root / 'original.png'
+        image.rename(source)
+        try:
+            image.symlink_to(source)
+        except OSError as error:
+            self.skipTest(f'Symbolic links unavailable: {error}')
+        label = '0 0.5 0.5 0.25 0.25'
+        image.with_suffix('.txt').write_text(label)
+        before = self._snapshot(dataset)
+        run_dir = self.root / 'symlink-run'
+        model = MagicMock(names={0: 'Point'})
+        model.trainer = MagicMock(best='')
+        model.val.return_value = MagicMock(results_dict={})
+        exported = self.root / 'exported.onnx'
+        model.export.side_effect = lambda **_kwargs: (exported.write_bytes(b'onnx'), exported)[1]
+
+        with (
+            patch('xxtrain.training.prepared.YOLO', return_value=model),
+            patch('xxtrain.training.prepared.prepare_pretrained_weights', return_value=self.root / 'default.pt'),
+        ):
+            train_prepared(TrainingSettings(TaskType.DETECT), dataset, run_dir)
+
+        for split in ('train', 'val'):
+            self.assertEqual(label, (run_dir / 'dataset' / 'labels' / split / '00000000.txt').read_text())
+            self.assertEqual(b'image', (run_dir / 'dataset' / 'images' / split / '00000000.png').read_bytes())
+        self.assertEqual(before, self._snapshot(dataset))
+        self.assertFalse(source.with_suffix('.txt').exists())
+
+    def test_validation_callback_only_reports_actual_training_validations(self) -> None:
+        dataset = self._write_dataset(TaskType.DETECT)
+        model = MagicMock(names={0: 'Point'})
+        model.trainer = SimpleNamespace(epoch=0, epochs=20, best='', metrics={})
+        model.val.return_value = SimpleNamespace(results_dict={'metrics/score': 0.9})
+        exported = self.root / 'exported.onnx'
+        model.export.side_effect = lambda **_kwargs: (exported.write_bytes(b'onnx'), exported)[1]
+        callbacks = {}
+        model.add_callback.side_effect = lambda event, callback: callbacks.setdefault(event, []).append(callback)
+        validator = SimpleNamespace(training=True, metrics=SimpleNamespace(results_dict={}))
+        progress = []
+        validations = []
+
+        def train(**_kwargs):
+            for epoch in range(1, 21):
+                model.trainer.epoch = epoch - 1
+                for callback in callbacks.get('on_train_epoch_end', []):
+                    callback(model.trainer)
+                if epoch % 10 == 0:
+                    validator.metrics.results_dict = {'metrics/score': epoch / 100}
+                    for callback in callbacks.get('on_val_end', []):
+                        callback(validator)
+                    model.trainer.metrics = dict(validator.metrics.results_dict)
+                for callback in callbacks.get('on_fit_epoch_end', []):
+                    callback(model.trainer)
+            # Best-checkpoint evaluation is not another training epoch's validation.
+            validator.training = False
+            validator.metrics.results_dict = {'metrics/score': 0.9}
+            for callback in callbacks.get('on_val_end', []):
+                callback(validator)
+
+        model.train.side_effect = train
+        with (
+            patch('xxtrain.training.prepared.YOLO', return_value=model),
+            patch('xxtrain.training.prepared.prepare_pretrained_weights', return_value=self.root / 'default.pt'),
+        ):
+            train_prepared(
+                TrainingSettings(TaskType.DETECT),
+                dataset,
+                self.root / 'validation-run',
+                on_progress=progress.append,
+                on_validation=lambda current, metrics: validations.append((current.epoch, dict(metrics))),
+            )
+
+        self.assertEqual(list(range(1, 21)), [current.epoch for current in progress])
+        self.assertEqual([(10, {'metrics/score': 0.1}), (20, {'metrics/score': 0.2})], validations)
 
     def test_best_checkpoint_supplies_export_names_and_metrics(self) -> None:
         dataset = self._write_dataset(TaskType.DETECT)
