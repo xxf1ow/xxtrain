@@ -6,7 +6,7 @@ from xxtrain.pipeline.sinks import YoloDatasetSink
 from xxtrain.task import TaskType
 from xxtrain.training.settings import TrainingSettings, standard_train_args
 
-from .definition import DeliveryDefinition, StepDefinition, TargetTrainingDefinition, TaskDefinition
+from .definition import AnnotationPolicy, DeliveryDefinition, StepDefinition, TargetTrainingDefinition, TaskDefinition
 
 POINT_BOX_LABELS = ('Point', 'tl', 'tc', 'cl', 'cc')
 MODEL_TARGETS = (('detect', True), ('classify', True), ('segment', True))
@@ -23,6 +23,9 @@ def point_task_definition() -> TaskDefinition:
                 labels=frozenset(POINT_BOX_LABELS),
                 parent_steps=frozenset(),
                 depends_on=frozenset(),
+                display_name='检测',
+                annotation=AnnotationPolicy('rectangle', 'STANDARD', negative_label='negative'),
+                minimum_samples=50,
                 training=TargetTrainingDefinition(
                     settings=TrainingSettings(TaskType.DETECT, train_args=standard_train_args(TaskType.DETECT)),
                     metric_key='metrics/mAP50-95(B)',
@@ -35,7 +38,9 @@ def point_task_definition() -> TaskDefinition:
                 kinds=frozenset({'classification'}),
                 labels=frozenset({'tl', 'tc', 'cl', 'cc'}),
                 parent_steps=frozenset({'detect'}),
-                depends_on=frozenset({'detect'}),
+                depends_on=frozenset(),
+                display_name='分类',
+                annotation=AnnotationPolicy('tag', 'TAGS', maximum_annotations=1),
                 training=TargetTrainingDefinition(
                     settings=TrainingSettings(
                         TaskType.CLASSIFY, train_args=standard_train_args(TaskType.CLASSIFY) | POINT_CLASSIFY_OVERRIDES
@@ -50,7 +55,9 @@ def point_task_definition() -> TaskDefinition:
                 kinds=frozenset({'polyline'}),
                 labels=frozenset({'1'}),
                 parent_steps=frozenset({'detect'}),
-                depends_on=frozenset({'classify'}),
+                depends_on=frozenset(),
+                display_name='指针分割',
+                annotation=AnnotationPolicy('polyline', 'STANDARD', point_count=2),
                 training=TargetTrainingDefinition(
                     settings=TrainingSettings(TaskType.SEGMENT, train_args=standard_train_args(TaskType.SEGMENT)),
                     metric_key='metrics/mAP50-95(M)',
@@ -58,7 +65,9 @@ def point_task_definition() -> TaskDefinition:
                     delivery=DeliveryDefinition(labels=False, reference_images=False),
                 ),
             ),
-        )
+        ),
+        key='point',
+        display_name='Point',
     )
 
 

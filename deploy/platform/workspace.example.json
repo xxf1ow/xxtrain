@@ -4,5 +4,6 @@
   "owner_user_id": 1001,
   "workspace_dir": "../../data/workspaces/1001/point",
   "runtime_dir": "../../data/runtime/1001/point",
-  "cvat_internal_url": "http://cvat_server:8080"
+  "cvat_internal_url": "http://cvat_server:8080",
+  "task_entry": "xxtrain.business_tasks.point:point_task_definition"
 }
