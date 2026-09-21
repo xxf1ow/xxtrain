@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -89,6 +90,15 @@ class ClearMLClientTests(unittest.TestCase):
             ],
             add_task_init_call=False,
         )
+
+    def test_create_carries_the_run_selected_task_entry(self):
+        self.sdk.create.return_value = SimpleNamespace(id='task-1')
+        run = replace(training_run(), task_entry='package.custom:factory')
+
+        self.client.create(run)
+
+        arguments = dict(self.sdk.create.call_args.kwargs['argparse_args'])
+        self.assertEqual('package.custom:factory', arguments['task'])
 
     def test_create_arguments_match_installed_clearml_sdk_signature(self):
         from clearml import Task

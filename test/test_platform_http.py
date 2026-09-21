@@ -22,6 +22,7 @@ else:
     from xxtrain.platform.app import create_app
     from xxtrain.platform.config import WorkspaceConfig
     from xxtrain.platform.contracts import (
+        EditJob,
         JobRef,
         PlatformAccessError,
         PlatformConflictError,
@@ -70,7 +71,7 @@ class AsgiTestClient:
 class FakeService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
-        self.view_result = WorkspaceView('line-3', '三号现场', 2, 0, 0, False, False)
+        self.view_result = WorkspaceView('line-3', '三号现场', 2)
         self.errors: dict[str, Exception] = {}
         self.staged: tuple[Path, ...] = ()
         self.uploaded: tuple[bytes, ...] = ()
@@ -86,14 +87,8 @@ class FakeService:
     def view(self, user_id: int) -> WorkspaceView:
         return self._result('view', user_id)  # type: ignore[return-value]
 
-    def begin_detection(self, user_id: int) -> str:
-        return self._result('begin', user_id)  # type: ignore[return-value]
-
     def begin_target(self, user_id: int, target: str) -> str:
         return self._result(f'begin:{target}', user_id)  # type: ignore[return-value]
-
-    def sync_detection(self, user_id: int) -> WorkspaceView:
-        return self._result('sync', user_id)  # type: ignore[return-value]
 
     def sync_target(self, user_id: int, target: str) -> WorkspaceView:
         return self._result(f'sync:{target}', user_id)  # type: ignore[return-value]
@@ -102,9 +97,6 @@ class FakeService:
         self.staged = staged
         self.uploaded = tuple(path.read_bytes() for path in staged)
         return self._result('upload', user_id)  # type: ignore[return-value]
-
-    def generate_detection_cache(self, user_id: int) -> WorkspaceView:
-        return self._result('cache', user_id)  # type: ignore[return-value]
 
     def generate_target_cache(self, user_id: int, target: str) -> WorkspaceView:
         return self._result(f'cache:{target}', user_id)  # type: ignore[return-value]
@@ -154,9 +146,9 @@ class PlatformHttpTest(unittest.TestCase):
         self.service.view_result = replace(
             self.service.view_result,
             targets=(
-                TargetView('detect', 2, 0, True, False, False),
-                TargetView('classify', 0, 0, False, False, False),
-                TargetView('segment', 0, 0, False, False, False),
+                TargetView('detect', 2, 0, True, False, False, '检测', '张图片'),
+                TargetView('classify', 0, 0, False, False, False, '分类', '张裁剪图'),
+                TargetView('segment', 0, 0, False, False, False, '指针分割', '张裁剪图'),
             ),
         )
         self.cvat = FakeCvat()
@@ -197,41 +189,45 @@ class PlatformHttpTest(unittest.TestCase):
                 'workspace_id': 'line-3',
                 'name': '三号现场',
                 'image_count': 2,
-                'annotated_image_count': 0,
-                'boxed_image_count': 0,
-                'can_generate_detection_cache': False,
-                'detection_cache_ready': False,
                 'task': {'id': 'point', 'name': 'Point'},
+                'can_upload': True,
+                'training_enabled': False,
                 'targets': [
                     {
                         'id': 'detect',
+                        'name': '检测',
+                        'sample_unit': '张图片',
                         'sample_count': 2,
                         'annotated_sample_count': 0,
                         'can_annotate': True,
                         'can_generate_cache': False,
                         'cache_ready': False,
-                        'name': '检测',
-                        'available': True,
+                        'editable': True,
+                        'training': None,
                     },
                     {
                         'id': 'classify',
+                        'name': '分类',
+                        'sample_unit': '张裁剪图',
                         'sample_count': 0,
                         'annotated_sample_count': 0,
                         'can_annotate': False,
                         'can_generate_cache': False,
                         'cache_ready': False,
-                        'name': '分类',
-                        'available': True,
+                        'editable': True,
+                        'training': None,
                     },
                     {
                         'id': 'segment',
+                        'name': '指针分割',
+                        'sample_unit': '张裁剪图',
                         'sample_count': 0,
                         'annotated_sample_count': 0,
                         'can_annotate': False,
                         'can_generate_cache': False,
                         'cache_ready': False,
-                        'name': '分割',
-                        'available': True,
+                        'editable': True,
+                        'training': None,
                     },
                 ],
             },
@@ -243,9 +239,9 @@ class PlatformHttpTest(unittest.TestCase):
         requests = (
             ('/platform/api/login', {'username': 'worker', 'password': 'password'}),
             ('/platform/api/logout', {}),
-            ('/platform/api/detection/start', {}),
-            ('/platform/api/detection/sync', {}),
-            ('/platform/api/detection/cache', {}),
+            ('/platform/api/targets/detect/start', {}),
+            ('/platform/api/targets/detect/sync', {}),
+            ('/platform/api/targets/detect/cache', {}),
             ('/platform/api/targets/classify/start', {}),
             ('/platform/api/targets/classify/sync', {}),
             ('/platform/api/targets/classify/cache', {}),
@@ -263,9 +259,9 @@ class PlatformHttpTest(unittest.TestCase):
         requests = (
             ('/platform/api/login', {'username': 'worker', 'password': 'password'}),
             ('/platform/api/logout', {}),
-            ('/platform/api/detection/start', {}),
-            ('/platform/api/detection/sync', {}),
-            ('/platform/api/detection/cache', {}),
+            ('/platform/api/targets/detect/start', {}),
+            ('/platform/api/targets/detect/sync', {}),
+            ('/platform/api/targets/detect/cache', {}),
             ('/platform/api/targets/segment/start', {}),
             ('/platform/api/targets/segment/sync', {}),
             ('/platform/api/targets/segment/cache', {}),
@@ -306,7 +302,11 @@ class PlatformHttpTest(unittest.TestCase):
             'text',
             1,
         )
-        for path in ('/platform/api/detection/start', '/platform/api/detection/sync', '/platform/api/detection/cache'):
+        for path in (
+            '/platform/api/targets/detect/start',
+            '/platform/api/targets/detect/sync',
+            '/platform/api/targets/detect/cache',
+        ):
             for payload in invalid_payloads:
                 with self.subTest(path=path, payload=payload):
                     response = self.client.post(path, headers=headers, json=payload)
@@ -317,11 +317,11 @@ class PlatformHttpTest(unittest.TestCase):
         self.assertEqual([], self.service.calls)
 
     def test_start_returns_only_the_server_owned_annotation_path(self) -> None:
-        response = self.client.post('/platform/api/detection/start', headers=self.authenticate(), json={})
+        response = self.client.post('/platform/api/targets/detect/start', headers=self.authenticate(), json={})
 
         self.assertEqual(200, response.status_code)
         self.assertEqual({'annotation_url': '/tasks/41/jobs/73'}, response.json())
-        self.assertEqual([('begin', 17)], self.service.calls)
+        self.assertEqual([('begin:detect', 17)], self.service.calls)
 
     def test_target_actions_dispatch_strict_targets_and_accept_only_empty_objects(self) -> None:
         headers = self.authenticate()
@@ -352,10 +352,7 @@ class PlatformHttpTest(unittest.TestCase):
 
     def test_detection_sync_routes_preserve_conflict_correction_details(self) -> None:
         headers = self.authenticate()
-        for route, operation in (
-            ('/platform/api/detection/sync', 'sync'),
-            ('/platform/api/targets/detect/sync', 'sync:detect'),
-        ):
+        for route, operation in (('/platform/api/targets/detect/sync', 'sync:detect'),):
             with self.subTest(route=route):
                 self.service.errors[operation] = TargetValidationError(
                     '图片不能同时包含检测框和负样本标记。', '/tasks/41/jobs/73?frame=0'
@@ -384,8 +381,8 @@ class PlatformHttpTest(unittest.TestCase):
         )
 
     def test_sync_error_is_not_success(self) -> None:
-        self.service.errors['sync'] = PlatformError('Could not save annotations at C:/private/site')
-        response = self.client.post('/platform/api/detection/sync', headers=self.authenticate(), json={})
+        self.service.errors['sync:detect'] = PlatformError('Could not save annotations at C:/private/site')
+        response = self.client.post('/platform/api/targets/detect/sync', headers=self.authenticate(), json={})
 
         self.assertEqual(502, response.status_code)
         self.assertNotIn('C:/private/site', response.text)
@@ -506,14 +503,23 @@ class PlatformHttpTest(unittest.TestCase):
 
     def test_cache_returns_derived_readiness_and_rejects_operational_failure(self) -> None:
         headers = self.authenticate()
-        self.service.view_result = WorkspaceView('line-3', '三号现场', 50, 50, 50, True, True)
+        self.service.view_result = replace(
+            self.service.view_result,
+            image_count=50,
+            targets=tuple(
+                replace(target, sample_count=50, annotated_sample_count=50, can_generate_cache=True, cache_ready=True)
+                if target.id == 'detect'
+                else target
+                for target in self.service.view_result.targets
+            ),
+        )
         for _ in range(2):
-            response = self.client.post('/platform/api/detection/cache', headers=headers, json={})
+            response = self.client.post('/platform/api/targets/detect/cache', headers=headers, json={})
             self.assertEqual(200, response.status_code)
-            self.assertTrue(response.json()['detection_cache_ready'])
+            self.assertTrue(response.json()['targets'][0]['cache_ready'])
             self.assertNotIn('status', response.json())
-        self.service.errors['cache'] = PlatformError('private cache directory')
-        response = self.client.post('/platform/api/detection/cache', headers=headers, json={})
+        self.service.errors['cache:detect'] = PlatformError('private cache directory')
+        response = self.client.post('/platform/api/targets/detect/cache', headers=headers, json={})
         self.assertEqual(502, response.status_code)
         self.assertNotIn('private cache', response.text)
 
@@ -527,13 +533,13 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
             cvat = FakeCvat()
 
-            def require_editable(workspace_id: str) -> None:
+            def require_editable(workspace_id: str, target: str | None) -> None:
                 self.assertEqual('line-3', workspace_id)
                 raise PlatformConflictError('private active task details')
 
             service = AnnotationService(
                 config,
-                WorkspaceData(workspace),
+                WorkspaceData(workspace, point_task_definition()),
                 cvat,
                 RuntimeCache(config.runtime_dir),
                 require_editable=require_editable,
@@ -544,8 +550,8 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                 headers = {'origin': 'http://testserver', 'x-xtrain-csrf': client.cookies.get('xxtrain_csrf')}
                 requests = (
                     ('/platform/api/images', {'files': {'images': ('frame.jpg', b'image')}}),
-                    ('/platform/api/detection/start', {'json': {}}),
-                    ('/platform/api/detection/sync', {'json': {}}),
+                    ('/platform/api/targets/detect/start', {'json': {}}),
+                    ('/platform/api/targets/detect/sync', {'json': {}}),
                     ('/platform/api/targets/classify/start', {'json': {}}),
                     ('/platform/api/targets/classify/sync', {'json': {}}),
                 )
@@ -562,13 +568,15 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             (workspace / 'images').mkdir(parents=True)
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
             cvat = FakeCvat()
-            service = AnnotationService(config, WorkspaceData(workspace), cvat, RuntimeCache(config.runtime_dir))
+            service = AnnotationService(
+                config, WorkspaceData(workspace, point_task_definition()), cvat, RuntimeCache(config.runtime_dir)
+            )
             with AsgiTestClient(create_app(config, service, cvat)) as client:
                 client.cookies.set('sessionid', 'active')
                 client.get('/platform/')
                 headers = {'origin': 'http://testserver', 'x-xtrain-csrf': client.cookies.get('xxtrain_csrf')}
                 with service.lock:
-                    for path in ('/platform/api/detection/cache', '/platform/api/targets/classify/cache'):
+                    for path in ('/platform/api/targets/detect/cache', '/platform/api/targets/classify/cache'):
                         with self.subTest(path=path):
                             response = client.post(path, headers=headers, json={})
                             self.assertEqual(409, response.status_code)
@@ -582,7 +590,9 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             Image.new('RGB', (64, 48), 'white').save(candidate)
             config = WorkspaceConfig('line-3', '三号现场', 17, workspace, root / 'runtime', 'http://cvat.test')
             cvat = FakeCvat()
-            service = AnnotationService(config, WorkspaceData(workspace), cvat, RuntimeCache(config.runtime_dir))
+            service = AnnotationService(
+                config, WorkspaceData(workspace, point_task_definition()), cvat, RuntimeCache(config.runtime_dir)
+            )
             with AsgiTestClient(create_app(config, service, cvat)) as client:
                 client.get('/platform/')
                 client.cookies.set('sessionid', 'active')
@@ -594,11 +604,11 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                 )
                 self.assertEqual(200, uploaded.status_code)
                 self.assertEqual(1, uploaded.json()['image_count'])
-                self.assertEqual(0, uploaded.json()['annotated_image_count'])
-                self.assertFalse(uploaded.json()['can_generate_detection_cache'])
+                self.assertEqual(0, uploaded.json()['targets'][0]['annotated_sample_count'])
+                self.assertFalse(uploaded.json()['targets'][0]['can_generate_cache'])
                 self.assertEqual(1, len(list((workspace / 'images').iterdir())))
                 self.assertEqual([], list((config.runtime_dir / 'staging').iterdir()))
-                cache = client.post('/platform/api/detection/cache', headers=headers, json={})
+                cache = client.post('/platform/api/targets/detect/cache', headers=headers, json={})
                 self.assertEqual(502, cache.status_code)
 
     def test_login_start_and_sync_use_real_workflow_and_workspace_data(self) -> None:
@@ -608,14 +618,22 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
             images.mkdir()
             staged = root / 'frame.jpg'
             Image.new('RGB', (64, 48), 'white').save(staged)
-            data = WorkspaceData(root)
+            data = WorkspaceData(root, point_task_definition())
             data.admit((staged,))
             sample_id = data.images()[0].sample_id
             runtime = RuntimeCache(root / 'runtime')
-            runtime.remember_job('detect', data.detection_fingerprint(), JobRef(41, 73, (sample_id,)))
+            frames = data.target_frames('detect', root / 'runtime')
+            runtime.remember_edit_job(
+                'detect', data.detection_fingerprint(), EditJob(JobRef(41, 73, (sample_id,)), (frames[0].mapping,))
+            )
             config = WorkspaceConfig('line-3', '三号现场', 17, root, root / 'runtime', 'http://cvat.test')
             labels = [
-                {'id': 41 + index, 'name': name, 'attributes': [{'id': 71 + index, 'name': 'xxtrain_labelme_extra'}]}
+                {
+                    'id': 41 + index,
+                    'name': name,
+                    'type': 'rectangle',
+                    'attributes': [{'id': 71 + index, 'name': 'xxtrain_labelme_extra'}],
+                }
                 for index, name in enumerate(POINT_BOX_LABELS)
             ]
 
@@ -667,14 +685,13 @@ class PlatformRealWorkflowHttpTest(unittest.TestCase):
                 login = client.post(
                     '/platform/api/login', headers=headers, json={'username': 'worker', 'password': 'password'}
                 )
-                start = client.post('/platform/api/detection/start', headers=headers, json={})
-                saved = client.post('/platform/api/detection/sync', headers=headers, json={})
+                start = client.post('/platform/api/targets/detect/start', headers=headers, json={})
+                saved = client.post('/platform/api/targets/detect/sync', headers=headers, json={})
 
             records = AnnotationRepository(root / 'annotations.db', point_task_definition()).annotations()
             self.assertEqual(204, login.status_code)
             self.assertEqual({'annotation_url': '/tasks/41/jobs/73'}, start.json())
-            self.assertEqual(1, saved.json()['annotated_image_count'])
-            self.assertEqual(1, saved.json()['boxed_image_count'])
+            self.assertEqual(1, saved.json()['targets'][0]['annotated_sample_count'])
             self.assertFalse((root / 'state.json').exists())
             self.assertEqual(['tl'], [record.label for record in records])
             self.assertEqual([[[1.0, 2.0], [20.0, 30.0]]], [record.geometry for record in records])

@@ -19,21 +19,23 @@ Python Scenario
 
 Scenario 是一次数据集转换和训练的组合根。`DatasetRecipe` 组合来源、不可变转换记录、处理器和唯一写入边界；训练层只编排数据准备、模型配置、预训练权重、Ultralytics 调用和导出，不承载标注解析或几何变换。
 
+Point 工作区在业务任务与现场下共享图片上传区，并按任务定义的顺序逐行展示检测原图、分类裁剪图和指针分割裁剪图的进度与操作。全部原图已标注且至少 50 张有框原图后，分类和指针分割同时开放；两个下游只要求自身标注完整即可生成缓存，不依赖兄弟步骤或上游训练缓存。配置训练服务后，提交停留在工作区，历史运行、实时状态和产物操作由独立任务页面承载；仅标注启动生成所选目标的缓存。
+
 ## Package boundaries
 
 - `xxtrain.task` 只定义 detect、segment、pose、classify 和 OBB 五种基础 `TaskType`；数据集名称、标签和转换行为属于 Recipe 与 Scenario；
 - [`xxtrain.data`](subsystems/annotation-data.md) 拥有不可变标注、几何、标签目录、格式 I/O 和数据集产物辅助函数；
 - [`xxtrain.pipeline`](subsystems/dataset-pipeline.md) 拥有样本发现、typed records、Processor 组合、转换报告和数据集写入边界；
 - [`xxtrain.training`](subsystems/training-workflow.md) 拥有 Scenario 加载、共用模型与训练默认值、模型配置、训练、ONNX 导出和预测检查；
-- `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 从数据库事实派生三个目标的计数、前置条件和缓存资格，以一个非阻塞进程锁协调上传、CVAT Job 创建与同步及缓存生成；
-- `xxtrain.platform.app` 提供同源图片上传、三个 Point 目标的标注及缓存生成页面，以及可选训练服务的提交、查询、取消和部署产物下载 API；浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌。训练提交只接受空对象，运行身份由服务端按用户、工作区、目标和输入指纹确定；训练 API 只返回用户运行、现场、目标、时间、取消请求及执行摘要，不返回持久意图、缓存路径、ClearML 任务身份或后端异常。启用训练时，应用生命周期拥有一个 `training_coordinator` 线程，启动立即从训练账本接续持久意图，不要求浏览器读取或重发请求；每轮结束后等待 5 秒，关闭等待在途协调结束。仅标注模式不创建该线程。上传文件在独立运行目录暂存，页面计数和按钮由服务返回的数据库派生结果驱动；
-- `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；摘要、输入指纹和 CVAT 输入只读取已登记图片及数据库标注。分类和分割投影共用检测框裁剪与实际边界，数据层从数据库派生目标计数和包含上游关联的输入指纹。对象级同步通过稳定 UUID 和当前 Job 的 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响的下游对象，并在同一事务内提交标注和映射。检测缓存从数据库生成可丢弃的 LabelMe 输入，不回写权威 JSON；
-- `xxtrain.business_tasks` 定义 Point 的五种框标签、检测、分类和分割步骤规则、目标开放状态、训练设置、主要指标与交付内容；
-- `xxtrain.platform.training_contracts` 定义训练运行关联事实；`xxtrain.platform.training_store` 在调用者指定的平台元数据路径保存独立 SQLite 账本，按用户限制读取，并以可空的 `desired_action` 保存 `execute` 或 `cancel` 意图，但不存执行状态、计数或标注。旧账本原样保留既有事实并增加该可空列，NULL 不推断为任何意图；`xxtrain.platform.runtime` 保存可丢弃的目标与输入指纹到 CVAT Job 引用映射，并只为包含数据集元数据、训练和验证输入的完整已发布缓存返回目标目录；`xxtrain.platform.cache` 从完成的 Point 工作区标注构建并原子发布检测数据集缓存，`xxtrain.platform.target_cache` 使用共享裁剪图生成分类和指针分割训练缓存；
-- `xxtrain.platform.training_service` 在标注写互斥内计算当前输入指纹，返回该用户和目标已有的输入运行，或在资格与缓存准备完成后创建带执行意图的服务端运行身份；提交和取消先持久保存意图，再由同一协调入口根据原 ClearML 任务事实创建、绑定、核验启动配置、入队或停止。只有命令和生命周期协调可以执行这些写操作；列表、详情和工作区投影只观察本地与远端事实，不修复关联或触发 ClearML 写入。工作区编辑保护检查配置工作区的全部运行，按钮只投影当前用户、当前工作区和当前输入，用户历史仍可显示其其他工作区运行。未尝试的执行意图显示为待处理并锁定编辑，未尝试的取消意图可由本地事实确认未执行，旧 NULL 意图只供观察。终态执行与部署产物资格分别派生，远端缺失、歧义、启动配置不完整或执行查询失败继续锁定编辑；完成但缺少部署产物的运行解除编辑限制但不能下载。提供训练配置时，平台组合根在独立元数据目录构造运行账本和使用有限请求边界的 ClearML 适配器，并把实时编辑保护及运行引用缓存的重建保护绑定到 `AnnotationService`；省略训练配置时保留仅标注启动方式；
-- `xxtrain.integrations.clearml` 通过可选 ClearML SDK 创建、核验、入队、观察和取消训练任务，并提供普通 Agent 执行入口；任务使用运行 UUID 作为初始名称恢复关联，创建部分成功时只补齐同一未执行任务的无冲突启动事实。Agent 从任务 `Args/*` 参数取得输入身份，从共享发布缓存调用训练核心，只上传固定名称的部署产物；
-- `xxtrain.integrations.cvat.codec` 在共享平台类型与 CVAT 标注字典之间转换检测矩形与图片级负样本 Tag；负样本按原图映射回收，删除 Tag 撤销确认，框与负样本冲突时返回修正链接且不写入。`xxtrain.integrations.cvat.edit_codec` 按 `EditJob.frames` 的精确顺序转换分类 tag 和指针 polyline。需要对象身份的标注只在初始化时用临时 UUID 令牌关联 CVAT 原生 ID，常规回收只返回原生 ID；
-- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求创建类型化任务，并只为 Task 响应明确证明无图片或未关联数据的新建 Task 顺序上传检测或编辑图片、轮询请求、核对实际 frame、单次初始化标注、解码原生对象映射并分配 Job；未知或非零图片数量在上传前被拒绝，只有完整对象映射建立后才返回可发布的 Job。浏览器会话与服务令牌隔离。平台依据运行目录中当前输入指纹对应的 Job 和 frame 来源映射回收分类及指针结果；同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
+- `xxtrain.platform.contracts` 定义平台组件共享的数据类型和错误；`xxtrain.platform.config` 从严格 JSON 配置加载单个工作区及独立运行目录；`xxtrain.platform.service.AnnotationService` 遍历任务步骤，从数据库事实、传递输入依赖和步骤门槛派生计数与操作资格，并以一个非阻塞进程锁协调上传、CVAT Job 创建与同步及缓存生成；
+- `xxtrain.platform.app` 按组合根注入的任务定义提供同源图片上传、有序目标标注与缓存生成页面，以及可选训练服务的提交、查询、取消和部署产物下载 API。HTTP 只接受当前定义声明的目标；工作区载荷返回任务、目标元数据、计数、服务端派生的操作权限、缓存状态和当前训练摘要，页面据此动态创建目标行。浏览器会话由 CVAT 认证，所有写请求检查来源和页面 CSRF 令牌。训练提交只接受空对象，运行身份由服务端按用户、工作区、目标和输入指纹确定；训练 API 只返回用户运行、现场、任务与目标展示名、主指标、时间、取消请求及执行摘要，不返回持久意图、缓存路径、ClearML 任务身份或后端异常。启用训练时，应用 lifespan 先执行输入兼容处理，再启动一个 `training_coordinator` 线程接续持久意图，不要求浏览器读取或重发请求；每轮结束后等待 5 秒，关闭等待在途协调结束。仅标注模式不创建该线程。上传文件在独立运行目录暂存，页面计数和按钮由服务返回的数据库派生结果驱动；
+- `xxtrain.workspace_data` 以工作区的 `images/` 原图和 `annotations.db` 为权威输入，并由组合根显式注入业务任务定义。图片接纳保存 SHA-256、尺寸及无损 64 位感知哈希；任务步骤选择原图或轴对齐矩形输入适配器，适配器从原图坐标中的权威标注派生 frame 映射，只有编辑入口需要图片时才生成可丢弃裁剪。摘要、正样本数和编辑指纹从同一映射及任务输入闭包派生；训练指纹再加入任务标识、有序输出标签、训练类型、负样本输出处理和显式转换键。对象级同步按持久 frame 映射还原几何与直接 parent UUID，通过 CVAT 原生 ID 保留未修改对象，按任务依赖清除受影响对象，并在同一事务内提交标注和映射。Point 旧指纹算法只供启动兼容处理计算迁移前身份；
+- `xxtrain.business_tasks` 定义任务与步骤规则、输入适配器选择、标注策略、父来源、额外标签依赖、训练设置、有序输出标签、数据集转换键、样本编码回调、主要指标与交付内容；配置加载受信任的 Python 定义入口，Point 定义保留五种框标签及检测、分类和分割规则；
+- `xxtrain.platform.training_contracts` 定义训练运行关联事实；`xxtrain.platform.training_store` 在调用者指定的平台元数据路径保存独立 SQLite 账本，按用户限制读取，并以可空的 `desired_action` 保存 `execute` 或 `cancel` 意图，但不存执行状态、计数或标注。每个新运行不可变地保存配置选择的任务入口；旧账本迁移为冻结的 Point 选择器。兼容输入别名以完整用户、工作区、目标和指纹键关联既有运行，不改写其指纹、缓存路径或任务 ID；`xxtrain.platform.runtime` 以编辑指纹保存可丢弃的 CVAT Job 引用，并只接受带精确清单及完整训练输入的新发布，无清单的旧 Point 发布也不由该通用入口接受；`xxtrain.platform.target_cache` 调用步骤定义的编码回调，从权威 frame 投影生成检测、分类、分割或嵌套矩形数据集，并写入精确目标与训练指纹清单后原子发布；
+- `xxtrain.platform.training_service` 在标注写互斥内计算当前输入指纹，通过规范身份与兼容别名返回该用户和目标已有的运行，或在资格与缓存准备完成后创建带执行意图的服务端运行身份；提交和取消先持久保存意图，再由同一协调入口根据原 ClearML 任务事实创建、绑定、核验启动配置、入队或停止。只有命令和生命周期协调可以执行这些写操作；列表、详情和工作区投影只观察本地与远端事实，不修复关联或触发 ClearML 写入。启动兼容处理从一个权威标注快照验证冻结的 Point 转换语义与旧指纹；输入身份证明不依赖历史发布是否存在或完整，因此精确匹配始终添加别名，而不重建缓存或提交任务。工作区编辑保护检查全部用户的运行；活跃或未知执行锁定目标及其输入祖先，并对多个运行取并集，任何活跃运行仍禁止上传。未尝试的执行意图显示为待处理并锁定编辑，未尝试的取消意图可由本地事实确认未执行，旧 NULL 意图只供观察。终态执行与部署产物资格分别派生，远端缺失、歧义、启动配置不完整或执行查询失败继续锁定编辑；完成但缺少部署产物的运行解除编辑限制但不能下载。提供训练配置时，平台组合根在独立元数据目录构造运行账本和使用有限请求边界的 ClearML 适配器，在协调器和请求启动前执行一次兼容处理，并把实时编辑保护及运行引用缓存的重建保护绑定到 `AnnotationService`；省略训练配置时保留仅标注启动方式；
+- `xxtrain.integrations.clearml` 通过可选 ClearML SDK 创建、核验、入队、观察和取消训练任务，并提供普通 Agent 执行入口；任务使用运行 UUID 作为初始名称恢复关联，创建部分成功时只补齐同一未执行任务的无冲突启动事实。Agent 从任务 `Args/*` 参数取得运行保存的任务入口和输入身份，通过兼容加载器把冻结的旧 Point 选择器映射到默认定义，其余入口直接加载配置工厂；定义选择训练设置、主要指标和交付内容，worker 不直接引用 Point 业务模块；
+- `xxtrain.integrations.cvat.edit_codec` 按 `EditJob.frames` 的精确顺序转换 rectangle、分类 tag、polyline 和策略声明的图片级负样本 Tag，并核对每个 CVAT 标签的原生类型。需要对象身份的标注只在初始化时用临时 UUID 令牌关联 CVAT 原生 ID，常规回收只返回原生 ID；
+- `xxtrain.integrations.cvat.CvatClient` 通过受限同源 HTTP 请求按显式 `AnnotationPolicy` 创建类型化任务，并只为 Task 响应明确证明无图片或未关联数据的新建 Task 顺序上传 `EditFrame`、轮询请求、核对实际 frame、单次初始化标注、解码原生对象映射并分配 Job；未知或非零图片数量在上传前被拒绝，只有完整对象映射建立后才返回可发布的 Job。浏览器会话与服务令牌隔离。平台依据运行目录中当前输入指纹对应的 Job 和 frame 来源映射回收当前步骤结果；同版本 CVAT UI 加载的返回插件负责保存、完成状态确认和返回平台，不写平台文件；
 - `xxtrain.cli` 只把命令参数传给训练包 API，不重新实现数据或训练逻辑。
 
 三个子系统页面完整描述各自契约；本文只维护它们之间的运行关系和所有权边界。
@@ -48,8 +50,10 @@ Scenario 目录的 `src/` 是当前训练流程的权威输入。数据集目录
 
 常规任务通过组合 Source、Processor、Sink 和 `DatasetRecipe` 扩展；通用差异进入 Scenario 配置，特殊几何或业务转换进入代码。配置不承担任意程序逻辑，具体 Processor 和 Sink 也不是通用第三方插件 API。
 
+平台业务任务通过 Python `TaskDefinition` 组合步骤规则、输入适配、标注策略、训练转换和交付内容。存储校验、frame 投影、同步与失效、输入身份、标注协调、CVAT 交换、训练缓存与保护、HTTP、页面和 worker 都解释同一定义；扩展边界与验证要求由[任务定义驱动决策](agent-notes/implemented/architecture/2026-09-19-task-definition-driven-platform.md)所有。Point 已通过该实现版本的[部署与人工验收](agent-notes/implemented/architecture/2026-09-19-task-definition-driven-platform.md#live-acceptance)。非 Point 合成任务已通过完整离线组件和安装 wheel 验证，但尚未通过真实 CVAT 页面和 ClearML Server、Agent、GPU 部署验收。
+
 Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同边界后，才引入后端抽象。
 
 ## Future direction
 
-Point 工作区在业务任务与现场下共享图片上传区，按检测、分类、指针分割顺序逐行展示原图或裁剪图进度及标注、训练入口。检测满足全部原图已标注且至少 50 张有框原图后开放分类，全部裁剪图各有一个分类后开放指针分割；进入后续步骤不依赖前一步缓存。配置训练服务后，“开始训练”提交当前目标并留在工作区，独立任务页面显示历史运行、实时状态和产物操作；仅标注启动仍生成所选目标的缓存。现场管理、管理员数据治理和模型推理尚未实现。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。
+现场管理、管理员数据治理和模型推理尚未实现。完整平台路线由 [内部自助训练平台 Agent Note](agent-notes/proposed/feature/2026-07-30-self-service-training-platform.md) 所有。

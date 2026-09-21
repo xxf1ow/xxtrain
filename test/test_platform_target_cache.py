@@ -46,7 +46,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
                     image.putpixel((x, y), ((x * 3) % 256, (y * 5) % 256, (x + y) % 256))
             image.save(image_path)
 
-        self.data = WorkspaceData(self.workspace_root)
+        self.data = WorkspaceData(self.workspace_root, point_task_definition())
         self.repository = AnnotationRepository(self.workspace_root / 'annotations.db', point_task_definition())
         self.image = ImageRecord('a' * 64, 'images/source.png', 100, 80, 0)
         self.repository.register_images((self.image,))
@@ -115,7 +115,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
         frames = self.data.target_frames('classify', self.runtime_root)
         crop_mtimes = {frame.image_path: frame.image_path.stat().st_mtime_ns for frame in frames}
         database_before = (self.workspace_root / 'annotations.db').read_bytes()
-        destination = self.runtime_root / 'cache' / self.data.target_fingerprint('classify')
+        destination = self.runtime_root / 'cache' / self.data.training_fingerprint('classify')
 
         report = build_target_cache(self.data, 'classify', self.runtime_root, destination)
 
@@ -170,7 +170,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
     def test_builds_segment_with_existing_triangle_encoder_and_independent_crop_copies(self) -> None:
         frames = self.data.target_frames('segment', self.runtime_root)
         database_before = (self.workspace_root / 'annotations.db').read_bytes()
-        destination = self.runtime_root / 'cache' / self.data.target_fingerprint('segment')
+        destination = self.runtime_root / 'cache' / self.data.training_fingerprint('segment')
 
         report = build_target_cache(self.data, 'segment', self.runtime_root, destination)
 
@@ -219,7 +219,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
         self.assertEqual(2, len(lines))
 
     def test_runtime_readiness_requires_exact_manifest_and_target_directory(self) -> None:
-        fingerprint = self.data.target_fingerprint('classify')
+        fingerprint = self.data.training_fingerprint('classify')
         destination = self.runtime_root / 'cache' / fingerprint
         runtime = RuntimeCache(self.runtime_root)
         self.assertFalse(runtime.has_target_cache('classify', fingerprint))
@@ -244,7 +244,7 @@ class PlatformTargetCacheTest(unittest.TestCase):
         self.assertTrue(runtime.has_target_cache('classify', fingerprint))
 
     def test_publication_failure_does_not_mark_cache_ready(self) -> None:
-        fingerprint = self.data.target_fingerprint('segment')
+        fingerprint = self.data.training_fingerprint('segment')
         destination = self.runtime_root / 'cache' / fingerprint
         with patch('xxtrain.platform.target_cache.os.replace', side_effect=OSError('publish failed')):
             with self.assertRaisesRegex(OSError, 'publish failed'):
@@ -253,11 +253,11 @@ class PlatformTargetCacheTest(unittest.TestCase):
         self.assertFalse(RuntimeCache(self.runtime_root).has_target_cache('segment', fingerprint))
         self.assertFalse(destination.with_name(f'.{destination.name}.building').exists())
 
-    def test_rejects_unsupported_target_and_out_of_bounds_triangle(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unsupported target cache: 'detect'"):
-            build_target_cache(self.data, 'detect', self.runtime_root, self.root / 'detect')
-        with self.assertRaisesRegex(ValueError, "Unsupported target cache: 'detect'"):
-            RuntimeCache(self.runtime_root).has_target_cache('detect', 'fingerprint')
+    def test_rejects_unknown_or_unsafe_target_and_out_of_bounds_triangle(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown task step: 'missing'"):
+            build_target_cache(self.data, 'missing', self.runtime_root, self.root / 'missing')
+        with self.assertRaisesRegex(ValueError, 'relative dataset directory'):
+            RuntimeCache(self.runtime_root).cache_path('../detect', 'fingerprint')
 
         self.repository.save_annotations(
             (

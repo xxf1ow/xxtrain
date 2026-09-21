@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from xxtrain.business_tasks.loader import DEFAULT_TASK_ENTRY
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.data import Bbox
 from xxtrain.platform.config import WorkspaceConfig, load_config
@@ -17,6 +18,8 @@ from xxtrain.platform.contracts import (
     AnnotationRecord,
     CvatBinding,
     DetectionBox,
+    EditAnnotation,
+    EditFrameResult,
     EditJob,
     FrameMapping,
     FrameResult,
@@ -41,19 +44,25 @@ class FakeCvatClient:
         self.images = ()
         self.prepared = None
 
-    def create_task(self, name, labels):
+    def create_task(self, name, labels, policy):
         self.create_task_calls += 1
         return 40 + self.create_task_calls
 
-    def prepare_task(self, task_id, images, user_id):
+    def prepare_task(self, task_id, frames, user_id, policy):
         if self.prepare_error:
             raise self.prepare_error
-        self.images = images
-        ref = JobRef(task_id, task_id + 32, tuple(image.sample_id for image in images))
-        image_boxes = ((image, box) for image in images for box in image.boxes)
+        self.images = frames
+        ref = JobRef(task_id, task_id + 32, tuple(dict.fromkeys(frame.mapping.image_id for frame in frames)))
         bindings = tuple(
-            CvatBinding(image.sample_id, 'shape', 100 + index, box.geometry.id)
-            for index, (image, box) in enumerate(image_boxes, start=1)
+            CvatBinding(
+                frame.mapping.image_id,
+                'tag' if annotation.kind in {'classification', 'negative'} else 'shape',
+                100 + index,
+                annotation.id,
+            )
+            for index, (frame, annotation) in enumerate(
+                ((frame, annotation) for frame in frames for annotation in frame.annotations), start=1
+            )
         )
         self.prepared = PreparedJob(ref, bindings)
         return self.prepared
@@ -63,18 +72,43 @@ class FakeCvatClient:
             raise self.check_error
         return self.unfinished
 
-    def fetch_detection(self, ref):
+    def fetch_annotations(self, job, policy):
         if self.results is not None:
+            if self.results and isinstance(self.results[0], FrameResult):
+                by_sample = {result.sample_id: result for result in self.results}
+                return tuple(
+                    EditFrameResult(
+                        frame.mapping.frame_id,
+                        tuple(
+                            EditAnnotation(
+                                None,
+                                'rectangle',
+                                box.geometry.label,
+                                [[box.geometry.x1, box.geometry.y1], [box.geometry.x2, box.geometry.y2]],
+                                box.cvat_id,
+                            )
+                            for box in by_sample[frame.mapping.image_id].boxes
+                        ),
+                    )
+                    for frame in self.images
+                )
             return self.results
         binding_by_annotation = {binding.annotation_id: binding.object_id for binding in self.prepared.bindings}
         return tuple(
-            FrameResult(
-                image.sample_id,
+            EditFrameResult(
+                frame.mapping.frame_id,
                 tuple(
-                    DetectionBox(box.geometry, box.extra, binding_by_annotation[box.geometry.id]) for box in image.boxes
+                    EditAnnotation(
+                        None,
+                        annotation.kind,
+                        annotation.label,
+                        annotation.geometry,
+                        binding_by_annotation[annotation.id],
+                    )
+                    for annotation in frame.annotations
                 ),
             )
-            for image in self.images
+            for frame in self.images
         )
 
     def job_path(self, ref):
@@ -98,6 +132,15 @@ class PlatformConfigTest(unittest.TestCase):
             config = load_config(config_path)
             self.assertEqual((root / 'site').resolve(), config.workspace_dir)
             self.assertEqual((root / 'runtime').resolve(), config.runtime_dir)
+            self.assertEqual(DEFAULT_TASK_ENTRY, config.task_entry)
+            payload['task_entry'] = 'test.task_definitions:synthetic_task_definition'
+            config_path.write_text(json.dumps(payload), encoding='utf-8')
+            self.assertEqual(payload['task_entry'], load_config(config_path).task_entry)
+            for value in ('', 3):
+                with self.subTest(task_entry=value):
+                    config_path.write_text(json.dumps(payload | {'task_entry': value}), encoding='utf-8')
+                    with self.assertRaises(ValueError):
+                        load_config(config_path)
             for field, value in (('unexpected', True), ('owner_user_id', True), ('workspace_dir', '')):
                 with self.subTest(field=field):
                     config_path.write_text(json.dumps(payload | {field: value}), encoding='utf-8')
@@ -217,7 +260,7 @@ class AnnotationServiceTest(unittest.TestCase):
         self.images = self.workspace / 'images'
         self.images.mkdir(parents=True)
         self.config = WorkspaceConfig('line-3', 'Line 3', 17, self.workspace, self.root / 'runtime', 'http://cvat.test')
-        self.data = WorkspaceData(self.workspace)
+        self.data = WorkspaceData(self.workspace, point_task_definition())
         self.repository = AnnotationRepository(self.workspace / 'annotations.db', point_task_definition())
         self.runtime = RuntimeCache(self.config.runtime_dir)
         self.cvat = FakeCvatClient()
@@ -250,10 +293,14 @@ class AnnotationServiceTest(unittest.TestCase):
     def test_view_is_derived_from_sqlite_and_gate_requires_50_boxed_images(self):
         self.create_workspace(boxed=49, negatives=1)
         view = self.service.view(17)
-        self.assertEqual((50, 50, 49), (view.image_count, view.annotated_image_count, view.boxed_image_count))
-        self.assertFalse(view.can_generate_detection_cache)
+        detect = next(target for target in view.targets if target.id == 'detect')
+        self.assertEqual((50, 50), (view.image_count, detect.annotated_sample_count))
+        self.assertFalse(detect.can_generate_cache)
         restarted = AnnotationService(
-            self.config, WorkspaceData(self.workspace), self.cvat, RuntimeCache(self.config.runtime_dir)
+            self.config,
+            WorkspaceData(self.workspace, point_task_definition()),
+            self.cvat,
+            RuntimeCache(self.config.runtime_dir),
         )
         self.assertEqual(view, restarted.view(17))
 
@@ -270,87 +317,93 @@ class AnnotationServiceTest(unittest.TestCase):
 
         view = self.service.view(17)
 
-        self.assertEqual((1, 1, 1), (view.image_count, view.annotated_image_count, view.boxed_image_count))
-        self.assertFalse(view.can_generate_detection_cache)
-        with self.assertRaisesRegex(PlatformError, 'at least 50 boxed images'):
-            self.service.generate_detection_cache(17)
+        detect = next(target for target in view.targets if target.id == 'detect')
+        self.assertEqual((1, 1), (view.image_count, detect.annotated_sample_count))
+        self.assertFalse(detect.can_generate_cache)
+        with self.assertRaisesRegex(PlatformError, 'input sample'):
+            self.service.generate_target_cache(17, 'detect')
 
     def test_one_incomplete_image_blocks_an_otherwise_eligible_workspace(self):
         self.create_workspace(boxed=50, incomplete=1)
 
         view = self.service.view(17)
 
-        self.assertEqual((51, 50, 50), (view.image_count, view.annotated_image_count, view.boxed_image_count))
-        self.assertFalse(view.can_generate_detection_cache)
-        with self.assertRaisesRegex(PlatformError, 'all images annotated'):
-            self.service.generate_detection_cache(17)
+        detect = next(target for target in view.targets if target.id == 'detect')
+        self.assertEqual((51, 50), (view.image_count, detect.annotated_sample_count))
+        self.assertFalse(detect.can_generate_cache)
+        with self.assertRaisesRegex(PlatformError, 'input sample'):
+            self.service.generate_target_cache(17, 'detect')
 
     def test_sync_keeps_fifty_boxed_plus_one_incomplete_image_ineligible(self):
         self.create_workspace(boxed=50, incomplete=1)
-        self.service.begin_detection(17)
+        self.service.begin_target(17, 'detect')
 
-        view = self.service.sync_detection(17)
+        view = self.service.sync_target(17, 'detect')
 
-        self.assertEqual((51, 50, 50), (view.image_count, view.annotated_image_count, view.boxed_image_count))
-        self.assertFalse(view.can_generate_detection_cache)
-        with self.assertRaisesRegex(PlatformError, 'all images annotated'):
-            self.service.generate_detection_cache(17)
+        detect = next(target for target in view.targets if target.id == 'detect')
+        self.assertEqual((51, 50), (view.image_count, detect.annotated_sample_count))
+        self.assertFalse(detect.can_generate_cache)
+        with self.assertRaisesRegex(PlatformError, 'input sample'):
+            self.service.generate_target_cache(17, 'detect')
 
     def test_cache_generation_publishes_registered_database_samples(self):
         self.create_workspace(boxed=50, negatives=1)
-        view = self.service.generate_detection_cache(17)
-        self.assertTrue(view.detection_cache_ready)
-        output = self.config.runtime_dir / 'cache' / self.data.detection_fingerprint() / 'detect'
+        view = self.service.generate_target_cache(17, 'detect')
+        self.assertTrue(next(target for target in view.targets if target.id == 'detect').cache_ready)
+        output = self.config.runtime_dir / 'cache' / self.data.training_fingerprint('detect') / 'detect'
         labels = list((output / 'workspace').glob('*.txt'))
         self.assertEqual(51, len(labels))
         self.assertEqual(50, sum(bool(path.read_text(encoding='utf-8')) for path in labels))
 
     def test_same_input_reuses_only_an_unfinished_bound_job(self):
         self.create_workspace(incomplete=1)
-        first = self.service.begin_detection(17)
+        first = self.service.begin_target(17, 'detect')
         self.assertEqual(self.cvat.prepared.bindings, self.repository.bindings(self.cvat.prepared.ref))
         restarted = AnnotationService(self.config, self.data, self.cvat, RuntimeCache(self.config.runtime_dir))
-        self.assertEqual(first, restarted.begin_detection(17))
+        self.assertEqual(first, restarted.begin_target(17, 'detect'))
         self.assertEqual(1, self.cvat.create_task_calls)
         self.cvat.unfinished = False
-        self.assertNotEqual(first, self.service.begin_detection(17))
+        self.assertNotEqual(first, self.service.begin_target(17, 'detect'))
 
     def test_failed_preparation_or_binding_never_publishes_an_editable_job(self):
         self.create_workspace(boxed=1)
         fingerprint = self.data.detection_fingerprint()
         self.cvat.prepare_error = PlatformError('preparation failed')
         with self.assertRaisesRegex(PlatformError, 'preparation failed'):
-            self.service.begin_detection(17)
+            self.service.begin_target(17, 'detect')
         self.assertIsNone(self.runtime.job_for('detect', fingerprint))
         self.cvat.prepare_error = None
         with patch.object(self.data, 'bind_job', side_effect=PlatformError('binding failed')):
             with self.assertRaisesRegex(PlatformError, 'binding failed'):
-                self.service.begin_detection(17)
+                self.service.begin_target(17, 'detect')
         self.assertIsNone(self.runtime.job_for('detect', fingerprint))
 
     def test_sync_prepublishes_result_fingerprint_and_survives_process_restart(self):
         (sample,) = self.create_workspace(incomplete=1)
-        self.service.begin_detection(17)
+        self.service.begin_target(17, 'detect')
         ref = self.cvat.prepared.ref
         self.cvat.results = (
             FrameResult(sample.sample_id, (DetectionBox(Bbox(label='cc', x1=3, y1=4, x2=22, y2=31), cvat_id=501),)),
         )
 
-        view = self.service.sync_detection(17)
+        view = self.service.sync_target(17, 'detect')
 
-        self.assertEqual((1, 1), (view.annotated_image_count, view.boxed_image_count))
+        self.assertEqual(1, next(target for target in view.targets if target.id == 'detect').annotated_sample_count)
         fingerprint = self.data.detection_fingerprint()
         self.assertEqual(ref, RuntimeCache(self.config.runtime_dir).job_for('detect', fingerprint))
         restarted = AnnotationService(
-            self.config, WorkspaceData(self.workspace), self.cvat, RuntimeCache(self.config.runtime_dir)
+            self.config,
+            WorkspaceData(self.workspace, point_task_definition()),
+            self.cvat,
+            RuntimeCache(self.config.runtime_dir),
         )
         self.assertEqual(view, restarted.view(17))
-        self.assertEqual('/tasks/41/jobs/73', restarted.begin_detection(17))
+        self.assertEqual('/tasks/41/jobs/73', restarted.begin_target(17, 'detect'))
 
     def test_sync_invalidates_empty_downstream_jobs_and_reverting_does_not_restore_them(self):
         (sample,) = self.create_workspace(boxed=1)
-        self.service.begin_detection(17)
-        original = self.data.images()[0].boxes[0]
+        self.service.begin_target(17, 'detect')
+        original = self.data.images('detect')[0].boxes[0]
         old_classify = JobRef(80, 81, (sample.sample_id,))
         old_segment = JobRef(82, 83, (sample.sample_id,))
         self.runtime.remember_job('classify', 'old', old_classify)
@@ -361,12 +414,12 @@ class AnnotationServiceTest(unittest.TestCase):
                 (DetectionBox(Bbox(label=original.geometry.label, x1=4, y1=2, x2=20, y2=30), cvat_id=101),),
             ),
         )
-        self.service.sync_detection(17)
+        self.service.sync_target(17, 'detect')
         self.assertIsNone(self.runtime.job_for('classify', 'old'))
         self.assertIsNone(self.runtime.job_for('segment', 'old'))
 
         self.cvat.results = (FrameResult(sample.sample_id, (DetectionBox(original.geometry, cvat_id=101),)),)
-        self.service.sync_detection(17)
+        self.service.sync_target(17, 'detect')
         self.assertIsNone(self.runtime.job_for('classify', 'old'))
         self.assertIsNone(self.runtime.job_for('segment', 'old'))
 
@@ -383,23 +436,23 @@ class AnnotationServiceTest(unittest.TestCase):
 
     def test_forget_and_remember_failures_do_not_modify_annotations(self):
         (sample,) = self.create_workspace(boxed=1)
-        self.service.begin_detection(17)
+        self.service.begin_target(17, 'detect')
         before = self.repository.annotations()
         self.cvat.results = (
             FrameResult(sample.sample_id, (DetectionBox(Bbox(label='tl', x1=4, y1=2, x2=20, y2=30), cvat_id=101),)),
         )
         with patch.object(self.runtime, 'forget_targets', side_effect=OSError('runtime disk full')):
             with self.assertRaises(PlatformError):
-                self.service.sync_detection(17)
+                self.service.sync_target(17, 'detect')
         self.assertEqual(before, self.repository.annotations())
-        with patch.object(self.runtime, 'remember_job', side_effect=OSError('runtime disk full')):
+        with patch.object(self.runtime, 'remember_edit_job', side_effect=OSError('runtime disk full')):
             with self.assertRaises(PlatformError):
-                self.service.sync_detection(17)
+                self.service.sync_target(17, 'detect')
         self.assertEqual(before, self.repository.annotations())
 
     def test_database_mapping_failure_preserves_data_and_retry_does_not_duplicate(self):
         (sample,) = self.create_workspace(incomplete=1)
-        self.service.begin_detection(17)
+        self.service.begin_target(17, 'detect')
         ref = self.cvat.prepared.ref
         before = self.repository.annotations()
         self.cvat.results = (
@@ -411,13 +464,13 @@ class AnnotationServiceTest(unittest.TestCase):
 
         with patch.object(self.data._repository, 'apply_changes', side_effect=fail_transaction):
             with self.assertRaisesRegex(PlatformError, '取回或保存'):
-                self.service.sync_detection(17)
+                self.service.sync_target(17, 'detect')
         self.assertEqual(before, self.repository.annotations())
         self.assertEqual((), self.repository.bindings(ref))
 
-        view = self.service.sync_detection(17)
+        view = self.service.sync_target(17, 'detect')
 
-        self.assertEqual(1, view.boxed_image_count)
+        self.assertEqual(1, next(target for target in view.targets if target.id == 'detect').annotated_sample_count)
         self.assertEqual(1, len(self.repository.annotations(step_key='detect')))
         self.assertEqual(1, len(self.repository.bindings(ref)))
 
@@ -430,12 +483,12 @@ class AnnotationServiceTest(unittest.TestCase):
 
         self.assertEqual(1, results[0].image_count)
 
-    def test_legacy_detection_and_target_writes_share_owner_and_operation_lock(self):
+    def test_target_writes_share_owner_and_operation_lock(self):
         operations = (
             ('upload', lambda user: self.service.upload(user, ())),
-            ('legacy detection start', self.service.begin_detection),
-            ('legacy detection sync', self.service.sync_detection),
-            ('legacy detection cache', self.service.generate_detection_cache),
+            ('detection start', lambda user: self.service.begin_target(user, 'detect')),
+            ('detection sync', lambda user: self.service.sync_target(user, 'detect')),
+            ('detection cache', lambda user: self.service.generate_target_cache(user, 'detect')),
             ('target start', lambda user: self.service.begin_target(user, 'classify')),
             ('target sync', lambda user: self.service.sync_target(user, 'segment')),
             ('target cache', lambda user: self.service.generate_target_cache(user, 'classify')),
@@ -455,13 +508,13 @@ class AnnotationServiceTest(unittest.TestCase):
             self.data,
             self.cvat,
             self.runtime,
-            require_editable=lambda workspace_id: (_ for _ in ()).throw(PlatformError('training active')),
+            require_editable=lambda workspace_id, target: (_ for _ in ()).throw(PlatformError('training active')),
         )
         operations = (
             ('upload', lambda: guarded.upload(17, ())),
-            ('legacy begin', lambda: guarded.begin_detection(17)),
+            ('detection begin', lambda: guarded.begin_target(17, 'detect')),
             ('target begin', lambda: guarded.begin_target(17, 'classify')),
-            ('legacy sync', lambda: guarded.sync_detection(17)),
+            ('detection sync', lambda: guarded.sync_target(17, 'detect')),
             ('target sync', lambda: guarded.sync_target(17, 'segment')),
         )
         for name, operation in operations:

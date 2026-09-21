@@ -15,7 +15,7 @@ import httpx
 
 from xxtrain.platform.app import create_app
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import PlatformAccessError, WorkspaceView
+from xxtrain.platform.contracts import PlatformAccessError, TargetView, WorkspaceView
 from xxtrain.platform.training_contracts import ExecutionView, TrainingRun, TrainingRunView
 
 
@@ -34,7 +34,16 @@ class _Client:
 
 class _Annotations:
     def view(self, user_id: int) -> WorkspaceView:
-        return WorkspaceView('line-3', '三号现场', 50, 50, 50, True, False)
+        return WorkspaceView(
+            'line-3',
+            '三号现场',
+            50,
+            (
+                TargetView('detect', 50, 50, True, True, False, '检测', '张图片'),
+                TargetView('classify', 40, 40, True, True, False, '分类', '张裁剪图'),
+                TargetView('segment', 40, 0, True, False, False, '指针分割', '张裁剪图'),
+            ),
+        )
 
 
 class _Cvat:
@@ -61,7 +70,12 @@ class _Training:
         self.view = TrainingRunView(run, ExecutionView('private', 'queued', True, None, None, 3.0, None, False, None))
 
     def workspace_view(self, user_id: int) -> dict[str, object]:
-        return {'workspace': _Annotations().view(user_id), 'editable': False, 'training': {'detect': self.view}}
+        return {
+            'workspace': _Annotations().view(user_id),
+            'can_upload': False,
+            'target_editable': {'detect': False, 'classify': True, 'segment': True},
+            'training': {'detect': self.view, 'classify': None, 'segment': None},
+        }
 
     def list_runs(self, user_id: int) -> tuple[TrainingRunView, ...]:
         return (self.view,)
@@ -99,13 +113,16 @@ class PlatformTrainingBrowserTest(unittest.TestCase):
 (async () => {{
 const ids = {json.dumps(ids)};
 const elements = new Map();
-function element(id) {{ return {{id, hidden:false, disabled:false, textContent:'', value:'', files:[], dataset:{{}},
+function element(id, tag='div') {{ return {{id, tagName:tag, children:[], className:'', hidden:false,
+  disabled:false, textContent:'', value:'', files:[], dataset:{{}},
   listeners:{{}}, classList:{{toggle(){{}}}}, addEventListener(n, f){{(this.listeners[n] ||= []).push(f)}},
   dispatchEvent(e){{for(const f of this.listeners[e.type] || []) f(e)}},
+  append(...nodes){{this.children.push(...nodes)}}, replaceChildren(...nodes){{this.children=[...nodes]}},
   setAttribute(){{}}, removeAttribute(){{}}, reset(){{}}}} }}
 ids.forEach((id) => elements.set(id, element(id)));
 let loaded; let assigned = null;
-globalThis.document = {{cookie:'xxtrain_csrf=token', getElementById:(id)=>elements.get(id), querySelectorAll:()=>[],
+globalThis.document = {{cookie:'xxtrain_csrf=token', getElementById:(id)=>elements.get(id),
+  createElement:(tag)=>element('',tag), querySelectorAll:()=>[],
   addEventListener:(name, fn)=>{{if(name==='DOMContentLoaded') loaded=fn}}}};
 globalThis.location = {{search:'?returned=1', assign:(url)=>{{assigned=url}}}};
 globalThis.history = {{replaceState(_state,_title,url){{location.search='';location.pathname=url}}}};
@@ -118,20 +135,20 @@ let cryptoCalls = 0;
 globalThis.crypto = {{randomUUID:()=>{{cryptoCalls += 1; return 'unused'}}}};
 globalThis.setTimeout = ()=>1; globalThis.clearTimeout = ()=>{{}};
 const baseTargets = [
-  {{id:'detect', name:'检测', available:true, sample_count:50, annotated_sample_count:50,
-    can_annotate:true, can_generate_cache:true, cache_ready:false}},
-  {{id:'classify', name:'分类', available:true, sample_count:40, annotated_sample_count:40,
-    can_annotate:true, can_generate_cache:true, cache_ready:false}},
-  {{id:'segment', name:'分割', available:true, sample_count:40, annotated_sample_count:0,
-    can_annotate:false, can_generate_cache:true, cache_ready:false}},
+  {{id:'detect', name:'检测', sample_unit:'张图片', sample_count:50, annotated_sample_count:50,
+    can_annotate:true, can_generate_cache:true, cache_ready:false, editable:false, training:null}},
+  {{id:'classify', name:'分类', sample_unit:'张裁剪图', sample_count:40, annotated_sample_count:40,
+    can_annotate:true, can_generate_cache:true, cache_ready:false, editable:true, training:null}},
+  {{id:'segment', name:'指针分割', sample_unit:'张裁剪图', sample_count:40, annotated_sample_count:0,
+    can_annotate:false, can_generate_cache:true, cache_ready:false, editable:false, training:null}},
 ];
 const execution = {{status:'queued', active:true, epoch:null, total_epochs:null, elapsed_seconds:3,
   metric:null, download_ready:false, detail:null}};
 const run = {{id:{json.dumps(run_id)}, workspace_id:'line-3', workspace_name:'三号现场', target:'detect',
   submitted_at:'2026-09-17T00:00:00+00:00', execution}};
+baseTargets[0].training = run;
 const workspace = {{workspace_id:'line-3', name:'三号现场', image_count:50,
-  task:{{id:'point',name:'Point'}}, targets:baseTargets,
-  editing_locked:true, training_enabled:true, training:{{detect:run, classify:null, segment:null}}}};
+  task:{{id:'point',name:'Point'}}, targets:baseTargets, can_upload:false, training_enabled:true}};
 const calls=[];
 let submittedRun = null;
 let failWorkspace = false;
@@ -148,29 +165,33 @@ globalThis.fetch = async (url, options={{}}) => {{ calls.push({{url, body:option
     : url.endsWith('/train') ? {{run_id:submittedRun.id,
         training_url:`/platform/training/?run=${{submittedRun.id}}`, run:submittedRun}}
     : submittedRun
-      ? {{...workspace, training:{{...workspace.training, [submittedRun.target]:submittedRun}}}}
+      ? {{...workspace, targets:workspace.targets.map((target)=>target.id === submittedRun.target
+          ? {{...target, training:submittedRun}} : target)}}
       : workspace;
   return {{ok:true,status:200,json:async()=>body}};
 }};
 eval({json.dumps(script)}); await loaded();
-const get=(id)=>elements.get(id); const detect=get('cache-action');
+function all(node){{return[node,...node.children.flatMap(all)]}}
+function buttons(target){{const card=all(elements.get('target-rail')).find((node)=>node.dataset.target===target);
+  return all(card).filter((node)=>node.tagName==='button')}}
+const detect=buttons('detect')[1];
 const queued=detect.textContent; detect.dispatchEvent(new Event('mouseenter')); const hovered=detect.textContent;
 detect.dispatchEvent(new Event('mouseleave')); const restored=detect.textContent;
-const annotationDisabled=get('primary-action').disabled;
-get('image-files').files=[{{name:'duplicate.png'}}];
-await get('image-files').listeners.change[0]();
-await get('classify-cache-action').listeners.click[0]();
-const recoveredRunId=get('classify-cache-action').dataset.runId;
-const recoveredText=get('classify-cache-action').textContent;
+const annotationDisabled=buttons('detect')[0].disabled;
+elements.get('image-files').files=[{{name:'duplicate.png'}}];
+await elements.get('image-files').listeners.change[0]();
+await buttons('classify')[1].listeners.click[0]();
+const recoveredRunId=buttons('classify')[1].dataset.runId;
+const recoveredText=buttons('classify')[1].textContent;
 failWorkspace = true;
-await get('segment-cache-action').listeners.click[0]();
-const disabledAfterReadFailure=get('segment-cache-action').disabled;
+await buttons('segment')[1].listeners.click[0]();
+const disabledAfterReadFailure=buttons('segment')[1].disabled;
 failWorkspace = false;
 failTrain = false;
 await loaded();
-const reconstructedRunId=get('segment-cache-action').dataset.runId;
+const reconstructedRunId=buttons('segment')[1].dataset.runId;
 const trainingBodies = calls.filter((call)=>call.url.endsWith('/train')).map((call)=>call.body);
-process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled,classifyDisabled:get('classify-cache-action').disabled,
+process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled,classifyDisabled:buttons('classify')[1].disabled,
   recoveredRunId,recoveredText,disabledAfterReadFailure,reconstructedRunId,assigned,calls,trainingBodies,
   cryptoCalls,trainingStorageWrites,trainingEnabled:workspace.training_enabled}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
@@ -188,7 +209,7 @@ process.stdout.write(JSON.stringify({{queued,hovered,restored,annotationDisabled
             any(call['url'].endswith('/targets/classify/train') for call in result['calls']), result['calls']
         )
         self.assertTrue(any(call['url'].endswith('/targets/detect/sync') for call in result['calls']), result['calls'])
-        self.assertTrue(any(call['url'].endswith('/images') for call in result['calls']), result['calls'])
+        self.assertFalse(any(call['url'].endswith('/images') for call in result['calls']), result['calls'])
         self.assertFalse(any(call['url'].endswith('/cache') for call in result['calls']), result['calls'])
         self.assertEqual([{}, {}], [json.loads(body) for body in result['trainingBodies']])
         self.assertEqual(0, result['cryptoCalls'])
@@ -230,16 +251,20 @@ const timers=new Map(); let timerCounter=0;
 globalThis.setTimeout=(fn,ms)=>{{timers.set(++timerCounter,{{fn,ms}});return timerCounter}};
 globalThis.clearTimeout=(id)=>timers.delete(id);
 const missing={{id:'{missing_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'segment',
+  target_name:'指针分割模型',
   submitted_at:'2026-09-17T00:00:00+00:00',execution:null}};
-const active={{id:'{run_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'detect',
+const active={{id:'{run_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'detect',target_name:'检测模型',
   submitted_at:'2026-09-17T00:01:00+00:00',execution:{{status:'unknown',active:true,epoch:null,
     total_epochs:null,elapsed_seconds:null,metric:null,download_ready:false,detail:'暂时不可用'}}}};
 const completed={{id:'{completed_id}',workspace_id:'line-3',workspace_name:'三号现场',target:'classify',
+  target_name:'分类模型',
   metric_name:'分类准确率：Top-1',submitted_at:'2026-09-17T00:02:00+00:00',cancellation_requested:true,execution:{{status:'completed',active:false,epoch:10,
     total_epochs:10,elapsed_seconds:30,metric:0.8,download_ready:true,detail:null}}}};
-const cancelling={{...active,id:'{cancelling_id}',target:'segment',cancellation_requested:true,
+const cancelling={{...active,id:'{cancelling_id}',target:'segment',target_name:'指针分割模型',
+  cancellation_requested:true,
   execution:{{...active.execution,status:'running'}}}};
-const unavailable={{...completed,id:'{unavailable_id}',target:'detect',cancellation_requested:false,
+const unavailable={{...completed,id:'{unavailable_id}',target:'detect',target_name:'检测模型',
+  cancellation_requested:false,
   execution:{{...completed.execution,download_ready:false}}}};
 let runs=[missing,active,completed,cancelling,unavailable]; let failList=false; let authFail=false; const calls=[];
 globalThis.fetch=async(url,options={{}})=>{{calls.push({{url,method:options.method||'GET',body:options.body||null,csrf:options.headers?.['X-XTrain-CSRF']||null}});
@@ -317,33 +342,40 @@ process.stdout.write(JSON.stringify({{missingState,unknownState,downloadHref,met
                 harness = f"""
 (async () => {{
 const ids={json.dumps(ids)}; const elements=new Map();
-function element(id) {{return {{id,hidden:false,disabled:false,textContent:'',value:'',files:[],dataset:{{}},
+function element(id,tag='div') {{return {{id,tagName:tag,children:[],className:'',hidden:false,
+  disabled:false,textContent:'',value:'',files:[],dataset:{{}},
   listeners:{{}},
   classList:{{toggle(){{}}}},addEventListener(n,f){{(this.listeners[n]||=[]).push(f)}},setAttribute(){{}},
+  append(...nodes){{this.children.push(...nodes)}},replaceChildren(...nodes){{this.children=[...nodes]}},
   removeAttribute(){{}},reset(){{}}}}}}
 ids.forEach((id)=>elements.set(id,element(id))); let loaded;
-globalThis.document={{cookie:'xxtrain_csrf=token',getElementById:(id)=>elements.get(id),querySelectorAll:()=>[],
+globalThis.document={{cookie:'xxtrain_csrf=token',getElementById:(id)=>elements.get(id),createElement:(tag)=>element('',tag),querySelectorAll:()=>[],
   addEventListener:(name,fn)=>{{if(name==='DOMContentLoaded')loaded=fn}}}};
 globalThis.location={{search:'',assign(){{}}}}; globalThis.history={{replaceState(){{}}}};
 globalThis.sessionStorage={{getItem:()=>null,setItem(){{}},removeItem(){{}}}};
 globalThis.FormData=class{{append(){{}}}}; globalThis.setTimeout=()=>1; globalThis.clearTimeout=()=>{{}};
-const targets=['detect','classify','segment'].map((id)=>({{id,name:id,available:true,sample_count:50,
-  annotated_sample_count:50,can_annotate:true,can_generate_cache:true,cache_ready:false}}));
+const targets=['detect','classify','segment'].map((id)=>({{id,name:id,sample_unit:'样本',sample_count:50,
+  annotated_sample_count:50,can_annotate:true,can_generate_cache:true,cache_ready:false,editable:true,training:null}}));
 const execution={{status:{json.dumps(execution_status)},
   active:{str(execution_status in {'pending', 'queued', 'running'}).lower()},
   epoch:null,total_epochs:null,elapsed_seconds:null,metric:null,download_ready:false,detail:null}};
 const run={{id:'55555555-5555-4555-8555-555555555555',workspace_id:'line-3',workspace_name:'三号现场',
   target:'detect',submitted_at:'2026-09-17T00:00:00+00:00',execution,cancellation_requested:false}};
 const base={{workspace_id:'line-3',name:'三号现场',image_count:50,task:{{id:'point',name:'Point'}},targets,
-  editing_locked:false,training_enabled:true,training:{{detect:null,classify:null,segment:null}}}};
+  can_upload:true,training_enabled:true}};
 let submitted=false;
 globalThis.fetch=async(url)=>{{
   if(url.endsWith('/session'))return{{ok:true,status:200,json:async()=>({{authenticated:true,user_id:17}})}};
   if(url.endsWith('/train')){{submitted=true;return{{ok:true,status:200,json:async()=>({{run_id:run.id,run}})}}}}
-  if(url.endsWith('/workspace'))return{{ok:true,status:200,json:async()=>submitted?{{...base,training:{{...base.training,detect:run}}}}:base}};
+  if(url.endsWith('/workspace'))return{{ok:true,status:200,json:async()=>submitted
+    ?{{...base,targets:base.targets.map((target)=>target.id==='detect'?{{...target,training:run}}:target)}}:base}};
   throw new Error(`unexpected ${{url}}`);
 }};
-eval({json.dumps(script)}); await loaded(); await elements.get('cache-action').listeners.click[0]();
+eval({json.dumps(script)}); await loaded();
+function all(node){{return[node,...node.children.flatMap(all)]}}
+const card=all(elements.get('target-rail')).find((node)=>node.dataset.target==='detect');
+const train=all(card).filter((node)=>node.tagName==='button')[1];
+await train.listeners.click[0]();
 process.stdout.write(JSON.stringify({{message:elements.get('workspace-message').textContent}}));
 }})().catch((error)=>{{console.error(error);process.exitCode=1}});
 """

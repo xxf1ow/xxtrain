@@ -110,7 +110,7 @@ class TrainingEntrypointTest(unittest.TestCase):
                 require_cache_rebuild = None
 
             class Training(Resource):
-                def require_editable(self, workspace_id: str) -> None:
+                def require_editable(self, workspace_id: str, target: str | None = None) -> None:
                     pass
 
                 def require_cache_rebuild(self, workspace_id: str, target: str, fingerprint: str) -> None:
@@ -126,11 +126,18 @@ class TrainingEntrypointTest(unittest.TestCase):
             captured: dict[str, object] = {}
 
             def make_app(
-                config: object, annotations: Annotation, cvat: object, *, training_service: Training | None = None
+                config: object,
+                annotations: Annotation,
+                cvat: object,
+                *,
+                task: object,
+                training_service: Training | None = None,
             ) -> object:
+                events.append(('create_app',))
                 captured['guard'] = annotations.require_editable
                 captured['cache_guard'] = annotations.require_cache_rebuild
                 captured['training'] = training_service
+                captured['task'] = task
                 return object()
 
             environment = {
@@ -156,10 +163,34 @@ class TrainingEntrypointTest(unittest.TestCase):
             self.assertIsNotNone(captured['training'])
             self.assertEqual(captured['training'].require_editable, captured['guard'])
             self.assertEqual(captured['training'].require_cache_rebuild, captured['cache_guard'])
+            self.assertIs(events[0][2], captured['task'])
             clearml_event = next(
                 event for event in events if event[0] == 'Resource' and event[1:3] == ('xxtrain', 'training')
             )
             self.assertEqual((root / 'runs').resolve(), clearml_event[-1]['run_root'])
+
+    def test_workspace_config_rejects_invalid_task_entry_syntax(self) -> None:
+        from xxtrain.platform.config import load_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'workspace.json'
+            path.write_text(
+                json.dumps(
+                    {
+                        'workspace_id': 'line-3',
+                        'display_name': 'Line 3',
+                        'owner_user_id': 17,
+                        'workspace_dir': 'workspace',
+                        'runtime_dir': 'runtime',
+                        'cvat_internal_url': 'http://cvat.test',
+                        'task_entry': 'not-a-factory-entry',
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            with self.assertRaisesRegex(ValueError, 'task_entry'):
+                load_config(path)
 
     def test_training_startup_rejects_unsafe_paths_and_missing_clearml_keys(self) -> None:
         from xxtrain.platform.__main__ import main

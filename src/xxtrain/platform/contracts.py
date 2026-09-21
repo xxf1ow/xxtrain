@@ -7,7 +7,7 @@ from xxtrain.data import Bbox
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
-type WorkspaceEditGuard = Callable[[str], None]
+type WorkspaceEditGuard = Callable[[str, str | None], None]
 type WorkspaceCacheRebuildGuard = Callable[[str, str, str], None]
 
 
@@ -154,11 +154,14 @@ class TargetSync:
 
 @dataclass(frozen=True)
 class EditAnnotation:
-    """One classification or shape annotation in edit-frame coordinates."""
+    """One classification, shape, or negative annotation in edit-frame coordinates.
+
+    Negative annotations use null label and geometry; all other kinds use a string business label.
+    """
 
     id: UUID | None
     kind: str
-    label: str
+    label: str | None
     geometry: JsonValue
     cvat_id: int | None = None
 
@@ -207,10 +210,11 @@ class EditJob:
 
 @dataclass(frozen=True)
 class TargetSummary:
-    """Counts target samples and samples with complete annotations."""
+    """Count target samples, completed samples, and completed positive samples."""
 
     sample_count: int
     annotated_sample_count: int
+    positive_sample_count: int
 
 
 @dataclass(frozen=True)
@@ -223,6 +227,8 @@ class TargetView:
     can_annotate: bool
     can_generate_cache: bool
     cache_ready: bool
+    display_name: str = ''
+    sample_unit: str = '个样本'
 
 
 @dataclass(frozen=True)
@@ -230,11 +236,9 @@ class WorkspaceView:
     workspace_id: str
     name: str
     image_count: int
-    annotated_image_count: int
-    boxed_image_count: int
-    can_generate_detection_cache: bool
-    detection_cache_ready: bool
     targets: tuple[TargetView, ...] = ()
+    task_id: str = 'task'
+    task_name: str = 'Task'
 
 
 class PlatformError(Exception):

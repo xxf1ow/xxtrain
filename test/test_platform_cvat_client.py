@@ -16,6 +16,7 @@ except ModuleNotFoundError as error:
     raise unittest.SkipTest('platform extra is not installed') from error
 
 from xxtrain.business_tasks import POINT_BOX_LABELS
+from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.data import Bbox
 from xxtrain.integrations.cvat import CvatClient
 from xxtrain.platform.contracts import (
@@ -25,7 +26,6 @@ from xxtrain.platform.contracts import (
     EditFrame,
     EditJob,
     FrameMapping,
-    FrameResult,
     ImageInput,
     JobRef,
     PlatformAccessError,
@@ -36,6 +36,7 @@ LABELS = [
     {
         'id': 41 + index,
         'name': name,
+        'type': 'rectangle',
         'attributes': [
             {
                 'id': 71 + index,
@@ -49,6 +50,31 @@ LABELS = [
     }
     for index, name in enumerate(POINT_BOX_LABELS)
 ]
+POINT_TASK = point_task_definition()
+DETECT_POLICY = POINT_TASK.step('detect').annotation
+CLASSIFY_POLICY = POINT_TASK.step('classify').annotation
+SEGMENT_POLICY = POINT_TASK.step('segment').annotation
+
+
+def edit_frames(images: tuple[ImageInput, ...]) -> tuple[EditFrame, ...]:
+    return tuple(
+        EditFrame(
+            FrameMapping(image.sample_id, image.sample_id, None, (0, 0, image.width, image.height)),
+            image.image_path,
+            image.width,
+            image.height,
+            tuple(
+                EditAnnotation(
+                    box.geometry.id,
+                    'rectangle',
+                    box.geometry.label,
+                    [[box.geometry.x1, box.geometry.y1], [box.geometry.x2, box.geometry.y2]],
+                )
+                for box in image.boxes
+            ),
+        )
+        for image in images
+    )
 
 
 def page(results: list[dict], *, next_url: str | None = None) -> dict:
@@ -129,7 +155,7 @@ class CvatClientTest(unittest.TestCase):
         http = httpx.Client(transport=httpx.MockTransport(respond), cookies={'browser': 'must-not-leak'})
         client = CvatClient('http://cvat.test', 'private-token', http)
 
-        self.assertEqual(client.create_task('Point detection', POINT_BOX_LABELS), 7)
+        self.assertEqual(client.create_task('Point detection', POINT_BOX_LABELS, DETECT_POLICY), 7)
         self.assertEqual(len(seen), 1)
 
     def test_create_edit_task_sends_explicit_tag_label_type(self):
@@ -157,8 +183,7 @@ class CvatClientTest(unittest.TestCase):
 
         client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
 
-        self.assertTrue(hasattr(client, 'create_edit_task'), 'typed CVAT task creation is not implemented')
-        self.assertEqual(client.create_edit_task('Point classification', ('tl',), 'tag'), 17)
+        self.assertEqual(client.create_task('Point classification', ('tl',), CLASSIFY_POLICY), 17)
 
     def test_prepare_uploads_numbered_images_initializes_annotations_and_assigns_job(self):
         requests = []
@@ -176,11 +201,7 @@ class CvatClientTest(unittest.TestCase):
                     first,
                     100,
                     80,
-                    (
-                        DetectionBox(
-                            Bbox(id=first_annotation, label='tl', x1=1, y1=2, x2=11, y2=12), {'description': 'existing'}
-                        ),
-                    ),
+                    (DetectionBox(Bbox(id=first_annotation, label='tl', x1=1, y1=2, x2=11, y2=12)),),
                 ),
                 ImageInput(
                     'sample-a',
@@ -246,7 +267,6 @@ class CvatClientTest(unittest.TestCase):
                     self.assertEqual(payload['shapes'][0]['frame'], 0)
                     self.assertEqual(payload['shapes'][0]['label_id'], 42)
                     extras = [json.loads(shape['attributes'][0]['value']) for shape in payload['shapes']]
-                    self.assertEqual('existing', extras[0]['description'])
                     self.assertEqual(str(first_annotation), extras[0]['xxtrain_annotation_id'])
                     self.assertEqual(str(second_annotation), extras[1]['xxtrain_annotation_id'])
                     payload['shapes'] = [payload['shapes'][1] | {'id': 92}, payload['shapes'][0] | {'id': 91}]
@@ -259,7 +279,7 @@ class CvatClientTest(unittest.TestCase):
             http = httpx.Client(transport=httpx.MockTransport(respond))
             client = CvatClient('http://cvat.test', 'private-token', http)
 
-            prepared = client.prepare_task(7, images, 23)
+            prepared = client.prepare_task(7, edit_frames(images), 23, DETECT_POLICY)
 
         self.assertEqual(JobRef(7, 8, ('sample-b', 'sample-a')), prepared.ref)
         self.assertEqual(
@@ -386,8 +406,7 @@ class CvatClientTest(unittest.TestCase):
             client = CvatClient(
                 'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
             )
-            self.assertTrue(hasattr(client, 'prepare_edit_task'), 'CVAT edit task preparation is not implemented')
-            prepared = client.prepare_edit_task(7, frames, 23)
+            prepared = client.prepare_task(7, frames, 23, CLASSIFY_POLICY)
 
         self.assertEqual(prepared.ref, JobRef(7, 8, (original_id,)))
         self.assertEqual(prepared.bindings, (CvatBinding(original_id, 'tag', 91, first_annotation),))
@@ -410,7 +429,7 @@ class CvatClientTest(unittest.TestCase):
                 'http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond))
             )
             with self.assertRaisesRegex(PlatformError, 'task 7.*fresh'):
-                client.prepare_task(7, images, 23)
+                client.prepare_task(7, edit_frames(images), 23, DETECT_POLICY)
 
         self.assertEqual(requests, [('GET', '/api/tasks/7')])
 
@@ -440,7 +459,7 @@ class CvatClientTest(unittest.TestCase):
                 )
 
                 with self.assertRaisesRegex(PlatformError, 'invalid size'):
-                    client.prepare_task(7, (), 23)
+                    client.prepare_task(7, (), 23, DETECT_POLICY)
 
                 self.assertEqual(requests, [('GET', '/api/tasks/7')])
 
@@ -484,7 +503,7 @@ class CvatClientTest(unittest.TestCase):
             patch.object(client, '_labels', return_value=LABELS),
         ):
             with self.assertRaisesRegex(ValueError, 'token'):
-                client.prepare_task(7, images, 23)
+                client.prepare_task(7, edit_frames(images), 23, DETECT_POLICY)
 
         self.assertNotIn(('PATCH', '/api/jobs/8'), requests)
 
@@ -502,7 +521,7 @@ class CvatClientTest(unittest.TestCase):
         ):
             wait.side_effect = lambda task_id, request_id, deadline: client._remaining(task_id, deadline)
             with self.assertRaisesRegex(PlatformError, 'task 7.*120 seconds'):
-                client.prepare_task(7, (), 23)
+                client.prepare_task(7, (), 23, DETECT_POLICY)
 
     def test_fetch_uses_server_frame_mapping(self):
         def respond(request: httpx.Request) -> httpx.Response:
@@ -514,7 +533,10 @@ class CvatClientTest(unittest.TestCase):
 
         http = httpx.Client(transport=httpx.MockTransport(respond))
         client = CvatClient('http://cvat.test', 'private-token', http)
-        self.assertEqual(client.fetch_detection(JobRef(7, 8, ('b', 'a'))), (FrameResult('b', ()), FrameResult('a', ())))
+        mappings = (FrameMapping('b', 'b', None, (0, 0, 1, 1)), FrameMapping('a', 'a', None, (0, 0, 1, 1)))
+        results = client.fetch_annotations(EditJob(JobRef(7, 8, ('b', 'a')), mappings), DETECT_POLICY)
+        self.assertEqual(tuple(result.frame_id for result in results), ('b', 'a'))
+        self.assertTrue(all(not result.annotations for result in results))
 
     def test_fetch_edit_decodes_pointer_lines_through_the_real_client(self):
         labels = [
@@ -559,8 +581,7 @@ class CvatClientTest(unittest.TestCase):
         job = EditJob(JobRef(7, 8, ('a' * 64,)), (mapping,))
         client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
 
-        self.assertTrue(hasattr(client, 'fetch_edit'), 'CVAT edit fetching is not implemented')
-        results = client.fetch_edit(job)
+        results = client.fetch_annotations(job, SEGMENT_POLICY)
 
         self.assertEqual(results[0].frame_id, str(parent_id))
         self.assertEqual(results[0].annotations, (EditAnnotation(None, 'polyline', '1', [[1.0, 2.0], [3.0, 4.0]], 91),))
@@ -595,7 +616,7 @@ class CvatClientTest(unittest.TestCase):
         job = EditJob(JobRef(7, 8, ('a' * 64,)), (mapping,))
         client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
 
-        results = client.fetch_edit(job)
+        results = client.fetch_annotations(job, CLASSIFY_POLICY)
 
         self.assertEqual(results[0].frame_id, str(parent_id))
         self.assertEqual(results[0].annotations, (EditAnnotation(None, 'classification', 'tl', None, 92),))
@@ -724,7 +745,7 @@ class CvatClientTest(unittest.TestCase):
         )
 
         with self.assertRaises(PlatformError) as caught:
-            client.create_task('Point detection', POINT_BOX_LABELS)
+            client.create_task('Point detection', POINT_BOX_LABELS, DETECT_POLICY)
 
         self.assertNotIsInstance(caught.exception, PlatformAccessError)
         self.assertIn('/api/tasks', str(caught.exception))
@@ -772,7 +793,8 @@ class CvatClientTest(unittest.TestCase):
 
         client = CvatClient('http://cvat.test', 'private-token', httpx.Client(transport=httpx.MockTransport(respond)))
         with self.assertRaisesRegex(PlatformError, 'pagination'):
-            client.fetch_detection(JobRef(7, 8, ('a',)))
+            mapping = FrameMapping('a', 'a', None, (0, 0, 1, 1))
+            client.fetch_annotations(EditJob(JobRef(7, 8, ('a',)), (mapping,)), DETECT_POLICY)
         self.assertEqual(len(requests), 1)
 
 

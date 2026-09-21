@@ -3,7 +3,6 @@
 
   const apiRoot = '/platform/api';
   const statusNames = {pending: '等待确认', queued: '排队中', running: '训练中', completed: '训练完成', failed: '训练失败', cancelled: '已取消', unknown: '状态查询失败'};
-  const targetNames = {detect: '检测模型', classify: '分类模型', segment: '指针分割模型'};
   const elements = {
     list: document.getElementById('training-list'), detail: document.getElementById('training-detail'),
     error: document.getElementById('training-error'), message: document.getElementById('training-message'),
@@ -54,7 +53,7 @@
     for (const run of [...runs].reverse()) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'training-list-item';
       button.setAttribute('aria-pressed', String(run.id === selectedId));
-      button.append(text('strong', targetNames[run.target] || '训练任务'));
+      button.append(text('strong', run.target_name || '训练任务'));
       button.append(text('span', `${run.workspace_name} · ${status(run)}`));
       button.addEventListener('click', () => { selectedId = run.id; history.replaceState({}, '', `/platform/training/?run=${run.id}`); render(); });
       elements.list.append(button);
@@ -67,7 +66,7 @@
     if (!run) { elements.detail.append(text('p', '选择一项任务查看进度和结果。', 'empty-state')); return; }
     const execution = run.execution;
     elements.detail.append(text('p', run.workspace_name, 'section-code'));
-    elements.detail.append(text('h2', targetNames[run.target] || '训练任务'));
+    elements.detail.append(text('h2', run.target_name || '训练任务'));
     elements.detail.append(text('p', status(run), 'run-status'));
     elements.detail.append(text('p', `提交时间：${new Date(run.submitted_at).toLocaleString('zh-CN')}`));
     const progress = execution?.epoch == null || execution?.total_epochs == null ? '暂无' : `${execution.epoch} / ${execution.total_epochs} epoch`;

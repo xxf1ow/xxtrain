@@ -11,8 +11,9 @@ from PIL import Image
 from xxtrain.business_tasks.point import point_task_definition
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.integrations.cvat.codec import decode_annotations, decode_initial_bindings, encode_mapped_annotations
+from xxtrain.integrations.cvat.edit_codec import decode_edit_annotations
 from xxtrain.platform.config import WorkspaceConfig
-from xxtrain.platform.contracts import AnnotationRecord, FrameResult, JobRef, TargetValidationError
+from xxtrain.platform.contracts import AnnotationRecord, EditJob, FrameResult, JobRef, TargetValidationError
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.workspace_data import WorkspaceData
@@ -32,7 +33,7 @@ class NegativeTagTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         (self.root / 'images').mkdir()
-        self.data = WorkspaceData(self.root)
+        self.data = WorkspaceData(self.root, point_task_definition())
         staged = self.root / 'upload.png'
         Image.new('RGB', (32, 24)).save(staged)
         self.data.admit((staged,))
@@ -52,11 +53,11 @@ class NegativeTagTest(unittest.TestCase):
         self.assertEqual(1, self.data.detection_summary().annotated_image_count)
         self.assertEqual((), self.data.target_frames('classify', self.root / 'runtime'))
         fingerprint = self.data.detection_fingerprint()
-        payload = encode_mapped_annotations(self.data.images(), LABELS)
+        payload = encode_mapped_annotations(self.data.images('detect'), LABELS)
         self.assertEqual([], payload['shapes'])
         self.assertEqual([(0, 42)], [(tag['frame'], tag['label_id']) for tag in payload['tags']])
         payload['tags'][0]['id'] = 102
-        self.assertEqual((), decode_initial_bindings(payload, self.data.images(), self.ref, LABELS))
+        self.assertEqual((), decode_initial_bindings(payload, self.data.images('detect'), self.ref, LABELS))
         self.data.commit_detection_sync(self.ref, self.data.prepare_detection_sync(self.ref, results))
         self.assertEqual((record,), self.repo.annotations())
         self.assertEqual(fingerprint, self.data.detection_fingerprint())
@@ -72,31 +73,30 @@ class NegativeTagTest(unittest.TestCase):
             (AnnotationRecord(uuid4(), self.image.sample_id, 'detect', None, 'negative', None, None),)
         )
         with self.assertRaisesRegex(ValueError, 'negative'):
-            decode_initial_bindings({'shapes': [], 'tags': []}, self.data.images(), self.ref, LABELS)
+            decode_initial_bindings({'shapes': [], 'tags': []}, self.data.images('detect'), self.ref, LABELS)
 
     def test_real_client_and_service_rebuild_negative_job_and_revoke_confirmation(self):
         cvat = HttpxCvatFixture()
         self.addCleanup(cvat.close)
         config = WorkspaceConfig('test', 'Test', 17, self.root, self.root / 'runtime', 'http://cvat.test')
         service = AnnotationService(config, self.data, cvat.client, RuntimeCache(config.runtime_dir))
-        cvat.expect(self.data.images())
-        service.begin_detection(17)
+        cvat.expect(self.data.images('detect'))
+        service.begin_target(17, 'detect')
         label_id = cvat.label_id('detect', '无检测目标')
         cvat.set_annotations('detect', tags=[{'id': 999, 'frame': 0, 'label_id': label_id, 'attributes': []}])
-        view = service.sync_detection(17)
-        self.assertEqual(
-            (1, 0, False), (view.annotated_image_count, view.boxed_image_count, view.can_generate_detection_cache)
-        )
+        view = service.sync_target(17, 'detect')
+        detect = next(target for target in view.targets if target.id == 'detect')
+        self.assertEqual((1, False), (detect.annotated_sample_count, detect.can_generate_cache))
         record = self.repo.annotations()[0]
         cvat.job('detect')['state'] = 'completed'
-        cvat.expect(self.data.images())
-        service.begin_detection(17)
+        cvat.expect(self.data.images('detect'))
+        service.begin_target(17, 'detect')
         self.assertEqual(1, len(cvat.job('detect')['annotations']['tags']))
-        service.sync_detection(17)
+        service.sync_target(17, 'detect')
         self.assertEqual((record,), self.repo.annotations())
         cvat.set_annotations('detect')
-        view = service.sync_detection(17)
-        self.assertEqual(0, view.annotated_image_count)
+        view = service.sync_target(17, 'detect')
+        self.assertEqual(0, next(target for target in view.targets if target.id == 'detect').annotated_sample_count)
         self.assertEqual((), self.repo.annotations())
 
     def test_negative_label_cannot_be_used_as_a_rectangle(self):
@@ -128,7 +128,9 @@ class NegativeTagTest(unittest.TestCase):
             return httpx.Response(201, json={'id': 7})
 
         with httpx.Client(transport=httpx.MockTransport(respond)) as http:
-            CvatClient('http://cvat.test', 'token', http).create_task('detection', ('Point',))
+            CvatClient('http://cvat.test', 'token', http).create_task(
+                'detection', ('Point',), point_task_definition().step('detect').annotation
+            )
         self.assertEqual(
             [('Point', 'rectangle'), ('无检测目标', 'tag')],
             [(label['name'], label['type']) for label in payloads[0]['labels']],
@@ -139,19 +141,20 @@ class NegativeTagTest(unittest.TestCase):
         payload['shapes'] = [{'id': 101, 'type': 'rectangle', 'frame': 0, 'label_id': 41, 'points': [1, 1, 9, 9]}]
 
         class Cvat:
-            def fetch_detection(inner, ref):
-                return decode_annotations(payload, ref, LABELS)
+            def fetch_annotations(inner, job, policy):
+                return decode_edit_annotations(payload, job, LABELS, policy)
 
             def job_path(inner, ref):
                 return '/tasks/7/jobs/8'
 
         runtime = RuntimeCache(self.root / 'runtime')
         fingerprint = self.data.detection_fingerprint()
-        runtime.remember_job('detect', fingerprint, self.ref)
+        frames = self.data.target_frames('detect', self.root / 'runtime')
+        runtime.remember_edit_job('detect', fingerprint, EditJob(self.ref, tuple(frame.mapping for frame in frames)))
         config = WorkspaceConfig('test', 'Test', 17, self.root, self.root / 'runtime', 'http://cvat.test')
         service = AnnotationService(config, self.data, Cvat(), runtime)
         with self.assertRaises(TargetValidationError) as raised:
-            service.sync_detection(17)
+            service.sync_target(17, 'detect')
         self.assertIn('无检测目标', str(raised.exception))
         self.assertEqual('/tasks/7/jobs/8?frame=0', raised.exception.annotation_url)
         self.assertEqual(fingerprint, self.data.detection_fingerprint())

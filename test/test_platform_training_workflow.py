@@ -149,7 +149,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         receipt = create_fixture(self.root, owner_user_id=17, cvat_internal_url='http://cvat.test')
         self.config = load_config(Path(receipt['config_path']))
         self.owner = self.config.owner_user_id
-        self.data = WorkspaceData(self.config.workspace_dir)
+        self.data = WorkspaceData(self.config.workspace_dir, point_task_definition())
         self.repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
         self.cvat = HttpxCvatFixture()
         self.addCleanup(self.cvat.close)
@@ -195,6 +195,10 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
     def _headers(client: AsgiClient) -> dict[str, str]:
         return {'origin': 'http://testserver', 'x-xtrain-csrf': client.client.cookies.get('xxtrain_csrf')}
 
+    @staticmethod
+    def _workspace_target(payload: dict[str, object], target: str) -> dict[str, object]:
+        return next(item for item in payload['targets'] if item['id'] == target)
+
     def _submit(self, target: str):
         return self.client.post(f'/platform/api/targets/{target}/train', json={}, headers=self._headers(self.client))
 
@@ -207,7 +211,7 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         create_attempted_at: str | None = None,
         clearml_task_id: str | None = None,
     ) -> TrainingRun:
-        fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
+        fingerprint = self.data.training_fingerprint(target)
         cache_path = self.annotations.ensure_target_cache(self.owner, target)
         cache_relative_path = cache_path.resolve().relative_to((self.config.runtime_dir / 'cache').resolve()).as_posix()
         return TrainingRunStore(self.store_path).create(
@@ -317,14 +321,14 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertEqual(2, len(self.store.list_user(self.owner)))
 
     def test_unknown_cancel_confirmation_last_terminal_and_stale_sync_gate(self) -> None:
-        self.cvat.expect(self.data.images())
+        self.cvat.expect(self.data.images('detect'))
         started = self.client.post('/platform/api/targets/detect/start', json={}, headers=self._headers(self.client))
         self.assertEqual(200, started.status_code)
         runs = [self._submit(target).json() for target in ('detect', 'classify', 'segment')]
 
         stale_sync = self.client.post('/platform/api/targets/detect/sync', json={}, headers=self._headers(self.client))
         self.assertEqual(409, stale_sync.status_code)
-        self.assertTrue(self.client.get('/platform/api/workspace').json()['editing_locked'])
+        self.assertFalse(self.client.get('/platform/api/workspace').json()['can_upload'])
 
         detect_task = self.store.get(self.owner, runs[0]['run_id']).clearml_task_id
         classify_task = self.store.get(self.owner, runs[1]['run_id']).clearml_task_id
@@ -335,12 +339,12 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
             f'/platform/api/training-runs/{runs[2]["run_id"]}/cancel', json={}, headers=self._headers(self.client)
         )
         self.assertEqual('unknown', cancelled.json()['execution']['status'])
-        self.assertTrue(self.client.get('/platform/api/workspace').json()['editing_locked'])
+        self.assertFalse(self.client.get('/platform/api/workspace').json()['can_upload'])
 
         self.clearml.release(segment_task)
-        self.assertTrue(self.client.get('/platform/api/workspace').json()['editing_locked'])
+        self.assertFalse(self.client.get('/platform/api/workspace').json()['can_upload'])
         self.clearml.complete(classify_task)
-        self.assertFalse(self.client.get('/platform/api/workspace').json()['editing_locked'])
+        self.assertTrue(self.client.get('/platform/api/workspace').json()['can_upload'])
 
     def test_changed_input_creates_new_run_and_restored_input_reuses_old_run(self) -> None:
         original = self._submit('classify').json()['run_id']
@@ -391,10 +395,14 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         finally:
             new_session.close()
 
-        self.assertEqual('unknown', workspace.json()['training']['detect']['execution']['status'])
+        self.assertEqual(
+            'unknown', self._workspace_target(workspace.json(), 'detect')['training']['execution']['status']
+        )
         self.assertEqual('unknown', listed.json()[0]['execution']['status'])
         self.assertEqual('unknown', detailed.json()['execution']['status'])
-        self.assertEqual('unknown', restarted.json()['training']['detect']['execution']['status'])
+        self.assertEqual(
+            'unknown', self._workspace_target(restarted.json(), 'detect')['training']['execution']['status']
+        )
         self.assertEqual([], self.clearml.enqueued)
 
         self.training.reconcile_pending()
@@ -402,7 +410,9 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         listed = self.client.get('/platform/api/training-runs')
         detailed = self.client.get(f'/platform/api/training-runs/{run.id}')
 
-        self.assertEqual('queued', workspace.json()['training']['detect']['execution']['status'])
+        self.assertEqual(
+            'queued', self._workspace_target(workspace.json(), 'detect')['training']['execution']['status']
+        )
         self.assertEqual('queued', listed.json()[0]['execution']['status'])
         self.assertEqual('queued', detailed.json()['execution']['status'])
         self.assertEqual(1, self.clearml.create_calls)
@@ -467,7 +477,9 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertEqual(200, workspace.status_code)
         self.assertEqual(200, listed.status_code)
         self.assertEqual(200, detailed.status_code)
-        self.assertEqual('queued', workspace.json()['training']['detect']['execution']['status'])
+        self.assertEqual(
+            'queued', self._workspace_target(workspace.json(), 'detect')['training']['execution']['status']
+        )
         self.assertEqual([run.id, attempted.id], [item['id'] for item in listed.json()])
         self.assertEqual('unknown', detailed.json()['execution']['status'])
         self.assertEqual(rows_before_reads, TrainingRunStore(self.store_path).list_user(self.owner))
@@ -553,9 +565,10 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
         self.assertIsNone(listed.json()[0]['execution'])
         self.assertEqual(legacy.id, detailed.json()['id'])
         self.assertIsNone(detailed.json()['execution'])
-        self.assertEqual(legacy.id, workspace.json()['training']['detect']['id'])
-        self.assertIsNone(workspace.json()['training']['detect']['execution'])
-        self.assertFalse(workspace.json()['editing_locked'])
+        workspace_run = self._workspace_target(workspace.json(), 'detect')['training']
+        self.assertEqual(legacy.id, workspace_run['id'])
+        self.assertIsNone(workspace_run['execution'])
+        self.assertTrue(workspace.json()['can_upload'])
         self.assertEqual(before, TrainingRunStore(self.store_path).get(self.owner, legacy.id))
         self.assertEqual((0, 0, 0, 0, 0), self._sdk_write_counts(sdk))
 
@@ -571,11 +584,11 @@ class PlatformTrainingWorkflowTest(unittest.TestCase):
             ]
             self.assertEqual([200, 200, 200], [response.status_code for response in responses])
             runs = [response.json() for response in responses]
-            self.assertTrue(client.get('/platform/api/workspace').json()['editing_locked'])
+            self.assertFalse(client.get('/platform/api/workspace').json()['can_upload'])
             for index, run in enumerate(runs):
                 task_id = TrainingRunStore(self.store_path).get(self.owner, run['run_id']).clearml_task_id
                 sdk.tasks[task_id]['status'] = 'completed'
-                locked = client.get('/platform/api/workspace').json()['editing_locked']
+                locked = not client.get('/platform/api/workspace').json()['can_upload']
                 self.assertEqual(index < 2, locked)
 
             completed = client.get(f'/platform/api/training-runs/{runs[0]["run_id"]}')

@@ -18,16 +18,9 @@ def crop_frames(images: tuple[ImageInput, ...], root: Path) -> tuple[EditFrame, 
     clamped integer bounds, and encoding policy; each source box retains its UUID as an independent frame ID.
     Duplicate frame IDs, registered-dimension mismatches, and boxes with no clamped pixels raise ``ValueError``.
     """
-    crop_root = Path(root) / 'crops'
-    frames: list[EditFrame] = []
+    mappings: list[FrameMapping] = []
     frame_ids: set[str] = set()
     for image in images:
-        if not image.boxes:
-            continue
-        with Image.open(image.image_path) as source:
-            if source.size != (image.width, image.height):
-                raise ValueError(f'Image {image.sample_id!r} dimensions do not match its registered size')
-            rgb = source.convert('RGB')
         for box in image.boxes:
             frame_id = str(box.geometry.id)
             if frame_id in frame_ids:
@@ -36,11 +29,38 @@ def crop_frames(images: tuple[ImageInput, ...], root: Path) -> tuple[EditFrame, 
             bounds = _crop_bounds(box.geometry.bbox, image.width, image.height)
             if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
                 raise ValueError(f'Crop frame {frame_id} has no pixels after clamping')
-            path = crop_root / f'{_content_key(image.sample_id, bounds)}.png'
+            mappings.append(FrameMapping(frame_id, image.sample_id, box.geometry.id, bounds))
+    return materialize_crops(images, tuple(mappings), root)
+
+
+def materialize_crops(
+    images: tuple[ImageInput, ...], mappings: tuple[FrameMapping, ...], root: Path
+) -> tuple[EditFrame, ...]:
+    """Materialize crop mappings from original images without deriving their source associations."""
+    crop_root = Path(root) / 'crops'
+    by_image: dict[str, list[FrameMapping]] = {}
+    for mapping in mappings:
+        by_image.setdefault(mapping.image_id, []).append(mapping)
+    frames: list[EditFrame] = []
+    for image in images:
+        image_mappings = by_image.pop(image.sample_id, ())
+        if not image_mappings:
+            continue
+        with Image.open(image.image_path) as source:
+            if source.size != (image.width, image.height):
+                raise ValueError(f'Image {image.sample_id!r} dimensions do not match its registered size')
+            rgb = source.convert('RGB')
+        for mapping in image_mappings:
+            path = crop_root / f'{_content_key(image.sample_id, mapping.bounds)}.png'
             if not path.exists():
-                _publish_crop(rgb.crop(bounds), path)
-            mapping = FrameMapping(frame_id, image.sample_id, box.geometry.id, bounds)
-            frames.append(EditFrame(mapping, path, bounds[2] - bounds[0], bounds[3] - bounds[1], ()))
+                _publish_crop(rgb.crop(mapping.bounds), path)
+            frames.append(
+                EditFrame(
+                    mapping, path, mapping.bounds[2] - mapping.bounds[0], mapping.bounds[3] - mapping.bounds[1], ()
+                )
+            )
+    if by_image:
+        raise ValueError(f'Crop mappings reference unknown images: {sorted(by_image)}')
     return tuple(frames)
 
 

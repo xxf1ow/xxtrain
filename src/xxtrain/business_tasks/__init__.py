@@ -1,21 +1,37 @@
-from .annotation_rules import target_complete, validate_target_annotations
-from .definition import DeliveryDefinition, TargetTrainingDefinition
-from .point import (
-    MODEL_TARGETS,
-    POINT_BOX_LABELS,
-    POINT_CLASSIFY_OVERRIDES,
-    point_detection_recipe,
-    point_task_definition,
+from .annotation_rules import (
+    AnnotationValidationError,
+    step_complete,
+    target_complete,
+    validate_step_annotations,
+    validate_target_annotations,
 )
+from .definition import (
+    AnnotationPolicy,
+    DeliveryDefinition,
+    InputAdapter,
+    StepDefinition,
+    TargetTrainingDefinition,
+    TaskDefinition,
+)
+from .loader import DEFAULT_TASK_ENTRY, load_task_definition
+from .point import MODEL_TARGETS, POINT_BOX_LABELS, POINT_CLASSIFY_OVERRIDES, point_task_definition
 
 __all__ = [
+    'AnnotationPolicy',
+    'AnnotationValidationError',
+    'DEFAULT_TASK_ENTRY',
     'DeliveryDefinition',
+    'InputAdapter',
     'MODEL_TARGETS',
     'POINT_BOX_LABELS',
     'POINT_CLASSIFY_OVERRIDES',
+    'StepDefinition',
+    'TaskDefinition',
     'TargetTrainingDefinition',
-    'point_detection_recipe',
+    'load_task_definition',
     'point_task_definition',
+    'step_complete',
     'target_complete',
+    'validate_step_annotations',
     'validate_target_annotations',
 ]

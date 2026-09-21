@@ -3,7 +3,6 @@ from __future__ import annotations
 import secrets
 import shutil
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from hmac import compare_digest
 from importlib import resources
 from pathlib import Path
@@ -19,7 +18,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from xxtrain.business_tasks import MODEL_TARGETS, point_task_definition
+from xxtrain.business_tasks.definition import TaskDefinition
+from xxtrain.business_tasks.loader import load_task_definition, load_training_task_definition
 from xxtrain.integrations.cvat.client import CvatClient
 from xxtrain.platform.config import WorkspaceConfig
 from xxtrain.platform.contracts import (
@@ -32,13 +32,12 @@ from xxtrain.platform.contracts import (
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import TrainingRunView
 from xxtrain.platform.training_coordinator import TrainingCoordinator
+from xxtrain.platform.training_input_compat import initialize_input_compatibility
 from xxtrain.platform.training_service import TrainingService
 
 _CSRF_COOKIE = 'xxtrain_csrf'
 _CSRF_HEADER = 'x-xtrain-csrf'
 _OPERATIONAL_ERROR = '平台暂时无法完成操作，请重试。'
-_TARGET_NAMES = {'detect': '检测', 'classify': '分类', 'segment': '分割'}
-_TARGET_IDS = frozenset(_TARGET_NAMES)
 
 
 class _EmptyBody(BaseModel):
@@ -57,6 +56,7 @@ def create_app(
     service: AnnotationService,
     cvat: CvatClient,
     *,
+    task: TaskDefinition | None = None,
     training_service: TrainingService | None = None,
 ) -> FastAPI:
     """Create the HTTP application for one configured workspace.
@@ -67,12 +67,15 @@ def create_app(
     coordinator. The caller owns ``service``, ``cvat``, and ``training_service`` resources and closes them after the
     lifespan exits.
     """
+    task = task or getattr(getattr(service, 'data', None), 'task', None) or load_task_definition(config.task_entry)
+    target_ids = frozenset(step.key for step in task.steps)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if training_service is None:
             yield
             return
+        initialize_input_compatibility(training_service)
         coordinator = TrainingCoordinator(training_service)
         coordinator.start()
         try:
@@ -131,24 +134,42 @@ def create_app(
         if not cookie_token or not header_token or not compare_digest(cookie_token, header_token):
             raise HTTPException(status.HTTP_403_FORBIDDEN, '请求令牌无效，请刷新页面。')
 
-    def workspace_payload(view: WorkspaceView) -> dict[str, object]:
-        availability = dict(MODEL_TARGETS)
-        target_facts = {target.id: asdict(target) for target in view.targets}
+    def workspace_payload(
+        view: WorkspaceView,
+        *,
+        can_upload: bool = True,
+        target_editable: dict[str, bool] | None = None,
+        training: dict[str, TrainingRunView | None] | None = None,
+    ) -> dict[str, object]:
+        target_facts = {target.id: target for target in view.targets}
+        editable = target_editable or {}
+        training = training or {}
         return {
-            **asdict(view),
-            'task': {'id': 'point', 'name': 'Point'},
+            'workspace_id': view.workspace_id,
+            'name': view.name,
+            'image_count': view.image_count,
+            'task': {'id': task.key, 'name': task.display_name},
+            'can_upload': can_upload,
+            'training_enabled': training_service is not None,
             'targets': [
                 {
-                    **target_facts.get(target, {'id': target}),
-                    'name': _TARGET_NAMES[target],
-                    'available': availability[target],
+                    'id': step.key,
+                    'name': step.display_name,
+                    'sample_unit': step.sample_unit,
+                    'sample_count': target_facts[step.key].sample_count,
+                    'annotated_sample_count': target_facts[step.key].annotated_sample_count,
+                    'can_annotate': target_facts[step.key].can_annotate,
+                    'can_generate_cache': target_facts[step.key].can_generate_cache,
+                    'cache_ready': target_facts[step.key].cache_ready,
+                    'editable': editable.get(step.key, True),
+                    'training': None if training.get(step.key) is None else training_payload(training[step.key]),
                 }
-                for target in _TARGET_NAMES
+                for step in task.steps
             ],
         }
 
     def target_id(target: str) -> str:
-        if target not in _TARGET_IDS:
+        if target not in target_ids:
             raise HTTPException(status.HTTP_404_NOT_FOUND, '未知模型目标。')
         return target
 
@@ -168,7 +189,9 @@ def create_app(
     def training_payload(view: TrainingRunView) -> dict[str, object]:
         run = view.run
         execution = view.execution
-        training = point_task_definition().step(run.target).training
+        run_task = load_training_task_definition(run.task_entry)
+        step = run_task.step(run.target)
+        training = step.training
         if training is None:
             raise ValueError(f'Target does not define training: {run.target!r}')
         return {
@@ -176,6 +199,8 @@ def create_app(
             'workspace_id': run.workspace_id,
             'workspace_name': run.workspace_name,
             'target': run.target,
+            'target_name': step.display_name,
+            'task': {'id': run_task.key, 'name': run_task.display_name},
             'metric_name': training.metric_name,
             'submitted_at': run.submitted_at,
             'cancellation_requested': view.cancellation_requested,
@@ -197,13 +222,12 @@ def create_app(
         if training_service is None:
             return workspace_payload(view if view is not None else view_for(user_id))
         state = training_service.workspace_view(user_id)
-        payload = workspace_payload(state['workspace'])
-        payload['editing_locked'] = not state['editable']
-        payload['training_enabled'] = True
-        payload['training'] = {
-            target: None if run is None else training_payload(run) for target, run in state['training'].items()
-        }
-        return payload
+        return workspace_payload(
+            state['workspace'],
+            can_upload=state['can_upload'],
+            target_editable=state['target_editable'],
+            training=state['training'],
+        )
 
     def training_access(error: PlatformAccessError) -> HTTPException:
         return HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此训练任务。')
@@ -320,47 +344,6 @@ def create_app(
                 return full_workspace_payload(user_id, view)
             finally:
                 await form.close()
-        except PlatformAccessError:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
-        except PlatformConflictError:
-            raise conflict_error() from None
-        except (OSError, ValueError, PlatformError):
-            raise operational_error() from None
-
-    @app.post('/platform/api/detection/start', dependencies=[Depends(write_request)])
-    def start_annotation(request: Request, body: _EmptyBody) -> dict[str, str]:
-        user_id = authenticated_user(request)
-        try:
-            annotation_url = service.begin_detection(user_id)
-        except PlatformAccessError:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
-        except PlatformConflictError:
-            raise conflict_error() from None
-        except (OSError, ValueError, PlatformError):
-            raise operational_error() from None
-        return {'annotation_url': annotation_url}
-
-    @app.post('/platform/api/detection/sync', dependencies=[Depends(write_request)])
-    def sync_annotation(request: Request, body: _EmptyBody) -> Response:
-        user_id = authenticated_user(request)
-        try:
-            view = service.sync_detection(user_id)
-            return JSONResponse(content=full_workspace_payload(user_id, view))
-        except TargetValidationError as error:
-            return validation_response(error)
-        except PlatformAccessError:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
-        except PlatformConflictError:
-            raise conflict_error() from None
-        except (OSError, ValueError, PlatformError):
-            raise operational_error() from None
-
-    @app.post('/platform/api/detection/cache', dependencies=[Depends(write_request)])
-    def generate_detection_cache(request: Request, body: _EmptyBody) -> dict[str, object]:
-        user_id = authenticated_user(request)
-        try:
-            view = service.generate_detection_cache(user_id)
-            return full_workspace_payload(user_id, view)
         except PlatformAccessError:
             raise HTTPException(status.HTTP_403_FORBIDDEN, '无权访问此现场。') from None
         except PlatformConflictError:

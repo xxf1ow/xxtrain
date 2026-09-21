@@ -173,7 +173,7 @@ class PointWorkflowTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.receipt = create_fixture(Path(temporary.name), owner_user_id=17, cvat_internal_url='http://cvat.test')
         self.config = load_config(Path(self.receipt['config_path']))
-        self.data = WorkspaceData(self.config.workspace_dir)
+        self.data = WorkspaceData(self.config.workspace_dir, point_task_definition())
         self.repository = AnnotationRepository(Path(self.receipt['database_path']), point_task_definition())
         self.repository.save_annotations(
             (), delete_ids=frozenset(record.id for record in self.repository.annotations())
@@ -189,7 +189,7 @@ class PointWorkflowTest(unittest.TestCase):
         return {target.id: target for target in view.targets}
 
     def _complete_workflow(self) -> dict[str, object]:
-        self.cvat.expect(self.data.images())
+        self.cvat.expect(self.data.images('detect'))
         self.service.begin_target(17, 'detect')
         detect_shapes = [
             {
@@ -355,7 +355,7 @@ class PointWorkflowTest(unittest.TestCase):
         self.assertTrue(self._targets(class_cache)['classify'].cache_ready)
         self.assertTrue(self._targets(segment_cache)['segment'].cache_ready)
         for target in ('classify', 'segment'):
-            fingerprint = self.data.target_fingerprint(target)
+            fingerprint = self.data.training_fingerprint(target)
             publication = self.config.runtime_dir / 'cache' / fingerprint
             self.assertEqual(
                 {'fingerprint': fingerprint, 'target': target},
@@ -471,8 +471,17 @@ class PointWorkflowTest(unittest.TestCase):
         )
         unaffected = tuple(record for record in before_class_change if record.parent_id != parent.id)
         self.assertEqual(unaffected, tuple(record for record in after_class_change if record.parent_id != parent.id))
-        self.assertFalse(
-            any(record.step_key == 'segment' and record.parent_id == parent.id for record in after_class_change)
+        self.assertEqual(
+            tuple(
+                record
+                for record in before_class_change
+                if record.step_key == 'segment' and record.parent_id == parent.id
+            ),
+            tuple(
+                record
+                for record in after_class_change
+                if record.step_key == 'segment' and record.parent_id == parent.id
+            ),
         )
         current_classify_job = self._runtime_job('classify')
         class_bindings_after = self.repository.bindings(current_classify_job.ref)
@@ -544,7 +553,7 @@ class PointWorkflowTest(unittest.TestCase):
 
         restarted = AnnotationService(
             self.config,
-            WorkspaceData(self.config.workspace_dir),
+            WorkspaceData(self.config.workspace_dir, point_task_definition()),
             self.cvat.client,
             RuntimeCache(self.config.runtime_dir),
         )
@@ -601,7 +610,7 @@ class PointWorkflowFixtureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
             config = load_config(Path(receipt['config_path']))
-            data = WorkspaceData(config.workspace_dir)
+            data = WorkspaceData(config.workspace_dir, point_task_definition())
             repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
             before = repository.annotations()
             cvat = HttpxCvatFixture()
@@ -621,7 +630,7 @@ class PointWorkflowFixtureTest(unittest.TestCase):
                 self.assertEqual(before, repository.annotations())
                 self.assertEqual(bindings, repository.bindings(job.ref))
                 service.generate_target_cache(17, target)
-                publication = config.runtime_dir / 'cache' / data.target_fingerprint(target) / target
+                publication = config.runtime_dir / 'cache' / data.training_fingerprint(target) / target
                 if target == 'classify':
                     datasets = [ImageFolder(publication / split) for split in ('train', 'val')]
                     self.assertEqual(51, sum(len(dataset) for dataset in datasets))

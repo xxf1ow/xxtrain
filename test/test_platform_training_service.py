@@ -17,9 +17,11 @@ from xxtrain.platform.contracts import AnnotationChanges, PlatformAccessError, P
 from xxtrain.platform.runtime import RuntimeCache
 from xxtrain.platform.service import AnnotationService
 from xxtrain.platform.training_contracts import DownloadFile, ExecutionView, TrainingRun
+from xxtrain.platform.training_input_compat import initialize_input_compatibility
 from xxtrain.platform.training_service import TrainingService
 from xxtrain.platform.training_store import TrainingRunStore
 from xxtrain.workspace_data import WorkspaceData
+from xxtrain.workspace_data.legacy_fingerprints import legacy_point_fingerprint
 from xxtrain.workspace_data.repository import AnnotationRepository
 
 
@@ -143,7 +145,7 @@ class TrainingServiceTests(unittest.TestCase):
         self.config = load_config(Path(receipt['config_path']))
         self.workspace_id = self.config.workspace_id
         self.owner = self.config.owner_user_id
-        self.data = WorkspaceData(self.config.workspace_dir)
+        self.data = WorkspaceData(self.config.workspace_dir, point_task_definition())
         self.annotations = AnnotationService(
             self.config, self.data, _UnusedCvat(), RuntimeCache(self.config.runtime_dir)
         )
@@ -171,7 +173,7 @@ class TrainingServiceTests(unittest.TestCase):
         clearml_task_id=None,
         submitted_at='2026-09-17T12:00:00+00:00',
     ):
-        fingerprint = self.data.detection_fingerprint() if target == 'detect' else self.data.target_fingerprint(target)
+        fingerprint = self.data.training_fingerprint(target)
         return TrainingRunStore(self.store_path).create(
             TrainingRun(
                 str(uuid4()),
@@ -197,8 +199,13 @@ class TrainingServiceTests(unittest.TestCase):
         self.backend.complete(runs[2].run.clearml_task_id)
         self.service.require_editable(self.workspace_id)
 
+    def test_submit_uses_training_conversion_fingerprint(self):
+        submitted = self.service.submit(self.owner, 'classify')
+
+        self.assertEqual(self.data.training_fingerprint('classify'), submitted.run.fingerprint)
+
     def test_workspace_view_uses_workspace_runs_for_lock_and_user_runs_for_visibility(self):
-        fingerprint = self.data.detection_fingerprint()
+        fingerprint = self.data.training_fingerprint('detect')
         store = TrainingRunStore(self.store_path)
         other_workspace = store.create(
             TrainingRun(
@@ -233,7 +240,8 @@ class TrainingServiceTests(unittest.TestCase):
 
         state = self.service.workspace_view(self.owner)
 
-        self.assertFalse(state['editable'])
+        self.assertFalse(state['can_upload'])
+        self.assertNotIn('editable', state)
         self.assertIsNone(state['training']['detect'])
         self.assertEqual((other_workspace,), tuple(view.run for view in self.service.list_runs(self.owner)))
         with self.assertRaises(PlatformAccessError):
@@ -546,12 +554,12 @@ class TrainingServiceTests(unittest.TestCase):
     def test_workspace_projection_and_write_guard_share_active_rule(self):
         run = self._store_run(desired_action='execute')
 
-        self.assertFalse(self.service.workspace_view(self.owner)['editable'])
+        self.assertFalse(self.service.workspace_view(self.owner)['can_upload'])
         with self.assertRaises(PlatformConflictError):
             self.service.require_editable(self.workspace_id)
 
         self.service.cancel(self.owner, run.id)
-        self.assertTrue(self.service.workspace_view(self.owner)['editable'])
+        self.assertTrue(self.service.workspace_view(self.owner)['can_upload'])
         self.service.require_editable(self.workspace_id)
 
     def test_cancel_conflicts_with_inflight_coordination_and_no_enqueue_follows_saved_cancel(self):
@@ -591,6 +599,58 @@ class TrainingServiceTests(unittest.TestCase):
 
         self.assertEqual(original.run.id, repeated.run.id)
         self.assertFalse((cache / 'dataset.yaml').exists())
+
+    def test_exact_legacy_input_with_unusable_publication_never_creates_a_second_run(self):
+        store = TrainingRunStore(self.store_path)
+        repository = AnnotationRepository(self.config.workspace_dir / 'annotations.db', point_task_definition())
+        images = self.data.images()
+        records = repository.annotations()
+        historical = {}
+        for target in ('classify', 'segment'):
+            fingerprint = legacy_point_fingerprint(target, images, records)
+            task_id = f'task-legacy-{target}'
+            run = store.create(
+                TrainingRun(
+                    str(uuid4()),
+                    self.owner,
+                    self.workspace_id,
+                    self.config.display_name,
+                    target,
+                    fingerprint,
+                    f'{fingerprint}/{target}',
+                    '2026-09-16T12:00:00+00:00',
+                    None,
+                    task_id,
+                    None,
+                    'point',
+                )
+            )
+            historical[target] = run
+            self.backend.tasks[task_id] = {'run_id': run.id, 'status': 'completed'}
+
+        damaged = self.config.runtime_dir / 'cache' / historical['segment'].cache_relative_path
+        damaged.mkdir(parents=True)
+        marker = damaged / 'preserve-marker'
+        marker.write_bytes(b'preserve')
+
+        initialize_input_compatibility(self.service)
+        submitted = {target: self.service.submit(self.owner, target) for target in historical}
+
+        self.assertEqual(
+            {target: run.id for target, run in historical.items()},
+            {target: view.run.id for target, view in submitted.items()},
+        )
+        self.assertEqual(2, len(store.list_user(self.owner)))
+        self.assertEqual([], self.backend.write_calls)
+        self.assertTrue(marker.is_file())
+        missing = self.config.runtime_dir / 'cache' / historical['classify'].cache_relative_path
+        self.assertFalse(missing.exists())
+        for target, run in historical.items():
+            stored = store.get(self.owner, run.id)
+            self.assertEqual(run.cache_relative_path, stored.cache_relative_path)
+            self.assertEqual('completed', submitted[target].execution.status)
+            with self.assertRaises(PlatformError):
+                self.service.require_cache_rebuild(self.workspace_id, target, self.data.training_fingerprint(target))
 
 
 if __name__ == '__main__':

@@ -31,8 +31,11 @@ python -m unittest test.test_pipeline_core -v
 运行完整 suite：
 
 ```powershell
+Remove-Item Env:XXTRAIN_PLATFORM_URL, Env:XXTRAIN_PLATFORM_TEST_USER, Env:XXTRAIN_PLATFORM_TEST_PASSWORD -ErrorAction SilentlyContinue
 python -m unittest discover -s test -t . -p 'test_*.py' -v
 ```
+
+该命令显式移除真实浏览器验收的三个环境变量，保证离线 suite 在启动浏览器或访问网络前跳过该用例。真实验收必须单独使用下文命令和专用 fixture。
 
 测试从 `test/` 作为包导入当前 `src/xxtrain` 安装，不使用兼容适配层代替真实公开入口。
 
@@ -43,13 +46,19 @@ uv run --locked --extra platform python -m unittest test.test_platform_http -v
 uv run --locked --extra platform python -m unittest test.test_platform_browser -v
 ```
 
+任务定义的 HTTP 组合检查使用五目标非 Point 定义，验证定义限制的路由、有序工作区载荷、训练展示元数据及动态 DOM 行：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_task_definition_http -v
+```
+
 训练 HTTP、严格运行配置和组合根使用 `platform` 与 `clearml` 可选依赖；该检查通过真实 ASGI 认证与 CSRF 路径覆盖严格空提交、安全投影、用户归属、取消、已删除的重训路由和下载，并验证仅标注启动保持可用：
 
 ```powershell
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_coordinator test.test_platform_training_http test.test_platform_training_config test.test_platform_http -v
 ```
 
-协调器测试使用受控 Event 推进轮次并验证关闭等待；HTTP 生命周期断言必须进入 `app.router.lifespan_context(app)`，因为裸 `ASGITransport` 不运行 ASGI lifespan。
+`test.test_platform_training_http` 进入 `app.router.lifespan_context(app)` 验证输入兼容处理先于训练协调启动，因为裸 `ASGITransport` 不运行 ASGI lifespan。协调器测试使用受控 Event 推进轮次并验证关闭等待。
 
 训练页面与工作区反馈使用 Node.js DOM 适配器和真实 ASGI 资源入口，覆盖独立页面、提交反馈、任务状态入口与训练期间编辑禁用：
 
@@ -63,13 +72,31 @@ Point 三模型联合回归通过正式 HTTPX CVAT 适配器、平台服务、SQ
 uv run --locked --extra platform python -m unittest test.test_platform_point_workflow -v
 ```
 
+任务定义驱动的标注协调回归使用非 Point 定义和真实 SQLite、HTTPX CVAT 传输及缓存发布，覆盖并行与嵌套依赖、根与裁剪矩形、分类、负样本 Tag、三类缓存，以及编辑与训练指纹分离。该回归验证任务标识、训练类型、有序标签、负样本处理和显式转换键改变训练身份但不丢弃待回收 Job，并验证模型设置与 callable 身份不影响训练输入：
+
+```powershell
+uv run --locked --extra platform python -m unittest test.test_task_annotation_service -v
+```
+
+任务定义的最终跨组件回归从配置入口导入五步骤非 Point 工厂，通过真实图片、SQLite、HTTPX CVAT 适配、缓存、ClearML 客户端和 worker 覆盖并行分类与 line、嵌套矩形及 detail 分类、原图坐标写回、兄弟编辑独立、事务回滚与重启、多级祖先锁和旧 Point 输入别名。测试只替换外部 CVAT/ClearML 传输及实际模型训练与交付构建，并检查 worker 取得定义声明的设置和交付参数：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_task_definition_workflow -v
+```
+
 训练闭环联合回归通过真实 ASGI 路由、应用生命周期、`TrainingService`、`TrainingRunStore`、`AnnotationService`、训练缓存和 ClearML 适配器运行，只控制 ClearML SDK 边界及 CVAT 会话。它覆盖无浏览器请求的持久意图接续、查询只读、创建部分成功后的同任务补齐与取消、启动配置不完整时禁止入队、出队后部分取消失败与重启、创建前取消、旧行观察、三目标 FIFO 提交且标注库不变、最后一个终态解锁、完成但缺产物时禁止下载、并发唯一运行、未知状态、旧 CVAT 页面回写拒绝，以及输入变化、规范历史恢复和原缓存保留：
 
 ```powershell
 uv run --locked --extra platform --extra clearml python -m unittest test.test_platform_training_workflow -v
 ```
 
-负样本 Tag 的往返、撤销、初始化核对、类型约束和冲突原子性运行 `python -m unittest test.test_platform_negative_tags -v`；分类默认布局及修正链接同时运行 `test.test_platform_downstream_service` 和 `test.test_platform_browser`。训练空标签与门槛由 `test.test_platform_data`、`test.test_platform_service` 覆盖，真实 CVAT 工具显示仍需部署验收。
+训练输入迁移和依赖锁定回归从迁移前 SQLite 行与旧发布开始，验证精确别名、不可变历史事实、启动幂等、转换语义拒绝、严格新清单，以及跨用户活跃运行的目标与祖先锁并集。训练服务回归还验证缺失或损坏的旧发布不影响同输入身份：启动后真实提交复用原运行，不重建缓存、创建任务或增加运行行：
+
+```powershell
+python -m unittest test.test_training_input_compat test.test_training_dependency_locks test.test_platform_training_service -v
+```
+
+负样本 Tag 的往返、撤销、初始化核对、类型约束和冲突原子性运行 `python -m unittest test.test_platform_negative_tags -v`；分类默认布局及修正链接同时运行 `test.test_platform_downstream_service` 和 `test.test_platform_browser`。页面回收回归分别断言分类数量、line 点数、端点重合、裁剪边界和负样本冲突的安全修正说明，未知后端异常只能返回通用说明。训练空标签与门槛由 `test.test_platform_data`、`test.test_platform_service` 覆盖，真实 CVAT 工具显示仍需部署验收。
 
 HTTP 测试通过 ASGI transport 调用真实 FastAPI 应用，覆盖 multipart 上传的权限、临时文件清理、解析与错误脱敏、严格目标路由及安全修正响应，并组合真实数据与服务组件验证图片接纳和标注同步；CVAT 网络使用受控响应。服务测试覆盖 SQLite 派生计数、50 张有框原图门槛、裁剪图完成条件、稳定对象身份、下游 Job 失效、同步失败顺序、重启恢复、跨线程读取和三个缓存发布。离线页面测试检查包内 HTTP 资源，并在 Node.js 可用时执行页面脚本与 CVAT 返回插件，验证上传、三行计数、写操作互斥、逐行缓存按钮、每标签页返回目标、修正链接及同步失败后刷新重试；缺少 Node.js 时明确跳过。真实 CVAT 的 tag/polyline 编辑与返回修正、浏览器布局、镜像注入和代理连通性属于部署验收。
 
@@ -85,12 +112,12 @@ uv run --locked --extra platform python -m unittest test.test_platform_data test
 uv run --locked --extra platform --extra platform-test python -m unittest test.test_platform_browser -v
 ```
 
-同版本真实验收覆盖 tag 唯一选择、polyline 多指针、原生身份往返、裁剪来源和 frame 关联、分类数量及 line 点数修正、返回目标路由和两个下游缓存可读性。保存返回必须等待目标同步成功、返回参数清除且目标无错误后才能回读数据库；离线页面覆盖延迟与快速同步。改类后通过原生绘制补回该框被清除的指针；非法对象用 PATCH create 注入，回收检查当前 Job 的绑定。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。完整 fixture 的投影、同步和缓存消费者，以及真实服务到 HTTP、页面的业务原因均有离线验证。当前运行证据、范围和未覆盖项记录在 [Point 分类与指针分割 Agent Note](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md#implementation)；离线 HTTPX fixture、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
+同版本真实验收覆盖 tag 唯一选择、polyline 多指针、原生身份往返、裁剪来源和 frame 关联、分类数量及 line 点数修正、返回目标路由和两个下游缓存可读性。保存返回必须等待目标同步成功、返回参数清除且目标无错误后才能回读数据库；离线页面覆盖延迟与快速同步。改类后核对同一框的指针及其身份保持不变；非法对象用 PATCH create 注入，回收检查当前 Job 的绑定。全量 PUT 预期按删除和新增处理，不要求坐标相同的对象保留身份。完整 fixture 的投影、同步和缓存消费者，以及真实服务到 HTTP、页面的业务原因均有离线验证。当前运行证据、范围和未覆盖项记录在 [Point 分类与指针分割 Agent Note](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md#implementation)；离线 HTTPX fixture、旧 LabelMe 阶段的浏览器记录和 CVAT 源码检查不能替代同版本现场证据。
 
-修改平台 package-data、平台或 worker 入口后构建 wheel，在独立临时环境安装该 wheel，并从临时环境运行 `xxtrain-worker --help`、`xxtrain-platform --help`，再通过 `importlib.resources` 读取包内 `web/index.html`、`web/training.html`、`web/app.js` 和 `web/training.js`。ClearML 提交或 Agent 环境变化还要把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 指向该环境解释器，从清洁工作目录导入 `xxtrain`、`clearml` 及训练依赖，并核对已安装 ClearML Agent 源码确实选择该解释器且跳过任务虚拟环境创建。这些检查不得依赖 checkout 的 `src` 或 `data`，也不替代真实 Agent/GPU 验收。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
+修改平台 package-data、平台或 worker 入口后构建 wheel，在独立临时环境安装该 wheel，并从 checkout 外的清洁目录运行 `xxtrain-worker --help`、`xxtrain-platform --help`，再通过 `importlib.resources` 读取包内 `web/index.html`、`web/training.html`、`web/app.js` 和 `web/training.js`。任务定义变更还要用已安装包构造并加载一个合成定义，确认步骤输入适配器和训练编码器可消费；该检查可以使用本机离线缓存的共享依赖 wheel，因此只证明 xxtrain wheel 与 checkout 隔离，不声称依赖本身来自隔离仓库。ClearML 提交或 Agent 环境变化还要把 `CLEARML_AGENT_SKIP_PIP_VENV_INSTALL` 指向该环境解释器，从清洁工作目录导入 `xxtrain`、`clearml` 及训练依赖，并核对已安装 ClearML Agent 源码确实选择该解释器且跳过任务虚拟环境创建。这些检查不替代真实 Agent/GPU 验收。CVAT UI 基础镜像已在本机存在时，可以离线运行以下构建检查；该命令不得作为恢复或启动 CVAT 服务的替代授权：
 
 ```powershell
-uv build --wheel --out-dir .superpowers/task-5-dist
+uv build --wheel --out-dir .superpowers/task-definition-dist
 docker build --file deploy/platform/cvat-ui.Dockerfile --tag xxtrain-cvat-ui:2.51.0 .
 ```
 

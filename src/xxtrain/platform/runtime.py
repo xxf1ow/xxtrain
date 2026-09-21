@@ -58,20 +58,13 @@ class RuntimeCache:
 
     def has_detection_cache(self, fingerprint: str) -> bool:
         """Return whether a complete Point detection dataset exists for the fingerprint."""
-        try:
-            self.cache_path('detect', fingerprint)
-        except ValueError:
-            return False
-        return True
+        return self.has_target_cache('detect', fingerprint)
 
     def has_target_cache(self, target: str, fingerprint: str) -> bool:
         """Return whether a downstream cache has its exact manifest and target directory.
 
-        Missing, unreadable, and malformed disposable manifests are cache misses. Unsupported targets raise
-        ``ValueError``.
+        Missing, unreadable, and malformed disposable manifests are cache misses.
         """
-        if target not in {'classify', 'segment'}:
-            raise ValueError(f'Unsupported target cache: {target!r}')
         try:
             self.cache_path(target, fingerprint)
         except ValueError:
@@ -80,8 +73,8 @@ class RuntimeCache:
 
     def cache_path(self, target: str, fingerprint: str) -> Path:
         """Return one complete published target cache or reject an invalid, incomplete, or escaping reference."""
-        if target not in {'detect', 'classify', 'segment'}:
-            raise ValueError(f'Unsupported target cache: {target!r}')
+        if not _safe_component(target):
+            raise ValueError('Training cache target must name one relative dataset directory')
         if not _safe_component(fingerprint):
             raise ValueError('Training cache fingerprint must name one relative cache directory')
         cache_root = self._root / 'cache'
@@ -89,7 +82,8 @@ class RuntimeCache:
         path = publication / target
         if not _is_within(path, cache_root):
             raise ValueError('Training cache is not complete')
-        if target != 'detect' and not _has_target_manifest(publication, target, fingerprint):
+        manifest_path = publication / 'manifest.json'
+        if not manifest_path.exists() or not _has_target_manifest(publication, target, fingerprint):
             raise ValueError('Training cache is not complete')
         if not _has_training_inputs(path):
             raise ValueError('Training cache is not complete')

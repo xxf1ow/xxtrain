@@ -31,11 +31,11 @@ class FakeEditCvat:
         self.results = None
         self.unfinished = True
 
-    def create_edit_task(self, name, labels, label_type):
-        self.create_calls.append((name, labels, label_type))
+    def create_task(self, name, labels, policy):
+        self.create_calls.append((name, labels, policy.cvat_type))
         return 100 + len(self.create_calls)
 
-    def prepare_edit_task(self, task_id, frames, user_id):
+    def prepare_task(self, task_id, frames, user_id, policy):
         self.frames = frames
         sample_ids = tuple(dict.fromkeys(frame.mapping.image_id for frame in frames))
         bindings = tuple(
@@ -50,7 +50,7 @@ class FakeEditCvat:
     def job_is_unfinished(self, ref):
         return self.unfinished
 
-    def fetch_edit(self, job):
+    def fetch_annotations(self, job, policy):
         if self.results is not None:
             return self.results
         return tuple(EditFrameResult(frame.frame_id, ()) for frame in job.frames)
@@ -67,7 +67,7 @@ class DownstreamServiceTest(unittest.TestCase):
         self.workspace = self.root / 'workspace'
         (self.workspace / 'images').mkdir(parents=True)
         self.config = WorkspaceConfig('line-3', 'Line 3', 17, self.workspace, self.root / 'runtime', 'http://cvat.test')
-        self.data = WorkspaceData(self.workspace)
+        self.data = WorkspaceData(self.workspace, point_task_definition())
         self.repository = AnnotationRepository(self.workspace / 'annotations.db', point_task_definition())
         self.runtime = RuntimeCache(self.config.runtime_dir)
         self.cvat = FakeEditCvat()
@@ -115,7 +115,7 @@ class DownstreamServiceTest(unittest.TestCase):
         targets = self._targets(self.service.view(17))
         self.assertTrue(targets['classify'].can_annotate)
         self.assertFalse(targets['classify'].can_generate_cache)
-        self.assertFalse(targets['segment'].can_annotate)
+        self.assertTrue(targets['segment'].can_annotate)
 
         classifications = tuple(
             AnnotationRecord(uuid4(), box.image_id, 'classify', box.id, 'classification', 'tc', None) for box in boxes
@@ -164,7 +164,10 @@ class DownstreamServiceTest(unittest.TestCase):
         self.assertEqual(tuple(dict.fromkeys(box.image_id for box in boxes)), job.ref.sample_ids)
         self.assertEqual(tuple(str(box.id) for box in boxes), tuple(frame.frame_id for frame in job.frames))
         restarted = AnnotationService(
-            self.config, WorkspaceData(self.workspace), self.cvat, RuntimeCache(self.config.runtime_dir)
+            self.config,
+            WorkspaceData(self.workspace, point_task_definition()),
+            self.cvat,
+            RuntimeCache(self.config.runtime_dir),
         )
         self.assertEqual(annotation_url, restarted.begin_target(17, 'classify'))
         self.assertEqual(1, len(self.cvat.create_calls))

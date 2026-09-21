@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS training_runs (
   submitted_at TEXT NOT NULL,
   create_attempted_at TEXT,
   clearml_task_id TEXT UNIQUE,
-  desired_action TEXT CHECK (desired_action IN ('execute', 'cancel'))
+  desired_action TEXT CHECK (desired_action IN ('execute', 'cancel')),
+  task_entry TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS training_runs_by_user ON training_runs(user_id);
 CREATE INDEX IF NOT EXISTS training_runs_by_workspace ON training_runs(workspace_id);
@@ -28,6 +29,17 @@ CREATE INDEX IF NOT EXISTS training_runs_by_workspace ON training_runs(workspace
 _INPUT_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS training_runs_by_input
 ON training_runs(user_id, workspace_id, target, fingerprint)
+"""
+
+_ALIAS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS training_input_aliases (
+  user_id INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
+  target TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES training_runs(id),
+  PRIMARY KEY (user_id, workspace_id, target, fingerprint)
+)
 """
 
 
@@ -53,19 +65,47 @@ class TrainingRunStore:
                 if _immutable_values(existing) != _immutable_values(run):
                     raise ValueError(f'Training run {run.id!r} is already recorded with different facts')
                 return existing
-            existing = _find_input(connection, run.user_id, run.workspace_id, run.target, run.fingerprint)
-            if existing is not None:
-                if existing.cache_relative_path != run.cache_relative_path:
+            found = _find_input(connection, run.user_id, run.workspace_id, run.target, run.fingerprint)
+            if found is not None:
+                existing, aliased = found
+                if not aliased and existing.cache_relative_path != run.cache_relative_path:
                     raise ValueError('Training input is already recorded with a different cache association')
                 return existing
             connection.execute(
                 """INSERT INTO training_runs(
                 id, user_id, workspace_id, workspace_name, target, fingerprint, cache_relative_path, submitted_at,
-                create_attempted_at, clearml_task_id, desired_action
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                create_attempted_at, clearml_task_id, desired_action, task_entry
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _run_values(run),
             )
         return run
+
+    def associate_input(self, user_id: int, workspace_id: str, target: str, fingerprint: str, run_id: str) -> None:
+        """Associate an additional exact input identity with one immutable owned run."""
+        _validate_user_id(user_id)
+        _validate_run_id(run_id)
+        for value, name in (
+            (workspace_id, 'Workspace id'),
+            (target, 'Training target'),
+            (fingerprint, 'Training fingerprint'),
+        ):
+            _validate_non_empty_string(value, name)
+        with self._connection() as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            run = _find_run(connection, run_id)
+            if run is None or (run.user_id, run.workspace_id, run.target) != (user_id, workspace_id, target):
+                raise ValueError('Training input association does not match the run owner, workspace, and target')
+            found = _find_input(connection, user_id, workspace_id, target, fingerprint)
+            if found is not None:
+                existing, _ = found
+                if existing.id != run_id:
+                    raise PlatformConflictError('Training input is already associated with another run')
+                return
+            connection.execute(
+                """INSERT INTO training_input_aliases(user_id, workspace_id, target, fingerprint, run_id)
+                VALUES (?, ?, ?, ?, ?)""",
+                (user_id, workspace_id, target, fingerprint, run_id),
+            )
 
     def request_cancel(self, user_id: int, run_id: str) -> TrainingRun:
         """Persist cancellation for an owned run and return its current row."""
@@ -93,7 +133,8 @@ class TrainingRunStore:
         ):
             _validate_non_empty_string(value, name)
         with self._connection() as connection:
-            return _find_input(connection, user_id, workspace_id, target, fingerprint)
+            found = _find_input(connection, user_id, workspace_id, target, fingerprint)
+            return None if found is None else found[0]
 
     def get(self, user_id: int, run_id: str) -> TrainingRun:
         """Return one run only when it belongs to ``user_id``."""
@@ -169,6 +210,8 @@ class TrainingRunStore:
                     'ALTER TABLE training_runs ADD COLUMN desired_action TEXT '
                     "CHECK (desired_action IN ('execute', 'cancel'))"
                 )
+            if 'task_entry' not in columns:
+                connection.execute("ALTER TABLE training_runs ADD COLUMN task_entry TEXT NOT NULL DEFAULT 'point'")
             duplicate = connection.execute(
                 """SELECT user_id, workspace_id, target, fingerprint, COUNT(*)
                 FROM training_runs
@@ -184,12 +227,14 @@ class TrainingRunStore:
                     f'target={target!r}, fingerprint={fingerprint!r}, rows={count})'
                 )
             connection.execute(_INPUT_INDEX)
+            connection.execute(_ALIAS_SCHEMA)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         connection = None
         try:
             connection = sqlite3.connect(self._path)
+            connection.execute('PRAGMA foreign_keys = ON')
             yield connection
         except sqlite3.Error as error:
             error_code = getattr(error, 'sqlite_errorcode', 0) & 0xFF
@@ -208,13 +253,28 @@ def _find_run(connection: sqlite3.Connection, run_id: str) -> TrainingRun | None
 
 def _find_input(
     connection: sqlite3.Connection, user_id: int, workspace_id: str, target: str, fingerprint: str
-) -> TrainingRun | None:
-    row = connection.execute(
+) -> tuple[TrainingRun, bool] | None:
+    canonical = connection.execute(
         """SELECT * FROM training_runs
         WHERE user_id = ? AND workspace_id = ? AND target = ? AND fingerprint = ?""",
         (user_id, workspace_id, target, fingerprint),
     ).fetchone()
-    return None if row is None else _run_from_row(row)
+    alias = connection.execute(
+        """SELECT training_runs.* FROM training_input_aliases
+        JOIN training_runs ON training_runs.id = training_input_aliases.run_id
+        WHERE training_input_aliases.user_id = ?
+          AND training_input_aliases.workspace_id = ?
+          AND training_input_aliases.target = ?
+          AND training_input_aliases.fingerprint = ?""",
+        (user_id, workspace_id, target, fingerprint),
+    ).fetchone()
+    if canonical is not None and alias is not None and canonical[0] != alias[0]:
+        raise PlatformConflictError('Training input has conflicting canonical and compatibility associations')
+    if canonical is not None:
+        return _run_from_row(canonical), False
+    if alias is not None:
+        return _run_from_row(alias), True
+    return None
 
 
 def _run_from_row(row: tuple[object, ...]) -> TrainingRun:
@@ -234,6 +294,7 @@ def _run_values(run: TrainingRun) -> tuple[object, ...]:
         run.create_attempted_at,
         run.clearml_task_id,
         run.desired_action,
+        run.task_entry,
     )
 
 
@@ -247,6 +308,7 @@ def _immutable_values(run: TrainingRun) -> tuple[object, ...]:
         run.fingerprint,
         run.cache_relative_path,
         run.submitted_at,
+        run.task_entry,
     )
 
 
@@ -272,6 +334,7 @@ def _validate_run(run: TrainingRun) -> None:
             _validate_non_empty_string(value, name)
     if run.desired_action not in {None, 'execute', 'cancel'}:
         raise ValueError("Training intent must be 'execute', 'cancel', or None")
+    _validate_non_empty_string(run.task_entry, 'Training task entry')
 
 
 def _validate_run_id(run_id: str) -> None:

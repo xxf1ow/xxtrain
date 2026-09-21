@@ -1,13 +1,10 @@
-import json
 import os
-import shutil
-from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
 from PIL import Image
 
-from xxtrain.business_tasks.point import point_task_definition
+from xxtrain.business_tasks.definition import TaskDefinition
 from xxtrain.data import Bbox
 from xxtrain.platform.contracts import (
     AnnotationRecord,
@@ -30,8 +27,13 @@ from xxtrain.platform.contracts import (
 )
 from xxtrain.workspace_data.changes import plan_changes
 from xxtrain.workspace_data.dedup import SIMILARITY_DISTANCE, hamming_distance, image_sha256, perceptual_hash
-from xxtrain.workspace_data.editing import fingerprint_target, prepare_sync, project_target_frames, summarize_target
-from xxtrain.workspace_data.labelme import detection_document
+from xxtrain.workspace_data.editing import (
+    fingerprint_target,
+    fingerprint_training,
+    prepare_sync,
+    project_target_frames,
+    summarize_target,
+)
 from xxtrain.workspace_data.repository import AnnotationRepository
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
@@ -40,12 +42,17 @@ _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp'}
 class WorkspaceData:
     """Access registered images and authoritative SQLite annotations beneath one workspace root."""
 
-    def __init__(self, workspace_dir: Path) -> None:
+    def __init__(self, workspace_dir: Path, task: TaskDefinition) -> None:
         self._root = Path(workspace_dir)
         self._images_dir = self._root / 'images'
         self._require_directory(self._images_dir, writable=True)
-        self._task = point_task_definition()
+        self._task = task
         self._repository = AnnotationRepository(self._root / 'annotations.db', self._task)
+
+    @property
+    def task(self) -> TaskDefinition:
+        """Return the immutable task definition supplied by the composition root."""
+        return self._task
 
     @staticmethod
     def _require_directory(path: Path, *, writable: bool) -> None:
@@ -55,9 +62,14 @@ class WorkspaceData:
         if not os.access(path, access):
             raise PlatformAccessError(f'Directory is not accessible: {path}')
 
-    def images(self) -> tuple[ImageInput, ...]:
-        """Return registered images, detection boxes, and explicit negative confirmations in registration order."""
-        annotations = self._repository.annotations(step_key='detect')
+    def images(self, step_key: str | None = None) -> tuple[ImageInput, ...]:
+        """Return raw registered images, optionally projected with one rectangle-bearing step."""
+        annotations: tuple[AnnotationRecord, ...] = ()
+        if step_key is not None:
+            step = self._task.step(step_key)
+            if 'rectangle' not in step.kinds:
+                raise ValueError(f'Task step {step_key!r} does not contain rectangle inputs')
+            annotations = self._repository.annotations(step_key=step_key)
         negative_ids = {record.image_id for record in annotations if record.kind == 'negative'}
         by_image: dict[str, list[DetectionBox]] = {}
         for record in annotations:
@@ -135,51 +147,28 @@ class WorkspaceData:
 
     def detection_summary(self) -> DetectionSummary:
         """Return image-level detection counts aggregated from registered database facts."""
-        return self._repository.detection_summary()
+        summary = self.target_summary('detect')
+        return DetectionSummary(summary.sample_count, summary.annotated_sample_count, summary.positive_sample_count)
 
     def target_frames(self, target: str, runtime_root: Path) -> tuple[EditFrame, ...]:
         """Return current crop frames populated with one downstream target's annotations."""
-        return project_target_frames(target, self.images(), self._repository.annotations(), runtime_root)
+        return project_target_frames(target, self.images(), self._repository.annotations(), runtime_root, self._task)
 
     def target_summary(self, target: str) -> TargetSummary:
         """Return crop and completed-crop counts for a downstream annotation target."""
-        return summarize_target(target, self.images(), self._repository.annotations())
+        return summarize_target(target, self.images(), self._repository.annotations(), self._task)
 
     def target_fingerprint(self, target: str) -> str:
         """Hash one downstream target's current input facts and stable associations."""
-        return fingerprint_target(target, self.images(), self._repository.annotations())
+        return fingerprint_target(target, self.images(), self._repository.annotations(), self._task)
+
+    def training_fingerprint(self, target: str) -> str:
+        """Hash current target facts plus task-declared dataset conversion semantics."""
+        return fingerprint_training(self.target_fingerprint(target), target, self._task)
 
     def detection_fingerprint(self) -> str:
         """Hash registered image identities and normalized detection business content."""
-        return self._fingerprint(self._repository.annotations())
-
-    def materialize_detection_source(self, root: Path) -> Path:
-        """Export completed database samples into a disposable LabelMe source tree."""
-        source_root = Path(root) / 'src'
-        group_root = source_root / 'workspace'
-        images_dir = group_root / 'imgs'
-        annotations_dir = group_root / 'anns_seg'
-        images_dir.mkdir(parents=True)
-        annotations_dir.mkdir()
-        (source_root / 'labels.txt').write_text('Point\n', encoding='utf-8')
-
-        annotations = self._repository.annotations(step_key='detect')
-        by_image: dict[str, list[AnnotationRecord]] = {}
-        for record in annotations:
-            by_image.setdefault(record.image_id, []).append(record)
-        for image in self._repository.images():
-            records = tuple(by_image.get(image.id, ()))
-            if not any(record.kind in {'rectangle', 'negative'} for record in records):
-                continue
-            image_path = self._root / image.relative_path
-            document = detection_document(
-                image_path=f'../imgs/{image_path.name}', width=image.width, height=image.height, annotations=records
-            )
-            shutil.copy2(image_path, images_dir / image_path.name)
-            (annotations_dir / f'{image.id}.json').write_text(
-                json.dumps(document, ensure_ascii=False, allow_nan=False), encoding='utf-8'
-            )
-        return Path(root)
+        return self.target_fingerprint('detect')
 
     def bind_job(self, prepared: PreparedJob) -> None:
         """Persist a prepared CVAT job's native-object bindings atomically."""
@@ -247,7 +236,9 @@ class WorkspaceData:
         for annotation_id in changes.delete_ids:
             final.pop(annotation_id, None)
         final.update((record.id, record) for record in changes.upserts)
-        return DetectionSync(changes, tuple(bindings), self._fingerprint(tuple(final.values())))
+        return DetectionSync(
+            changes, tuple(bindings), fingerprint_target('detect', self.images(), tuple(final.values()), self._task)
+        )
 
     def commit_detection_sync(self, ref: JobRef, sync: DetectionSync) -> None:
         """Atomically commit a prepared detection change set and its native CVAT bindings."""
@@ -262,37 +253,3 @@ class WorkspaceData:
     def commit_target_sync(self, job: EditJob, sync: TargetSync) -> None:
         """Atomically commit prepared downstream annotations and their native CVAT bindings."""
         self._repository.apply_changes(sync.changes, ref=job.ref, bindings=sync.bindings)
-
-    def _fingerprint(self, annotations: tuple[AnnotationRecord, ...]) -> str:
-        by_image: dict[str, list[AnnotationRecord]] = {}
-        for record in annotations:
-            if record.step_key == 'detect':
-                by_image.setdefault(record.image_id, []).append(record)
-        records = []
-        for image in self._repository.images():
-            detection_records = by_image.get(image.id, ())
-            boxes = [
-                {'label': record.label, 'points': [[float(value) for value in point] for point in record.geometry]}
-                for record in detection_records
-                if record.kind == 'rectangle'
-            ]
-            if boxes:
-                detection = {
-                    'boxes': sorted(
-                        boxes,
-                        key=lambda box: json.dumps(box, ensure_ascii=False, sort_keys=True, separators=(',', ':')),
-                    )
-                }
-            elif any(record.kind == 'negative' for record in detection_records):
-                detection = {'negative': True}
-            else:
-                detection = None
-            records.append({'sha256': image.id, 'detection': detection})
-        payload = json.dumps(
-            sorted(records, key=lambda record: record['sha256']),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(',', ':'),
-            allow_nan=False,
-        ).encode('utf-8')
-        return sha256(payload).hexdigest()

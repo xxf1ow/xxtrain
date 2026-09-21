@@ -95,11 +95,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 def _training_definition(task: str, target: str) -> Any:
-    if task != 'point':
-        raise ValueError(f'Unknown business task: {task!r}')
-    from xxtrain.business_tasks.point import point_task_definition
+    from xxtrain.business_tasks.loader import load_training_task_definition
 
-    training = point_task_definition().step(target).training
+    training = load_training_task_definition(task).step(target).training
     if training is None:
         raise ValueError(f'Target does not define training: {target!r}')
     return training

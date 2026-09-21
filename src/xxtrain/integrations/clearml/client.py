@@ -171,7 +171,7 @@ class ClearMLClient:
             'working_directory': str(self._worker_script.parent),
             'packages': False,
             'argparse_args': [
-                ('task', 'point'),
+                ('task', run.task_entry),
                 ('target', run.target),
                 ('cache_relative_path', run.cache_relative_path),
                 ('shared_root', str(self._shared_root)),

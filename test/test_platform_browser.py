@@ -61,7 +61,7 @@ class PlatformBrowserTest(unittest.TestCase):
         self.client = AsgiTestClient(create_app(config, self.service, self.cvat))
         self.addCleanup(self.client.close)
 
-    def test_page_serves_the_point_utility_layout_and_local_assets(self) -> None:
+    def test_page_serves_the_dynamic_utility_layout_and_local_assets(self) -> None:
         page = self.client.get('/platform/')
         style = self.client.get('/platform/style.css')
         script = self.client.get('/platform/app.js')
@@ -73,11 +73,9 @@ class PlatformBrowserTest(unittest.TestCase):
         self.assertIn('method="post" action="/platform/api/login"', page.text)
         self.assertIn('id="workspace-panel"', page.text)
         self.assertIn('aria-live="polite"', page.text)
-        self.assertIn('Point', page.text)
-        self.assertIn('检测', page.text)
-        self.assertIn('分类', page.text)
-        self.assertIn('分割', page.text)
-        self.assertIn('每张裁剪图只选择一个分类标签', page.text)
+        self.assertIn('id="target-rail"', page.text)
+        self.assertNotIn('data-target=', page.text)
+        self.assertNotIn('Point', page.text)
         self.assertIn('href="/platform/style.css"', page.text)
         self.assertIn('src="/platform/app.js"', page.text)
         self.assertNotIn('http://', page.text)
@@ -113,18 +111,23 @@ globalThis.setTimeout = (callback) => {{ timers.set(++timerId, callback); return
 globalThis.clearTimeout = (id) => timers.delete(id);
 const elements = new Map();
 const ids = {json.dumps(re.findall(r'id="([^"]+)"', self.client.get('/platform/').text))};
-function makeElement(id) {{
+function makeElement(id, tag='div') {{
   return {{
     id,
+    tagName: tag,
+    children: [],
     hidden: false,
     disabled: false,
     textContent: '',
+    className: '',
     value: '',
     files: [],
     listeners: {{}},
     dataset: {{}},
     classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
     addEventListener(name, callback) {{ this.listeners[name] = callback; }},
+    append(...nodes) {{ this.children.push(...nodes); }},
+    replaceChildren(...nodes) {{ this.children = [...nodes]; }},
     setAttribute() {{}},
     removeAttribute() {{}},
     reset() {{}},
@@ -138,6 +141,18 @@ globalThis.document = {{
     return elements.get(id) || null;
   }},
   querySelectorAll() {{ return []; }},
+  querySelector(selector) {{
+    const prefix = '[data-target="';
+    const marker = '"] .';
+    const split = selector.indexOf(marker);
+    if (!selector.startsWith(prefix) || split < 0) return null;
+    const target = selector.slice(prefix.length, split);
+    const className = selector.slice(split + marker.length);
+    const walk = (node) => [node, ...node.children.flatMap(walk)];
+    const card = walk(elements.get('target-rail')).find((node) => node.dataset.target === target);
+    return walk(card).find((node) => node.className.split(' ').includes(className)) || null;
+  }},
+  createElement(tag) {{ return makeElement('', tag); }},
   addEventListener(name, callback) {{ if (name === 'DOMContentLoaded') loaded = callback; }},
 }};
 let assigned = null;
@@ -155,19 +170,19 @@ globalThis.sessionStorage = {{
   removeItem(key) {{ stored.delete(key); }},
 }};
 const workspace = {{
-  workspace_id: 'line-3', name: '三号现场', image_count: 10, annotated_image_count: 7, boxed_image_count: 7,
-  can_generate_detection_cache: {json.dumps(ready)}, detection_cache_ready: false,
+  workspace_id: 'line-3', name: '三号现场', image_count: 10, can_upload: true,
   task: {{id: 'point', name: 'Point'}},
   targets: [
-    {{id: 'detect', name: '检测', available: true, sample_count: 10, annotated_sample_count: 7,
-      can_annotate: true, can_generate_cache: {json.dumps(ready)}, cache_ready: false}},
-    {{id: 'classify', name: '分类', available: true, sample_count: 7, annotated_sample_count: 4,
-      can_annotate: true, can_generate_cache: {json.dumps(classify_ready)}, cache_ready: false}},
-    {{id: 'segment', name: '分割', available: true, sample_count: 7, annotated_sample_count: 0,
-      can_annotate: false, can_generate_cache: false, cache_ready: false}},
+    {{id: 'detect', name: '检测', sample_unit: '张图片', sample_count: 10, annotated_sample_count: 7,
+      can_annotate: true, can_generate_cache: {json.dumps(ready)}, cache_ready: false, editable: true,
+      training: {json.dumps(training_run)}}},
+    {{id: 'classify', name: '分类', sample_unit: '张裁剪图', sample_count: 7, annotated_sample_count: 4,
+      can_annotate: true, can_generate_cache: {json.dumps(classify_ready)}, cache_ready: false, editable: true,
+      training: null}},
+    {{id: 'segment', name: '指针分割', sample_unit: '张裁剪图', sample_count: 7, annotated_sample_count: 0,
+      can_annotate: false, can_generate_cache: false, cache_ready: false, editable: true, training: null}},
   ],
   training_enabled: {json.dumps(training_run is not None or submission_run is not None)},
-  training: {{detect: {json.dumps(training_run)}, classify: null, segment: null}},
 }};
 let release;
 let hold = false;
@@ -202,20 +217,48 @@ globalThis.fetch = async (url, options = {{}}) => {{
       : target);
   const body = url.endsWith('/session')
     ? {{authenticated: true, user_id: 17}}
-    : url.endsWith('/sync') ? {{...workspace, image_count: 50, annotated_image_count: 50,
-        boxed_image_count: 50, can_generate_detection_cache: true, targets: completedTargets}}
+    : url.endsWith('/sync') ? {{...workspace, image_count: 50, targets: completedTargets}}
     : url.endsWith('/images') ? {{...workspace, image_count: 12,
         targets: workspace.targets.map((target) => target.id === 'detect' ? {{...target, sample_count: 12}} : target)}}
-    : url.endsWith('/cache') ? {{...workspace, detection_cache_ready: true,
+    : url.endsWith('/cache') ? {{...workspace,
         targets: workspace.targets.map((target) => url.includes(`/targets/${{target.id}}/`)
           ? {{...target, cache_ready: true}} : target)}}
     : url.endsWith('/start') ? {{annotation_url: '/tasks/41/jobs/73'}}
-    : submittedRun ? {{...workspace, training: {{...workspace.training, detect: submittedRun}}}} : workspace;
+    : submittedRun ? {{...workspace, targets: workspace.targets.map((target) =>
+        target.id === submittedRun.target ? {{...target, training: submittedRun}} : target)}} : workspace;
   return {{ok: true, status: 200, json: async () => body}};
 }};
 eval({json.dumps(script.text)});
 {load_actions}
-const get = (id) => elements.get(id);
+function all(node) {{ return [node, ...node.children.flatMap(all)]; }}
+function targetPart(target, part) {{
+  const card = all(elements.get('target-rail')).find((node) => node.dataset.target === target);
+  const buttons = all(card).filter((node) => node.tagName === 'button');
+  if (part === 'annotate') return buttons[0];
+  if (part === 'cache') return buttons[1];
+  if (part === 'annotated') return all(card).find((node) => node.tagName === 'strong');
+  if (part === 'total') return all(card).filter((node) => node.tagName === 'span')[2];
+  return all(card).find((node) => node.className === part);
+}}
+const legacy = {{
+  'primary-action': () => targetPart('detect', 'annotate'),
+  'cache-action': () => targetPart('detect', 'cache'),
+  'annotated-image-count': () => targetPart('detect', 'annotated'),
+  'workspace-error': () => targetPart('detect', 'error-message operation-error'),
+  'detect-correction': () => targetPart('detect', 'correction-link operation-error'),
+}};
+for (const target of ['detect', 'classify', 'segment']) {{
+  legacy[`${{target}}-image-total`] = () => targetPart(target, 'total');
+  legacy[`${{target}}-progress`] = () => targetPart(target, 'operation-progress');
+  if (target !== 'detect') {{
+    legacy[`${{target}}-annotated-count`] = () => targetPart(target, 'annotated');
+    legacy[`${{target}}-annotate-action`] = () => targetPart(target, 'annotate');
+    legacy[`${{target}}-cache-action`] = () => targetPart(target, 'cache');
+    legacy[`${{target}}-error`] = () => targetPart(target, 'error-message operation-error');
+    legacy[`${{target}}-correction`] = () => targetPart(target, 'correction-link operation-error');
+  }}
+}}
+const get = (id) => elements.get(id) || legacy[id]?.();
 const snapshot = () => ({{
   images: get('image-count')?.textContent,
   annotated: get('annotated-image-count')?.textContent,
@@ -526,7 +569,7 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
             config = load_config(Path(receipt['config_path']))
-            data = WorkspaceData(config.workspace_dir)
+            data = WorkspaceData(config.workspace_dir, point_task_definition())
             repository = AnnotationRepository(Path(receipt['database_path']), point_task_definition())
             cvat = HttpxCvatFixture()
             self.addCleanup(cvat.close)
@@ -562,7 +605,7 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                     self.assertEqual(409, response.status_code)
                     detail = response.json()
                     self.assertEqual(str(raised.exception), detail['detail'])
-                    self.assertIn('裁剪图 1', detail['detail'])
+                    self.assertIn('样本 1', detail['detail'])
                     self.assertIn('请返回', detail['detail'])
                     self.assertTrue(detail['annotation_url'].endswith('frame=0'))
                     for secret in (str(config.workspace_dir), str(before[0].id), 'ValueError', 'label_id'):
@@ -575,10 +618,10 @@ globalThis.syncObservations = [({expression})({json.dumps(argument)})];
                     self.assertIsNone(page['replaced'])
                     self.assertEqual(before, repository.annotations())
             secret = f'CVAT response password=secret at {config.workspace_dir} object {before[0].id}'
-            with patch('xxtrain.platform.service.validate_target_annotations', side_effect=ValueError(secret)):
+            with patch('xxtrain.platform.service.validate_step_annotations', side_effect=ValueError(secret)):
                 response = client.post('/platform/api/targets/classify/sync', headers=headers, json={})
             self.assertEqual(409, response.status_code)
-            self.assertIn('标注类型、标签或坐标不符合要求', response.json()['detail'])
+            self.assertIn('标注数量、类型、标签或坐标不符合当前任务规则', response.json()['detail'])
             self.assertNotIn(secret, response.text)
             self.assertNotIn('password', response.text)
 
@@ -611,7 +654,15 @@ await operation;
         payload = json.loads(path.read_text(encoding='utf-8'))
 
         self.assertEqual(
-            {'workspace_id', 'display_name', 'owner_user_id', 'workspace_dir', 'runtime_dir', 'cvat_internal_url'},
+            {
+                'workspace_id',
+                'display_name',
+                'owner_user_id',
+                'workspace_dir',
+                'runtime_dir',
+                'cvat_internal_url',
+                'task_entry',
+            },
             set(payload),
         )
         config = load_config(path)
@@ -745,7 +796,7 @@ await operation;
 
 class PlatformFixtureTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the offline acceptance sequence')
-    def test_live_scenario_preserves_current_bindings_and_restores_invalidated_pointers(self) -> None:
+    def test_live_scenario_preserves_parallel_step_pointers(self) -> None:
         import copy
 
         from xxtrain.platform.contracts import TargetValidationError
@@ -756,7 +807,7 @@ class PlatformFixtureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
             config = load_config(Path(receipt['config_path']))
-            data = WorkspaceData(config.workspace_dir)
+            data = WorkspaceData(config.workspace_dir, point_task_definition())
             cvat = HttpxCvatFixture()
             self.addCleanup(cvat.close)
             service = AnnotationService(config, data, cvat.client, RuntimeCache(config.runtime_dir))
@@ -767,7 +818,9 @@ class PlatformFixtureTest(unittest.TestCase):
             active = {}
 
             def open_target(_page, target):
-                cvat.expect(data.images() if target == 'detect' else data.target_frames(target, config.runtime_dir))
+                cvat.expect(
+                    data.images('detect') if target == 'detect' else data.target_frames(target, config.runtime_dir)
+                )
                 page.url = service.begin_target(17, target)
                 active['target'] = target
 
@@ -783,9 +836,10 @@ class PlatformFixtureTest(unittest.TestCase):
                     service.sync_target(17, active['target'])
 
             def click(selector):
-                if selector.endswith('-cache-action'):
-                    service.generate_target_cache(17, selector.split('-')[0][1:])
-                elif selector.endswith('-correction'):
+                target_match = re.search(r'data-target="([^"]+)"', selector)
+                if target_match and 'button:nth-child(2)' in selector:
+                    service.generate_target_cache(17, target_match.group(1))
+                elif target_match and 'correction-link' in selector:
                     job = cvat.job(active['target'])
                     page.url = f'/tasks/{job["task_id"]}/jobs/{job["id"]}'
 
@@ -855,7 +909,7 @@ globalThis.fetch = async (url, options = {{}}) => {{
     def test_live_job_lookup_distinguishes_detection_from_edit_targets(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             receipt = create_fixture(Path(parent), owner_user_id=17, cvat_internal_url='http://cvat.test')
-            data = WorkspaceData(Path(receipt['root']) / 'workspace')
+            data = WorkspaceData(Path(receipt['root']) / 'workspace', point_task_definition())
             runtime = RuntimeCache(Path(receipt['runtime_dir']))
             detection = JobRef(101, 201, tuple(image.sample_id for image in data.images()))
             runtime.remember_job('detect', data.detection_fingerprint(), detection)
@@ -903,7 +957,7 @@ globalThis.fetch = async (url, options = {{}}) => {{
                 self.assertTrue(path.is_relative_to(root))
                 self.assertEqual(immutable['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
 
-            workspace = WorkspaceData(root / 'workspace')
+            workspace = WorkspaceData(root / 'workspace', point_task_definition())
             self.assertEqual(
                 [image['sample_id'] for image in receipt['images']], [image.sample_id for image in workspace.images()]
             )
@@ -1012,9 +1066,15 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             page.get_by_label('密码').fill('')
             self.fail(f'login failed: {error}; request checks: {observed_request}')
         expect(page.locator('#workspace-name')).to_have_text(self.receipt['display_name'])
-        expect(page.locator('[data-target="detect"]')).to_have_attribute('aria-disabled', 'false')
-        expect(page.locator('[data-target="classify"]')).to_have_attribute('aria-disabled', 'false')
-        expect(page.locator('[data-target="segment"]')).to_have_attribute('aria-disabled', 'false')
+        expect(page.locator('[data-target="detect"] .target-actions button:first-child')).to_have_attribute(
+            'aria-disabled', 'false'
+        )
+        expect(page.locator('[data-target="classify"] .target-actions button:first-child')).to_have_attribute(
+            'aria-disabled', 'false'
+        )
+        expect(page.locator('[data-target="segment"] .target-actions button:first-child')).to_have_attribute(
+            'aria-disabled', 'false'
+        )
 
     def _assert_immutable_inputs(self) -> None:
         for immutable in [*self.receipt['images'], self.receipt['baseline']]:
@@ -1074,7 +1134,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         page.wait_for_function("!document.getElementById('workspace-panel').hidden")
 
     def _open_target(self, page: Page, target: str) -> None:
-        action = '#primary-action' if target == 'detect' else f'#{target}-annotate-action'
+        action = f'[data-target="{target}"] .target-actions button:first-child'
         with page.expect_navigation(wait_until='domcontentloaded'):
             page.locator(action).click()
         expect(page.locator('.cvat-canvas-container')).to_be_visible()
@@ -1086,8 +1146,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             """(target) => !document.getElementById('workspace-panel').hidden
               && !new URLSearchParams(location.search).has('returned')
               && sessionStorage.getItem('xxtrain-return-target') === null
-              && document.getElementById(target === 'detect' ? 'workspace-error' : `${target}-error`).hidden
-              && document.getElementById(`${target}-progress`).hidden""",
+              && document.querySelector(`[data-target="${target}"] .error-message`).hidden
+              && document.querySelector(`[data-target="${target}"] .operation-progress`).hidden""",
             arg=target,
         )
 
@@ -1133,7 +1193,7 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         expect(page.locator('#annotated-image-count')).to_have_text('50')
         initial_ids = self.receipt['initial_annotation_ids']
         repository = AnnotationRepository(Path(self.receipt['database_path']), point_task_definition())
-        data = WorkspaceData(Path(self.receipt['root']) / 'workspace')
+        data = WorkspaceData(Path(self.receipt['root']) / 'workspace', point_task_definition())
         runtime = RuntimeCache(Path(self.receipt['runtime_dir']))
 
         self._open_target(page, 'detect')
@@ -1194,10 +1254,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             binding for binding in classify_bindings_after if binding.annotation_id == changed_after.id
         )
         self.assertIn(changed_binding.object_id, native_tag_ids)
-        retained_segments = tuple(record for record in initial_segments if record.parent_id != changed_after.parent_id)
-        removed_segment_ids = {record.id for record in initial_segments if record.parent_id == changed_after.parent_id}
-        self.assertEqual(2, len(removed_segment_ids))
-        self.assertEqual(50, len(retained_segments))
+        retained_segments = initial_segments
+        self.assertEqual(52, len(retained_segments))
         self.assertEqual(retained_segments, repository.annotations(step_key='segment'))
 
         previous_classify_ref = classify_job.ref
@@ -1215,16 +1273,16 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self.assertEqual(52, len(malformed_classification['tags']))
         self.assertEqual(invalid_classification['tags'], malformed_classification['tags'][:-1])
         self._complete_malformed_via_api(page)
-        expect(page.locator('#classify-error')).to_contain_text('只能保留一个分类标签')
+        expect(page.locator('[data-target="classify"] .error-message')).to_contain_text('只能保留一个分类标签')
         self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
         self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
-        correction = page.locator('#classify-correction')
+        correction = page.locator('[data-target="classify"] .correction-link')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
         self._delete_last_object(page)
         self._complete_with_plugin(page, 'classify')
-        expect(page.locator('#classify-annotated-count')).to_have_text('51')
+        expect(page.locator('[data-target="classify"] .target-summary strong')).to_have_text('51')
         self.assertEqual(classifications_after, repository.annotations(step_key='classify'))
         self.assertEqual(classify_bindings_after, repository.bindings(classify_job.ref))
 
@@ -1238,9 +1296,9 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         )
         self.assertEqual({'polyline'}, {label['type'] for label in labels['results']})
         segmentation = self._job_annotations(page)
-        self.assertEqual(50, len(segmentation['shapes']))
+        self.assertEqual(52, len(segmentation['shapes']))
         existing_shape_ids = {shape['id'] for shape in segmentation['shapes']}
-        self.assertEqual(50, len(existing_shape_ids))
+        self.assertEqual(52, len(existing_shape_ids))
         segment_job = _acceptance_job(runtime, data, 'segment')
         self.assertIsNotNone(segment_job)
         assert segment_job is not None
@@ -1252,9 +1310,8 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         self._draw_two_point_polyline(page)
         self._complete_with_plugin(page, 'segment')
         segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(52, len(segment_records))
+        self.assertEqual(54, len(segment_records))
         self.assertTrue({record.id for record in retained_segments} < {record.id for record in segment_records})
-        self.assertTrue(removed_segment_ids.isdisjoint(record.id for record in segment_records))
         new_segments = tuple(
             record for record in segment_records if record.id not in {item.id for item in segment_records_before}
         )
@@ -1282,22 +1339,22 @@ class PlatformLiveBrowserTest(unittest.TestCase):
         invalid_line['points'] = [60, 140, 120, 100, 180, 60]
         self._create_malformed_annotations(page, {'tags': [], 'shapes': [invalid_line], 'tracks': []})
         malformed_segment = self._job_annotations(page)
-        self.assertEqual(53, len(malformed_segment['shapes']))
+        self.assertEqual(55, len(malformed_segment['shapes']))
         self.assertEqual(invalid_segment['shapes'], malformed_segment['shapes'][:-1])
         self._complete_malformed_via_api(page)
-        expect(page.locator('#segment-error')).to_contain_text('必须恰好有两个点')
+        expect(page.locator('[data-target="segment"] .error-message')).to_contain_text('必须恰好有两个点')
         self.assertEqual(segment_records, repository.annotations(step_key='segment'))
         self.assertEqual(segment_bindings_before, repository.bindings(segment_job.ref))
-        correction = page.locator('#segment-correction')
+        correction = page.locator('[data-target="segment"] .correction-link')
         expect(correction).to_be_visible()
         with page.expect_navigation(wait_until='domcontentloaded'):
             correction.click()
         self._delete_last_object(page)
         self._draw_two_point_polyline(page)
         self._complete_with_plugin(page, 'segment')
-        expect(page.locator('#segment-annotated-count')).to_have_text('51')
+        expect(page.locator('[data-target="segment"] .target-summary strong')).to_have_text('51')
         corrected_segment_records = repository.annotations(step_key='segment')
-        self.assertEqual(53, len(corrected_segment_records))
+        self.assertEqual(55, len(corrected_segment_records))
         self.assertTrue({record.id for record in segment_records} < {record.id for record in corrected_segment_records})
         self.assertTrue(set(segment_bindings_before) < set(repository.bindings(segment_job.ref)))
 
@@ -1307,12 +1364,14 @@ class PlatformLiveBrowserTest(unittest.TestCase):
             all(parents[record.parent_id] == record.image_id for record in records if record.step_key != 'detect')
         )
         self.assertTrue(all(frame.image_id == parents[frame.parent_id] for frame in segment_job.frames))
-        page.locator('#classify-cache-action').click()
-        expect(page.locator('#classify-cache-action')).to_have_text('训练缓存已生成')
-        page.locator('#segment-cache-action').click()
-        expect(page.locator('#segment-cache-action')).to_have_text('训练缓存已生成')
+        classify_cache = page.locator('[data-target="classify"] .target-actions button:nth-child(2)')
+        classify_cache.click()
+        expect(classify_cache).to_have_text('训练缓存已生成')
+        segment_cache = page.locator('[data-target="segment"] .target-actions button:nth-child(2)')
+        segment_cache.click()
+        expect(segment_cache).to_have_text('训练缓存已生成')
         for target in ('classify', 'segment'):
-            fingerprint = data.target_fingerprint(target)
+            fingerprint = data.training_fingerprint(target)
             publication = Path(self.receipt['runtime_dir']) / 'cache' / fingerprint
             self.assertEqual(
                 {'fingerprint': fingerprint, 'target': target},

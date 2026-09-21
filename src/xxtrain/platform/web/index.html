@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Point 标注台</title>
+  <title>现场标注台</title>
   <link rel="stylesheet" href="/platform/style.css">
   <script src="/platform/app.js" defer></script>
 </head>
@@ -13,7 +13,7 @@
     <div class="brand-mark" aria-hidden="true">XX</div>
     <div>
       <p class="utility-label">现场标注工具</p>
-      <p class="product-name">Point 标注台</p>
+      <p class="product-name">现场标注台</p>
     </div>
     <div id="session-tools" class="session-tools" hidden>
       <nav class="page-nav" aria-label="平台页面">
@@ -27,7 +27,7 @@
 
   <main id="main-content">
     <section id="login-panel" class="login-panel" aria-labelledby="login-title">
-      <div class="section-code" aria-hidden="true">POINT / ACCESS</div>
+      <div class="section-code" aria-hidden="true">WORKSPACE / ACCESS</div>
       <h1 id="login-title">登录后继续现场标注</h1>
       <p class="lede">使用分配给你的 CVAT 账号。平台只显示当前预置现场。</p>
       <form id="login-form" class="login-form" method="post" action="/platform/api/login">
@@ -43,7 +43,7 @@
     <section id="workspace-panel" class="workspace-panel" aria-labelledby="workspace-title" hidden>
       <div class="workspace-heading">
         <div>
-          <p class="task-context">业务任务 <span id="task-name">Point</span> <span aria-hidden="true">/</span> 现场</p>
+          <p class="task-context">业务任务 <span id="task-name">—</span> <span aria-hidden="true">/</span> 现场</p>
           <h1 id="workspace-title"><span id="workspace-name">现场</span></h1>
         </div>
       </div>
@@ -63,55 +63,9 @@
       </div>
 
       <div class="shared-data-label">
-        <span>按顺序完成各模型标注，训练可独立选择</span>
+        <span>按当前任务规则完成各模型标注，训练可独立选择</span>
       </div>
-      <div class="target-rail" aria-label="Point 模型目标">
-        <article class="target target-active" data-target="detect">
-          <div class="target-index" aria-hidden="true">01</div>
-          <div class="target-summary">
-            <h2>检测模型 <span class="availability">可用</span></h2>
-            <p>已标注原图：<strong id="annotated-image-count">—</strong> / <span id="detect-image-total">—</span> 张</p>
-          </div>
-          <div class="target-actions">
-            <button id="primary-action" class="primary-button" type="button" disabled>开始标注</button>
-            <button id="cache-action" class="primary-button" type="button" disabled>开始训练</button>
-          </div>
-          <p class="target-help">有图片即可标注；全部标注完成且至少 50 张图片含框后可训练。</p>
-          <p id="detect-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
-          <p id="workspace-error" class="error-message operation-error" role="alert" hidden></p>
-          <a id="detect-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>
-        </article>
-        <article class="target" data-target="classify" aria-disabled="true">
-          <div class="target-index" aria-hidden="true">02</div>
-          <div class="target-summary">
-            <h2>分类模型 <span class="availability">可用</span></h2>
-            <p>已标注裁剪图：<strong id="classify-annotated-count">—</strong> / <span id="classify-image-total">—</span> 张</p>
-          </div>
-          <div class="target-actions">
-            <button id="classify-annotate-action" class="primary-button" type="button" disabled>开始标注</button>
-            <button id="classify-cache-action" class="primary-button" type="button" disabled>开始训练</button>
-          </div>
-          <p class="target-help">每张裁剪图只选择一个分类标签；检测标注全部完成且至少 50 张原图含框后可进行分类标注，无需先生成检测缓存。</p>
-          <p id="classify-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
-          <p id="classify-error" class="error-message operation-error" role="alert" hidden></p>
-          <a id="classify-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>
-        </article>
-        <article class="target" data-target="segment" aria-disabled="true">
-          <div class="target-index" aria-hidden="true">03</div>
-          <div class="target-summary">
-            <h2>指针分割模型 <span class="availability">可用</span></h2>
-            <p>已标注裁剪图：<strong id="segment-annotated-count">—</strong> / <span id="segment-image-total">—</span> 张</p>
-          </div>
-          <div class="target-actions">
-            <button id="segment-annotate-action" class="primary-button" type="button" disabled>开始标注</button>
-            <button id="segment-cache-action" class="primary-button" type="button" disabled>开始训练</button>
-          </div>
-          <p class="target-help">每张裁剪图至少绘制一条两点折线；分类全部完成后即可标注，无需先生成分类缓存。</p>
-          <p id="segment-progress" class="operation-progress" role="status" aria-live="polite" hidden></p>
-          <p id="segment-error" class="error-message operation-error" role="alert" hidden></p>
-          <a id="segment-correction" class="correction-link operation-error" hidden>返回问题帧修正</a>
-        </article>
-      </div>
+      <div id="target-rail" class="target-rail" aria-label="模型目标"></div>
 
     </section>
   </main>
