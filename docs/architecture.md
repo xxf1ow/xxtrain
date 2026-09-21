@@ -50,7 +50,7 @@ Scenario 目录的 `src/` 是当前训练流程的权威输入。数据集目录
 
 常规任务通过组合 Source、Processor、Sink 和 `DatasetRecipe` 扩展；通用差异进入 Scenario 配置，特殊几何或业务转换进入代码。配置不承担任意程序逻辑，具体 Processor 和 Sink 也不是通用第三方插件 API。
 
-平台业务任务通过 Python `TaskDefinition` 组合步骤规则、输入适配、标注策略、训练转换和交付内容。存储校验、frame 投影、同步与失效、输入身份、标注协调、CVAT 交换、训练缓存与保护、HTTP、页面和 worker 都解释同一定义；扩展边界与验证要求由[任务定义驱动决策](agent-notes/implemented/architecture/2026-09-19-task-definition-driven-platform.md)所有。非 Point 合成任务已通过完整离线组件和安装 wheel 验证；新的任务定义尚未通过真实 CVAT 页面和 ClearML Server、Agent、GPU 部署验收。
+平台业务任务通过 Python `TaskDefinition` 组合步骤规则、输入适配、标注策略、训练转换和交付内容。存储校验、frame 投影、同步与失效、输入身份、标注协调、CVAT 交换、训练缓存与保护、HTTP、页面和 worker 都解释同一定义；扩展边界与验证要求由[任务定义驱动决策](agent-notes/implemented/architecture/2026-09-19-task-definition-driven-platform.md)所有。Point 已通过该实现版本的[部署与人工验收](agent-notes/implemented/architecture/2026-09-19-task-definition-driven-platform.md#live-acceptance)。非 Point 合成任务已通过完整离线组件和安装 wheel 验证，但尚未通过真实 CVAT 页面和 ClearML Server、Agent、GPU 部署验收。
 
 Ultralytics YOLO 是唯一训练后端。只有第二个真实后端形成共同边界后，才引入后端抽象。
 
