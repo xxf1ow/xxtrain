@@ -12,7 +12,7 @@ Status: proposed
 
 平台采用一台 Ubuntu 主机和多台同局域网、长期在线的 Ubuntu 训练从机。主机保存数据，通过 NFS 向从机提供只读访问。数据沿用现有图片和标注文件，业务任务分别组织目录；Point 是一个业务任务，检测、分类、分割是其训练目标，用户选择业务任务及本次训练目标，每次只训练一个模型。
 
-本文拥有部署、数据组织和上传去重方向；[平台总体提案](2026-07-30-self-service-training-platform.md)拥有用户流程、任务门禁和交付路线。预置 Point 现场的批量上传、检测标注和检测缓存生成已经交付；SQLite 权威存储与对象身份运行路径已经完成真实 CVAT 验收。[分类与指针分割闭环](../../implemented/feature/2026-09-16-point-classification-segmentation.md)已经交付，拥有裁剪编辑、运行映射和训练缓存复用规则，不改变本文的部署和数据隔离约束。训练提交、只读缓存消费和产物交付已有离线实现；真实 ClearML/GPU 执行、NFS 部署和管理员数据治理仍属于后续工作。
+本文拥有部署、数据组织和上传去重方向；[平台总体提案](2026-07-30-self-service-training-platform.md)拥有用户流程、任务门禁和交付路线。预置 Point 现场的批量上传、检测标注和检测缓存生成已经交付；SQLite 权威存储与对象身份运行路径已经完成真实 CVAT 验收。[分类与指针分割闭环](../../implemented/feature/2026-09-16-point-classification-segmentation.md)已经交付，拥有裁剪编辑、运行映射和训练缓存复用规则，不改变本文的部署和数据隔离约束。训练提交、只读缓存消费和产物交付已有离线实现；管理员数据治理由[管理员封存审核与基准数据集治理](2026-09-20-admin-baseline-dataset-governance.md)细化，真实 ClearML/GPU 执行和 NFS 部署仍属于后续工作。
 
 ## Deployment and storage
 
