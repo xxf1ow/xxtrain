@@ -28,7 +28,42 @@ uv run --locked --extra platform --extra clearml xxtrain serverctl install
 chmod 600 .deployment/platform.env
 ```
 
-Edit `.deployment/platform.env` to contain `XXTRAIN_CVAT_SERVICE_TOKEN`, `CLEARML_API_ACCESS_KEY` and `CLEARML_API_SECRET_KEY` as `NAME=value` lines. The CVAT service token must belong to a valid CVAT service account; obtain or provision it through your CVAT administration process. Obtain ClearML API credentials through ClearML administration. Keep this file private (`0600`), do not commit it, and avoid shell history for secrets. The unit reads it at startup; Compose receives `XXTRAIN_SITE_ROOT` from the unit and `serverctl`, not from this file. If credentials do not yet exist, complete their provisioning before expecting authenticated platform or training operations.
+On a new installation, bootstrap credentials before starting the platform. The checked-in Compose project can temporarily start its CVAT and ClearML services without invoking systemd; nginx serves ClearML while its platform route remains unavailable. Run from the checkout after `install`:
+
+```sh
+XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml up -d cvat_server clearml_webserver nginx
+XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml exec cvat_server bash -ic 'python3 ~/manage.py createsuperuser'
+```
+
+Enter a new CVAT superuser name, email and password at the prompt. Wait until CVAT responds on `127.0.0.1:18080`; do not publish this loopback backend. The [official CVAT installation instructions](https://docs.cvat.ai/docs/administration/community/basics/installation/) specify `createsuperuser`, and its [Auth API](https://docs.cvat.ai/docs/api_sdk/sdk/reference/apis/auth-api/) documents `POST /api/auth/login` returning a `Token` with a `key`. The platform uses `Authorization: Token <key>`; CVAT Personal Access Tokens use `Bearer` and do not satisfy that interface. This interactive command obtains the login token without putting the password or token in shell history, appends it to the private env file, and prints the user ID needed in `workspace.json`:
+
+```sh
+python3 - <<'PY'
+import getpass
+import json
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+username = input('CVAT superuser name: ')
+password = getpass.getpass('CVAT password: ')
+root = 'http://127.0.0.1:18080'
+payload = json.dumps({'username': username, 'password': password}).encode()
+request = Request(root + '/api/auth/login', payload, {'Content-Type': 'application/json', 'Accept': 'application/vnd.cvat+json'})
+with urlopen(request) as response:
+    token = json.load(response)['key']
+request = Request(root + '/api/users/self', headers={'Authorization': 'Token ' + token, 'Accept': 'application/vnd.cvat+json'})
+with urlopen(request) as response:
+    print('CVAT owner_user_id:', json.load(response)['id'])
+with Path('.deployment/platform.env').open('a', encoding='utf-8') as env:
+    env.write('XXTRAIN_CVAT_SERVICE_TOKEN=' + token + '\n')
+PY
+```
+
+For a dedicated service identity, provision it in CVAT and repeat the same login-token operation for that account; the owner user ID must still identify the intended workspace owner. Avoid duplicate env assignments on repetition. Open `http://<host>:8082/settings/workspace-configuration` in a browser, select **Settings → Workspace → Create new credentials**, and copy the access and secret keys. These are the [official ClearML setup steps](https://clear.ml/docs/latest/docs/clearml_sdk/clearml_sdk_setup). Add `CLEARML_API_ACCESS_KEY=<access-key>` and `CLEARML_API_SECRET_KEY=<secret-key>` to `.deployment/platform.env` with a private editor; do not commit or paste them into shell history. Keep this file at `0600`. The unit reads it at startup; Compose receives `XXTRAIN_SITE_ROOT` from the unit and `serverctl`, not from this file. After both credentials exist, stop only this temporary Compose project; `serverctl start` then takes over the full set:
+
+```sh
+XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml stop
+```
 
 Create `.deployment/workspace.json` with the following exact keys (optional `task_entry` defaults to the Point definition). Replace the positive `owner_user_id` with the real CVAT user ID, and choose an identity and display name for the site. Relative paths resolve from `.deployment/`; keep every path used for application data beneath that directory.
 
@@ -43,7 +78,7 @@ Create `.deployment/workspace.json` with the following exact keys (optional `tas
 }
 ```
 
-Create `.deployment/training.json` with its exact six keys. The `project` and `queue` are ClearML names you administer; `worker_script` is the deployed worker file, not a data directory. Verify that file exists at the selected revision. `runtime/cache` must lie under `shared_root`; `metadata_dir` must remain outside the disposable workspace runtime. Change these example paths together if your site layout differs.
+Replace the example `owner_user_id` with the ID printed during bootstrap. Create `.deployment/training.json` with its exact six keys. The `project` and `queue` are ClearML names you administer; `worker_script` is the deployed worker file, not a data directory. Verify that file exists at the selected revision. `runtime/cache` must lie under `shared_root`; `metadata_dir` must remain outside the disposable workspace runtime. Change these example paths together if your site layout differs.
 
 ```json
 {
@@ -56,7 +91,7 @@ Create `.deployment/training.json` with its exact six keys. The `project` and `q
 }
 ```
 
-Check `worker_script` against the actual checkout before starting; do not assume this example file path is valid for every revision. The configuration loaders require non-empty strings, a positive integer user ID, and exactly these keys. `start` requires all three files and rejects configuration symlinks escaping the checkout. Protect the JSON files and back up `.deployment/` securely, including `workspace/`, `runtime/`, `metadata/`, `runs/`, `cvat/`, `clearml/`, the administrator file and credentials. SQLite and backend database directories are authoritative; runtime caches are reconstructible, but do not discard them during an upgrade. Coordinate a consistent backup with services stopped.
+Check `worker_script` against the actual checkout before starting; do not assume this example file path is valid for every revision. The configuration loaders require non-empty strings, a positive integer user ID, and exactly these keys. `start` requires all three files and rejects configuration symlinks resolving outside the checkout, but does not require the targets to remain within `.deployment/`; operators must keep every data path there. Protect the JSON files and back up `.deployment/` securely, including `workspace/`, `runtime/`, `metadata/`, `runs/`, `cvat/`, `clearml/`, the administrator file and credentials. SQLite and backend database directories are authoritative; runtime caches are reconstructible, but do not discard them during an upgrade. Coordinate a consistent backup with services stopped.
 
 ## Start and verify
 

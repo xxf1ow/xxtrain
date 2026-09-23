@@ -50,7 +50,7 @@ Task 1 的焦点回归由 `uv run --locked --extra platform --extra clearml pyth
 
 ## Risks
 
-零起点指南需要足够空间同时覆盖发布修订、两份严格 JSON、凭据、备份、启停、验证和数据库兼容恢复，因此 `docs/cookbook/server-deployment.md` 的文档预算设为 1450 词。首次 CVAT 服务令牌和用户身份的供应仍依赖独立的 CVAT 管理步骤；`serverctl` 不创建 CVAT 用户或服务令牌，现场验收必须记录该引导步骤，不能把匿名 `verify` 当作已登录验收。
+零起点指南需要足够空间同时覆盖发布修订、两份严格 JSON、凭据、备份、启停、验证和数据库兼容恢复，因此 `docs/cookbook/server-deployment.md` 的文档预算设为 1900 词。首次 `install` 后可暂时通过唯一 Compose 项目启动 CVAT、ClearML 和代理，由官方 CVAT `createsuperuser` 与登录 API 生成平台消费的旧式 `Token` 密钥，再从 ClearML Web 的 Settings → Workspace 生成 API 密钥；写入私有环境文件、停止暂时启动的项目后交由 `serverctl start` 管理。CVAT Personal Access Token 使用 `Bearer`，不能代替当前适配器发送的 `Token` 密钥；现场验收仍需验证登录和双用户权限，不能把匿名 `verify` 当作已登录验收。配置文件符号链接只受 checkout 边界检查，不强制目标在 `.deployment/` 内，现场数据归属仍由操作规程约束。
 
 - 单一可变 checkout 在切换提交时需要短暂停机；未提交改动必须先在本地处理，远端脏工作树不能强行覆盖。滚回旧提交不自动回滚数据库格式；如版本含不兼容迁移，须先核对兼容路径和数据备份。
 - `.deployment/` 与源码同处 checkout，整目录误删会同时删除权威数据；部署命令禁止执行删除 checkout 或清理 Git 忽略文件，备份和恢复责任须在指南中明确。
