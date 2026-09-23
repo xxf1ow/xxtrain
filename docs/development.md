@@ -126,6 +126,8 @@ ruff format --check --no-respect-gitignore data
 
 ## Documentation changes
 
+服务端使用已审阅并发布的 Git 修订在单一 checkout 部署；本地修改与提交、人工审阅和明确批准后的发布，必须先于服务器上的 `origin` 获取。部署配置和日常操作见[服务端部署指南](cookbook/server-deployment.md)。
+
 当前架构、开发命令、测试规则、子系统契约和未来设计分别由 `docs/architecture.md`、本文、`docs/testing.md`、`docs/subsystems/` 和 `docs/agent-notes/` 所有。非平凡变更必须在同一逻辑变更中新增或更新 owning Agent Note；Superpowers 规格和计划只保存在 `.superpowers/`，不得进入 Git。
 
 文档移动必须同时删除旧位置、创建新位置并修复所有仓库内入站引用。预算、相对链接和段落格式由 [测试指南](testing.md#documentation-checks) 中的项目文档校验命令检查。

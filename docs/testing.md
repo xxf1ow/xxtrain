@@ -141,6 +141,8 @@ Windows 下若 .NET/MSBuild 构建进程同时收到 `Path` 和 `PATH`，应先�
 
 ## Documentation checks
 
+服务端的 `status` 与 `verify` 只证明修订、unit、容器与匿名 HTTP 探针；登录后的 CVAT 用户权限、Agent 和 GPU 不由该检查证明。实际服务端步骤和失败诊断见[服务端部署指南](cookbook/server-deployment.md)。
+
 Agent Note 格式和生命周期：
 
 ```powershell
