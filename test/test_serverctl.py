@@ -420,6 +420,21 @@ class ServerctlTest(unittest.TestCase):
         )
         self.assertIn('apiserver', services['clearml_apiserver']['networks']['default']['aliases'])
         self.assertIn('fileserver', services['clearml_fileserver']['networks']['default']['aliases'])
+        self.assertEqual('', services['cvat_server']['environment']['ENV_SMOKESCREEN_OPTS'])
+        self.assertIn('redis', services['clearml_redis']['networks']['default']['aliases'])
+        self.assertEqual(
+            {'condition': 'service_healthy'}, services['clearml_fileserver']['depends_on']['clearml_apiserver']
+        )
+        self.assertEqual(
+            [
+                'CMD',
+                'python3',
+                '-c',
+                "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/debug.ping', timeout=2)",
+            ],
+            services['clearml_apiserver']['healthcheck']['test'],
+        )
+        self.assertNotIn('clearml_fileserver', services['clearml_apiserver']['depends_on'])
         self.assertEqual(
             '${XXTRAIN_SITE_ROOT:?}/clearml/elasticsearch-logs:/usr/share/elasticsearch/logs',
             services['clearml_elasticsearch']['volumes'][1],

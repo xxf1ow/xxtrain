@@ -109,6 +109,7 @@ services:
       CLICKHOUSE_USER: user
       CLICKHOUSE_PASSWORD: user
       DJANGO_MODWSGI_EXTRA_ARGS: ''
+      ENV_SMOKESCREEN_OPTS: ''
       ALLOWED_HOSTS: '*'
       ADAPTIVE_AUTO_ANNOTATION: 'false'
       NUMPROCS: 2
@@ -205,6 +206,9 @@ services:
     image: redis:8.2.3
     volumes:
       - ${XXTRAIN_SITE_ROOT:?}/clearml/redis:/data
+    networks:
+      default:
+        aliases: [redis]
 
   clearml_elasticsearch:
     image: elasticsearch:8.19.9
@@ -230,6 +234,8 @@ services:
   clearml_fileserver:
     image: clearml/server:2.4.0
     command: [fileserver]
+    depends_on:
+      clearml_apiserver: {condition: service_healthy}
     environment:
       CLEARML__fileserver__delete__allow_batch: 'true'
     ports: ['127.0.0.1:18082:8081']
@@ -244,7 +250,13 @@ services:
   clearml_apiserver:
     image: clearml/server:2.4.0
     command: [apiserver]
-    depends_on: [clearml_redis, clearml_mongo, clearml_elasticsearch, clearml_fileserver]
+    depends_on: [clearml_redis, clearml_mongo, clearml_elasticsearch]
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/debug.ping', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
     environment:
       <<: *clearml-env
       CLEARML_SERVER_DEPLOYMENT_TYPE: linux
