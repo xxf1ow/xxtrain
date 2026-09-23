@@ -12,9 +12,11 @@ Status: proposed
 
 平台采用一台 Ubuntu 主机和多台同局域网、长期在线的 Ubuntu 训练从机。主机保存数据，通过 NFS 向从机提供只读访问。数据沿用现有图片和标注文件，业务任务分别组织目录；Point 是一个业务任务，检测、分类、分割是其训练目标，用户选择业务任务及本次训练目标，每次只训练一个模型。
 
-本文拥有部署、数据组织和上传去重方向；[平台总体提案](2026-07-30-self-service-training-platform.md)拥有用户流程、任务门禁和交付路线。预置 Point 现场的批量上传、检测标注和检测缓存生成已经交付；SQLite 权威存储与对象身份运行路径已经完成真实 CVAT 验收。[分类与指针分割闭环](../../implemented/feature/2026-09-16-point-classification-segmentation.md)已经交付，拥有裁剪编辑、运行映射和训练缓存复用规则，不改变本文的部署和数据隔离约束。训练提交、只读缓存消费和产物交付已有离线实现；真实 ClearML/GPU 执行、NFS 部署和管理员数据治理仍属于后续工作。
+本文拥有主机与 Agent 的数据关系、数据组织和上传去重方向；[单一源码目录的服务端部署](../architecture/2026-09-23-single-checkout-server-deployment.md)拥有服务端运行拓扑、现场配置和操作入口。[平台总体提案](2026-07-30-self-service-training-platform.md)拥有用户流程、任务门禁和交付路线。预置 Point 现场的批量上传、检测标注和检测缓存生成已经交付；SQLite 权威存储与对象身份运行路径已经完成真实 CVAT 验收。[分类与指针分割闭环](../../implemented/feature/2026-09-16-point-classification-segmentation.md)已经交付，拥有裁剪编辑、运行映射和训练缓存复用规则，不改变本文的数据隔离约束。训练提交、只读缓存消费和产物交付已有离线实现；真实 ClearML/GPU 执行、NFS 部署和管理员数据治理仍属于后续工作。
 
 ## Deployment and storage
+
+服务端如何选择源码版本、安装依赖和镜像、启停及验证，由[单一源码目录的服务端部署](../architecture/2026-09-23-single-checkout-server-deployment.md)约束；本节只说明数据和主从机边界。
 
 主机运行自建页面及后端、CVAT、ClearML Server，保存图片、正式标注和模型产物，并提供 NFS 共享目录。主机可同时运行 ClearML Agent，但需为交互服务保留资源。
 
