@@ -32,6 +32,30 @@ class CliTest(unittest.TestCase):
 
         review.assert_called_once_with(Path('scenario.py'), Path('best.pt'), Path('images'), True)
 
+    @patch('xxtrain.serverctl.main', return_value=0)
+    def test_serverctl_dispatches_sibling_command(self, control) -> None:
+        main(['serverctl', 'status'])
+
+        control.assert_called_once_with('status')
+
+    @patch('xxtrain.serverctl.main', return_value=7)
+    def test_serverctl_maps_failure_to_exit_status(self, control) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            main(['serverctl', 'start'])
+
+        self.assertEqual(7, raised.exception.code)
+        control.assert_called_once_with('start')
+
+    def test_serverctl_accepts_only_lifecycle_actions(self) -> None:
+        for action in ('install', 'start', 'stop', 'status', 'verify'):
+            with self.subTest(action=action):
+                with patch('xxtrain.serverctl.main', return_value=0) as control:
+                    main(['serverctl', action])
+                control.assert_called_once_with(action)
+
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            main(['serverctl', 'restart'])
+
     def test_required_subcommand_and_arguments_are_enforced(self) -> None:
         invalid_arguments = [
             [],

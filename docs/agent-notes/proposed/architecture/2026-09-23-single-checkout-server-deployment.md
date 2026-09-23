@@ -16,11 +16,13 @@ xxtrain 从源码 checkout 的 uv 环境直接运行，使用 systemd 托管单�
 
 唯一服务端管理入口与 `xxtrain train` 并列，为 `uv run --locked --extra platform --extra clearml xxtrain serverctl install|start|stop|status|verify`。`install` 负责锁定依赖同步、拉取外部服务镜像、构建项目定制镜像、生成未存在的配置并检查挂载及系统服务前置条件，不启动服务；重复运行不得覆盖手工配置或已有持久数据。`start` 对同一服务集合幂等启动并设置开机自启；`stop` 幂等停止并取消开机自启。systemd 管理整个服务集合的开机状态，容器不得有绕过 `stop` 的独立开机自启策略。`status` 展示 checkout 提交、工作树状态、systemd、容器和健康状态；`verify` 从真实对外入口及后端验证可用性，非零退出指出失败位置。首次 `start` 在 `.deployment/administrator` 写入明文管理员密钥；文件已存在时保持原样，允许操作者在启动前直接修改，后续启动不得生成新密钥覆盖它。文档必须说明明文文件的权限与备份责任、每个命令的前置条件和成功信号，不能要求操作者猜哪个脚本负责安装或启动。
 
+`xxtrain serverctl` 注册 `install`、`start`、`stop`、`status` 和 `verify` 五个动作。尚未实现的动作以非零状态和诊断退出，不会报告成功；真实 `start` 实现负责调用 `ensure_administrator`。该辅助函数只在 checkout 内 `.deployment/administrator` 不存在时用独占创建和 `0600` 权限写入随机密钥，已存在文件保持字节与权限不变。`site_root` 通过 Git 查找 checkout 顶层，并拒绝解析到 checkout 外的 `.deployment` 路径。
+
 服务端操作步骤属于独立的零起点部署指南；[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续拥有业务数据组织、主机与 Agent 的数据关系及后续方向。本次只实现服务端部署文档与运行验证。ClearML Agent 安装和 GPU 训练验收属于另一份后续文档，不以单机 Agent 成功冒充服务端验收。
 
 ## Verification and recovery
 
-本地先用入口与配置测试覆盖首次和重复 `install/start/stop`、启用与取消自启、密钥保留、无外部持久挂载、版本显示、脏工作树拒绝切换，以及代理未登录拒绝和登录后 CVAT 内置双用户数据隔离。实现代码在本地提交后同步到测试机；在 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证、停止及恢复，并记录镜像拉取、系统服务、网络和浏览器现场问题及解决步骤。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，使用 Git 选择已取得的旧提交、`uv sync --locked` 和正常启动入口恢复；不得以额外源码副本或新发布目录回避失败。
+Task 1 的焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖 CLI 保持既有子命令、动作注册与退出码、Git 根发现、部署目录边界及密钥首次创建和保留。完整入口与配置测试仍需覆盖首次和重复 `install/start/stop`、启用与取消自启、无外部持久挂载、版本显示、脏工作树拒绝切换，以及代理未登录拒绝和登录后 CVAT 内置双用户数据隔离。实现代码在本地提交后同步到测试机；在 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证、停止及恢复，并记录镜像拉取、系统服务、网络和浏览器现场问题及解决步骤。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，使用 Git 选择已取得的旧提交、`uv sync --locked` 和正常启动入口恢复；不得以额外源码副本或新发布目录回避失败。
 
 ## Alternatives considered
 
