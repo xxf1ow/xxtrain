@@ -30,7 +30,7 @@ ClearML SDK 环境显式设置 `CLEARML_API_HOST`、`CLEARML_WEB_HOST` 和 `CLEA
 
 会话子请求只通过 CVAT `current_user` 确认浏览器会话，不检查现场所有者；缺少或失效的会话返回 401，CVAT 后端失败返回 502。代理禁止外部直接请求子请求路径；宿主机 loopback 上可直接访问平台，但无法绕过 CVAT 代理进入其内容。`status` 查询完整 Git 哈希、工作树、systemd 状态及编排内各容器运行与健康信息，缺失容器不显示为健康。`verify` 检查公开平台页面、未登录 CVAT 拒绝、CVAT 内部健康及三个公开 ClearML 入口，任一失败返回非零；离线模拟不能证明真实浏览器登录或两个用户的 CVAT 权限隔离。
 
-Task 1 的焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖 CLI 保持既有子命令、动作注册与退出码、Git 根发现、部署目录边界及密钥首次创建和保留。完整入口与配置测试仍需覆盖首次和重复 `install/start/stop`、启用与取消自启、无外部持久挂载、版本显示、脏工作树拒绝切换，以及代理未登录拒绝和登录后 CVAT 内置双用户数据隔离。实现代码在本地提交后同步到测试机；在 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证、停止及恢复，并记录镜像拉取、系统服务、网络和浏览器现场问题及解决步骤。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，使用 Git 选择已取得的旧提交、`uv sync --locked` 和正常启动入口恢复；不得以额外源码副本或新发布目录回避失败。
+Task 1 的焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖 CLI 保持既有子命令、动作注册与退出码、Git 根发现、部署目录边界及密钥首次创建和保留。完整入口与配置测试仍需覆盖首次和重复 `install/start/stop`、启用与取消自启、无外部持久挂载、版本显示、脏工作树拒绝切换，以及代理未登录拒绝和登录后 CVAT 内置双用户数据隔离。实现代码在本地提交后同步到测试机；在 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证、停止及恢复，并记录系统服务和浏览器现场问题及解决步骤。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，使用 Git 选择已取得的旧提交、`uv sync --locked` 和正常启动入口恢复；不得以额外源码副本或新发布目录回避失败。
 
 ## Alternatives considered
 
