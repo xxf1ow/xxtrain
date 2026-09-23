@@ -17,16 +17,18 @@ git rev-parse HEAD
 git status --porcelain
 ```
 
-Replace `origin/master` with the reviewed, published `origin/<branch>` when deploying a feature branch. The status output must be empty before switching versions. Never use `git clean`, delete the checkout, or create a second checkout to switch revisions. If an automation shell cannot find the already-installed `uv`, call its absolute binary path in that invocation; do not modify shell startup files.
+Replace `origin/master` with the reviewed, published `origin/<branch>` when deploying a feature branch. The status output must be empty before switching versions. Never use `git clean`, delete the checkout, or create a second checkout to switch revisions. In noninteractive SSH commands, `uv` may be installed at `/home/lxx/.local/bin/uv` without that directory on `PATH`. Give the command and its child processes a `PATH` containing `/home/lxx/.local/bin`; `serverctl install` invokes `uv sync` itself, so calling the outer `uv` by absolute path alone is insufficient. Keep uv's cache and managed Python installations in `.deployment/`, and do not source or edit shell startup files:
 
 ## Prepare configuration
 
 Run installation from this checkout. It synchronizes locked dependencies with both extras, pulls Compose images, builds the custom CVAT UI, creates a private empty `.deployment/platform.env` only if absent, and registers/reloads the systemd unit on Linux. It does not start services or generate either JSON file. Repeating it preserves existing configuration and persistent data; an existing env file readable by group/others causes an error until its permissions are corrected.
 
 ```sh
-uv run --locked --extra platform --extra clearml xxtrain serverctl install
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl install
 chmod 600 .deployment/platform.env
 ```
+
+If the first locked dependency sync times out while installing isolated `setuptools` from PyPI, retry that command; the locked install succeeded on retry. The install attempt is blocked at the Docker Hub registry: `docker pull nginx:1.27-alpine` times out during the registry TLS handshake, so image installation stops before the custom build and systemd unit registration, and no containers are created. The Docker daemon uses the global proxy (`http://172.17.0.1:20171`); a direct registry request returns the expected `401`, while proxy CONNECT succeeds but the TLS handshake stalls beyond 25 seconds. Diagnose with `curl -I --connect-timeout 10 https://registry-1.docker.io/v2/` and `docker pull nginx:1.27-alpine`. Repair registry access through the host's separately managed daemon configuration, then rerun the idempotent `install` command above. This guide does not change or restart the global Docker daemon; a failed install does not mean the service is live.
 
 On a new installation, bootstrap credentials before starting the platform. The checked-in Compose project can temporarily start its CVAT and ClearML services without invoking systemd; nginx serves ClearML while its platform route remains unavailable. Run from the checkout after `install`:
 
@@ -106,9 +108,9 @@ Check `worker_script` against the actual checkout before starting; do not assume
 ## Start and verify
 
 ```sh
-uv run --locked --extra platform --extra clearml xxtrain serverctl start
-uv run --locked --extra platform --extra clearml xxtrain serverctl status
-uv run --locked --extra platform --extra clearml xxtrain serverctl verify
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl start
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl status
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl verify
 ```
 
 `start` enables `xxtrain-server.service` for boot and starts it; subsequent starts do not replace credentials or data. On its first invocation it creates `.deployment/administrator` as a plaintext random key with mode `0600`, only when absent. If you need to supply your own key, create that file privately before the first start. Existing content and permissions remain unchanged on later starts; restrict readers, securely back it up and never commit it. There is no administrator web page promised by this deployment.
@@ -122,8 +124,8 @@ Open `http://<host>:8080/platform/`, log in using a CVAT user and confirm that t
 SSH disconnect does not stop the systemd unit. Reconnect in the same checkout and run `status` and `verify`; after a host reboot do the same and inspect `systemctl is-enabled xxtrain-server.service` and `systemctl is-active xxtrain-server.service`. `start` enables boot startup. To stop and disable it, including when already stopped:
 
 ```sh
-uv run --locked --extra platform --extra clearml xxtrain serverctl stop
-uv run --locked --extra platform --extra clearml xxtrain serverctl status
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl stop
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl status
 ```
 
 The post-stop status reports an inactive/disabled unit and is expected to exit nonzero; `stop` never removes `.deployment/`. Compose containers have no independent boot restart policy. To resume, run `start`, `status` and `verify` again.
@@ -133,16 +135,16 @@ The post-stop status reports an inactive/disabled unit and is expected to exit n
 Arrange downtime and a consistent `.deployment/` backup. Check the target version's database schema/migration compatibility and its recovery path before a downgrade: switching Git commits does not undo SQLite, CVAT or ClearML database migrations. Stop services, check `git status --porcelain` is empty (ignored `.deployment/` remains), fetch, choose the reviewed published revision and record its exact SHA. Do not force-switch a dirty checkout or assume a local branch tracks the intended published commit.
 
 ```sh
-uv run --locked --extra platform --extra clearml xxtrain serverctl stop
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl stop
 git status --porcelain
 git fetch origin
 git switch --detach origin/<reviewed-branch>
 git rev-parse HEAD
-uv sync --locked --extra platform --extra clearml
-uv run --locked --extra platform --extra clearml xxtrain serverctl install
-uv run --locked --extra platform --extra clearml xxtrain serverctl start
-uv run --locked --extra platform --extra clearml xxtrain serverctl status
-uv run --locked --extra platform --extra clearml xxtrain serverctl verify
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv sync --locked --extra platform --extra clearml
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl install
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl start
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl status
+PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl verify
 ```
 
 For rollback, stop and select the previously recorded, already fetched full SHA instead of `origin/<reviewed-branch>`, then repeat sync, install, start, status and verify. Restore the matching consistent data backup when schema compatibility requires it; never treat Git rollback alone as database rollback. Keep all configuration and data in the original `.deployment/` throughout. The same procedure tests a published feature branch in this one checkout. Server verification is separate from later ClearML Agent and GPU acceptance.
