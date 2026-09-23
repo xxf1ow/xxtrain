@@ -28,8 +28,6 @@ PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PY
 chmod 600 .deployment/platform.env
 ```
 
-If the first locked dependency sync times out while installing isolated `setuptools` from PyPI, retry that command; the locked install succeeded on retry. The install attempt is blocked at the Docker Hub registry: `docker pull nginx:1.27-alpine` times out during the registry TLS handshake, so image installation stops before the custom build and systemd unit registration, and no containers are created. The Docker daemon uses the global proxy (`http://172.17.0.1:20171`); a direct registry request returns the expected `401`, while proxy CONNECT succeeds but the TLS handshake stalls beyond 25 seconds. Diagnose with `curl -I --connect-timeout 10 https://registry-1.docker.io/v2/` and `docker pull nginx:1.27-alpine`. Repair registry access through the host's separately managed daemon configuration, then rerun the idempotent `install` command above. This guide does not change or restart the global Docker daemon; a failed install does not mean the service is live.
-
 On a new installation, bootstrap credentials before starting the platform. The checked-in Compose project can temporarily start its CVAT and ClearML services without invoking systemd; nginx serves ClearML while its platform route remains unavailable. Run from the checkout after `install`:
 
 ```sh
