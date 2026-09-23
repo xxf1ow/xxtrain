@@ -383,7 +383,7 @@ class ServerctlTest(unittest.TestCase):
             for port in service.get('ports', []):
                 self.assertEqual('127.0.0.1', port['host_ip'], (name, port))
 
-    def test_cvat_assets_require_session_but_platform_login_does_not(self) -> None:
+    def test_all_cvat_paths_require_session_and_platform_login_remains_public(self) -> None:
         config = (Path(__file__).resolve().parents[1] / 'deploy/server/nginx.conf').read_text(encoding='utf-8')
 
         def location(path: str) -> str:
@@ -392,8 +392,12 @@ class ServerctlTest(unittest.TestCase):
             return match.group(1)
 
         self.assertIn('auth_request /_cvat_session;', location('/assets/'))
+        for path in ('/api/', '/static/', '/'):
+            self.assertIn('auth_request /_cvat_session;', location(path))
         self.assertNotIn('auth_request', location('/platform/'))
-        self.assertNotIn('auth_request', location('= /auth/login'))
+        self.assertNotIn('location = /auth/login {', config)
+        self.assertNotIn('location = /api/auth/login {', config)
+        self.assertIn('error_page 401 =302 /platform/;', location('/'))
 
 
 if __name__ == '__main__':

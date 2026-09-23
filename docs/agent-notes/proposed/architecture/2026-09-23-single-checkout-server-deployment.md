@@ -24,7 +24,7 @@ xxtrain 从源码 checkout 的 uv 环境直接运行，使用 systemd 托管单�
 
 ## Verification and recovery
 
-编排由 `deploy/server/compose.yaml` 的 `xxtrain-server` 项目持有，镜像与上游提交列在 `deploy/server/versions.md`；`compose_files` 返回此唯一文件。CVAT 服务、八个 worker、Postgres、Redis、Kvrocks、OPA、ClickHouse、Vector 与定制 UI，以及 ClearML API、Web、文件、异步删除、MongoDB、Redis、Elasticsearch 共用编排项目。持久挂载位于 `.deployment/`，nginx 使用宿主网络访问仅绑定 loopback 的后端；对外监听 CVAT 同源入口 8080 和 ClearML API 8008、文件 8081、Web 8082。代理允许平台及精确登录端点绕过 CVAT 会话子请求；CVAT `/assets/` 和其余内容通过 `/platform/internal/cvat-auth` 检查，平台登录资源由 `/platform/` 提供。测试在 Docker Compose 可用时检查解析后的挂载来源，无 Docker 时检查原始清单的挂载和端口约束。实际镜像拉取和 nginx 语法须在安装 Docker 的 Linux 环境继续核验。
+编排由 `deploy/server/compose.yaml` 的 `xxtrain-server` 项目持有，镜像与上游提交列在 `deploy/server/versions.md`；`compose_files` 返回此唯一文件。CVAT 服务、八个 worker、Postgres、Redis、Kvrocks、OPA、ClickHouse、Vector 与定制 UI，以及 ClearML API、Web、文件、异步删除、MongoDB、Redis、Elasticsearch 共用编排项目。持久挂载位于 `.deployment/`，nginx 使用宿主网络访问仅绑定 loopback 的后端；对外监听 CVAT 同源入口 8080 和 ClearML API 8008、文件 8081、Web 8082。代理仅允许 `/platform/` 下的平台登录资源绕过 CVAT 会话子请求；所有 CVAT 页面、API 和静态资源通过 `/platform/internal/cvat-auth` 检查，未登录页面导航返回 `/platform/`。平台登录调用 CVAT 的服务端 loopback 地址，不要求浏览器代理开放 CVAT 登录 API。测试在 Docker Compose 可用时检查解析后的挂载来源，无 Docker 时检查原始清单的挂载和端口约束。实际镜像拉取和 nginx 语法须在安装 Docker 的 Linux 环境继续核验。
 
 会话子请求只通过 CVAT `current_user` 确认浏览器会话，不检查现场所有者；缺少或失效的会话返回 401，CVAT 后端失败返回 502。代理禁止外部直接请求子请求路径；宿主机 loopback 上可直接访问平台，但无法绕过 CVAT 代理进入其内容。`status` 查询完整 Git 哈希、工作树、systemd 状态及编排内各容器运行与健康信息，缺失容器不显示为健康。`verify` 检查公开平台页面、未登录 CVAT 拒绝、CVAT 内部健康及三个公开 ClearML 入口，任一失败返回非零；离线模拟不能证明真实浏览器登录或两个用户的 CVAT 权限隔离。
 
