@@ -1,4 +1,7 @@
+import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -134,6 +137,57 @@ class ServerctlTest(unittest.TestCase):
             for port in service.get('ports', []):
                 self.assertTrue(str(port).startswith('127.0.0.1:'), (name, port))
         self.assertNotIn('volumes', manifest)
+
+    def test_resolved_compose_bind_sources_stay_under_site_root(self) -> None:
+        if not shutil.which('docker'):
+            self.skipTest('Docker Compose unavailable; manifest parse check covers volume and port policy')
+        checkout = Path(__file__).resolve().parents[1]
+        site = (self.root / '.deployment').resolve()
+        env = dict(os.environ, XXTRAIN_SITE_ROOT=str(site))
+        output = subprocess.run(
+            ['docker', 'compose', '-f', str(compose_files(checkout)[0]), 'config', '--format', 'json'],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        services = json.loads(output.stdout)['services']
+        expected = {
+            'cvat_db': '/var/lib/postgresql/data',
+            'cvat_redis_inmem': '/data',
+            'cvat_redis_ondisk': '/var/lib/kvrocks',
+            'cvat_server': '/home/django/data',
+            'cvat_clickhouse': '/var/lib/clickhouse',
+            'clearml_mongo': '/data/db',
+            'clearml_redis': '/data',
+            'clearml_elasticsearch': '/usr/share/elasticsearch/data',
+            'clearml_fileserver': '/mnt/fileserver',
+        }
+        for service, target in expected.items():
+            with self.subTest(service=service):
+                mounts = [v for v in services[service]['volumes'] if v['target'] == target]
+                self.assertEqual(1, len(mounts))
+                self.assertEqual('bind', mounts[0]['type'])
+                self.assertTrue(Path(mounts[0]['source']).is_relative_to(site), mounts[0])
+        for name, service in services.items():
+            for mount in service.get('volumes', []):
+                if mount['type'] == 'bind' and not mount.get('read_only'):
+                    self.assertTrue(Path(mount['source']).is_relative_to(site), (name, mount))
+                self.assertNotEqual('volume', mount['type'], (name, mount))
+            for port in service.get('ports', []):
+                self.assertEqual('127.0.0.1', port['host_ip'], (name, port))
+
+    def test_cvat_assets_require_session_but_platform_login_does_not(self) -> None:
+        config = (Path(__file__).resolve().parents[1] / 'deploy/server/nginx.conf').read_text(encoding='utf-8')
+
+        def location(path: str) -> str:
+            match = re.search(r'location ' + re.escape(path) + r' \{([^{}]*)\}', config)
+            self.assertIsNotNone(match, path)
+            return match.group(1)
+
+        self.assertIn('auth_request /_cvat_session;', location('/assets/'))
+        self.assertNotIn('auth_request', location('/platform/'))
+        self.assertNotIn('auth_request', location('= /auth/login'))
 
 
 if __name__ == '__main__':
