@@ -38,7 +38,16 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual('OPERATOR_SECRET=kept\n', env_file.read_text(encoding='utf-8'))
         expected = [
             ['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'],
-            ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(self.root / 'deploy/server/compose.yaml'), 'pull'],
+            [
+                'docker',
+                'compose',
+                '-p',
+                'xxtrain-server',
+                '-f',
+                str(self.root / 'deploy/server/compose.yaml'),
+                'pull',
+                '--ignore-buildable',
+            ],
             ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(self.root / 'deploy/server/compose.yaml'), 'build'],
         ]
         self.assertEqual(expected * 2, [args for args, _ in calls])

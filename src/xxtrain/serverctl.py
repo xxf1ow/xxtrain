@@ -85,7 +85,7 @@ def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -
         os.close(descriptor)
     env = _environment(root)
     _run(['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'], root, run, env)
-    _run([*_compose(root), 'pull'], root, run, env)
+    _run([*_compose(root), 'pull', '--ignore-buildable'], root, run, env)
     _run([*_compose(root), 'build'], root, run, env)
     if sys.platform == 'linux':
         template = (root / 'deploy/server/xxtrain-server.service').read_text(encoding='utf-8')
