@@ -56,25 +56,35 @@ def _compose(root: Path) -> list[str]:
     return ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(compose_files(root)[0])]
 
 
+def _check_deployment_file(root: Path, name: str) -> Path:
+    path = root / '.deployment' / name
+    if not path.resolve().is_relative_to(root):
+        raise ValueError(f'.deployment/{name} resolves outside the Git checkout')
+    return path
+
+
+def _check_private_env(path: Path) -> None:
+    if sys.platform == 'linux' and path.stat().st_mode & 0o077:
+        raise ValueError('.deployment/platform.env must have mode 0600; run chmod 600 .deployment/platform.env')
+
+
 def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Prepare dependencies and this checkout's private data without starting services."""
     root = site_root(root)
     deployment = root / '.deployment'
     deployment.mkdir(parents=True, exist_ok=True)
-    env_file = deployment / 'platform.env'
+    env_file = _check_deployment_file(root, 'platform.env')
     try:
         descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        pass
+        _check_private_env(env_file)
     else:
         os.close(descriptor)
     env = _environment(root)
     _run(['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'], root, run, env)
     _run([*_compose(root), 'pull'], root, run, env)
     _run([*_compose(root), 'build'], root, run, env)
-    if os.environ.get('XXTRAIN_INSTALL_SYSTEMD') == '1':
-        if sys.platform != 'linux':
-            raise ValueError('systemd installation requires Linux')
+    if sys.platform == 'linux':
         template = (root / 'deploy/server/xxtrain-server.service').read_text(encoding='utf-8')
         unit = template.replace('{{ROOT}}', str(root))
         run(
@@ -92,8 +102,10 @@ def start(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> 
     """Enable and start the site only after operator configuration is present."""
     root = site_root(root)
     for name in ('workspace.json', 'training.json', 'platform.env'):
-        if not (root / '.deployment' / name).is_file():
+        if not _check_deployment_file(root, name).is_file():
             raise ValueError(f'missing .deployment/{name}; create the operator configuration before start')
+    _check_private_env(root / '.deployment/platform.env')
+    _check_deployment_file(root, 'administrator')
     ensure_administrator(root)
     env = _environment(root)
     _run(['sudo', 'systemctl', 'enable', 'xxtrain-server.service'], root, run, env)

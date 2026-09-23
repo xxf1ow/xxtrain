@@ -89,14 +89,14 @@ class ServerctlTest(unittest.TestCase):
             calls,
         )
 
-    def test_linux_opt_in_registers_checkout_unit(self) -> None:
+    def test_linux_install_registers_checkout_unit_without_hidden_opt_in(self) -> None:
         unit_path = self.root / 'deploy/server/xxtrain-server.service'
         unit_path.parent.mkdir(parents=True)
         unit_path.write_text('WorkingDirectory={{ROOT}}\n', encoding='utf-8')
         calls = []
         with (
             patch('xxtrain.serverctl.site_root', return_value=self.root),
-            patch.dict(os.environ, {'XXTRAIN_INSTALL_SYSTEMD': '1'}),
+            patch.dict(os.environ, {'XXTRAIN_INSTALL_SYSTEMD': '0'}),
             patch('xxtrain.serverctl.sys.platform', 'linux'),
         ):
             install(self.root, lambda args, **kwargs: calls.append((args, kwargs)))
@@ -105,6 +105,53 @@ class ServerctlTest(unittest.TestCase):
         )
         self.assertEqual(f'WorkingDirectory={self.root}\n', calls[-2][1]['input'])
         self.assertEqual(['sudo', 'systemctl', 'daemon-reload'], calls[-1][0])
+
+    def test_install_rejects_existing_permissive_env_without_changing_contents(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        env_file = deployment / 'platform.env'
+        env_file.write_text('API_SECRET=keep\n', encoding='utf-8')
+        os.chmod(env_file, 0o644)
+        calls = []
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl.sys.platform', 'linux'),
+        ):
+            with self.assertRaisesRegex(ValueError, r'platform.env.*0600'):
+                install(self.root, lambda args, **kwargs: calls.append(args))
+        self.assertEqual('API_SECRET=keep\n', env_file.read_text(encoding='utf-8'))
+        self.assertEqual([], calls)
+
+    def test_start_rejects_env_symlink_escaping_checkout(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        for name in ('workspace.json', 'training.json'):
+            (deployment / name).write_text('{}', encoding='utf-8')
+        outside = self.root.parent / f'{self.root.name}-outside-env'
+        outside.write_text('API_SECRET=outside\n', encoding='utf-8')
+        (deployment / 'platform.env').symlink_to(outside)
+        calls = []
+        try:
+            with self.assertRaisesRegex(ValueError, r'platform.env.*outside'):
+                start(self.root, lambda args, **kwargs: calls.append(args))
+        finally:
+            outside.unlink()
+        self.assertEqual([], calls)
+        self.assertFalse((deployment / 'administrator').exists())
+
+    def test_install_rejects_env_symlink_escaping_checkout(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        outside = self.root.parent / f'{self.root.name}-outside-env'
+        outside.write_text('API_SECRET=outside\n', encoding='utf-8')
+        (deployment / 'platform.env').symlink_to(outside)
+        calls = []
+        try:
+            with self.assertRaisesRegex(ValueError, r'platform.env.*outside'):
+                install(self.root, lambda args, **kwargs: calls.append(args))
+        finally:
+            outside.unlink()
+        self.assertEqual([], calls)
 
     def test_site_root_returns_git_top_level(self) -> None:
         nested = self.root / 'nested'
