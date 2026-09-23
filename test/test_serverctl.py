@@ -29,6 +29,8 @@ class ServerctlTest(unittest.TestCase):
 
         def run(args, **kwargs):
             calls.append((args, kwargs))
+            if args[:4] == ['sudo', 'mkdir', '-p', '--']:
+                Path(args[-1]).mkdir(parents=True, exist_ok=True)
 
         with patch('xxtrain.serverctl.site_root', return_value=self.root):
             install(self.root, run)
@@ -50,13 +52,67 @@ class ServerctlTest(unittest.TestCase):
             ],
             ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(self.root / 'deploy/server/compose.yaml'), 'build'],
         ]
-        self.assertEqual(expected * 2, [args for args, _ in calls])
+        self.assertEqual(expected * 2, [args for args, _ in calls if args[0] != 'sudo'])
         self.assertTrue(all(kwargs['check'] and kwargs['cwd'] == self.root for _, kwargs in calls))
         self.assertTrue(
             all(kwargs['env']['XXTRAIN_SITE_ROOT'] == str(self.root / '.deployment') for _, kwargs in calls)
         )
         self.assertFalse((self.root / '.deployment/administrator').exists())
         self.assertFalse((self.root / '.deployment/workspace.json').exists())
+
+    def test_install_prepares_only_pinned_non_root_bind_directories_idempotently(self) -> None:
+        deployment = self.root / '.deployment'
+        existing = deployment / 'cvat/keys/secret_key.py'
+        existing.parent.mkdir(parents=True)
+        existing.write_text('preserve-me', encoding='utf-8')
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[:4] == ['sudo', 'mkdir', '-p', '--']:
+                Path(args[-1]).mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl.sys.platform', 'win32'),
+        ):
+            install(self.root, run)
+            install(self.root, run)
+
+        managed = {
+            deployment / 'cvat/data': ('1000:1000',),
+            deployment / 'cvat/keys': ('1000:1000',),
+            deployment / 'cvat/logs': ('1000:1000',),
+            deployment / 'cvat/kvrocks/data': ('999:999',),
+            deployment / 'clearml/elasticsearch': ('1000:0',),
+            deployment / 'clearml/elasticsearch-logs': ('1000:0',),
+        }
+        permission_calls = [args for args, _ in calls if args[:2] in (['sudo', 'chown'], ['sudo', 'chmod'])]
+        for path, (owner,) in managed.items():
+            self.assertTrue(path.is_dir())
+            self.assertEqual(2, permission_calls.count(['sudo', 'chown', f'{owner}', str(path)]))
+            self.assertEqual(2, permission_calls.count(['sudo', 'chmod', '0770', str(path)]))
+        self.assertEqual('preserve-me', existing.read_text(encoding='utf-8'))
+
+    def test_install_rejects_bind_directory_symlink_escape_before_privileged_calls(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        outside = self.root.parent / f'{self.root.name}-outside-data'
+        outside.mkdir()
+        (deployment / 'cvat').mkdir()
+        (deployment / 'cvat/keys').symlink_to(outside, target_is_directory=True)
+        calls = []
+        try:
+            with (
+                patch('xxtrain.serverctl.site_root', return_value=self.root),
+                patch('xxtrain.serverctl.sys.platform', 'win32'),
+            ):
+                with self.assertRaisesRegex(ValueError, r'\.deployment/cvat/keys.*outside'):
+                    install(self.root, lambda args, **kwargs: calls.append(args))
+        finally:
+            (deployment / 'cvat/keys').unlink()
+            outside.rmdir()
+        self.assertFalse(any(args[0] == 'sudo' for args in calls))
 
     def test_start_requires_operator_configs_before_secret_or_service_calls(self) -> None:
         calls = []
@@ -174,11 +230,20 @@ class ServerctlTest(unittest.TestCase):
         outside.mkdir()
         try:
             deployment.symlink_to(outside, target_is_directory=True)
-            with self.assertRaisesRegex(ValueError, r'\.deployment.*outside'):
+            with self.assertRaisesRegex(ValueError, r'\.deployment.*symlink'):
                 site_root(self.root)
         finally:
             deployment.unlink(missing_ok=True)
             outside.rmdir()
+
+    def test_site_root_rejects_deployment_symlink_to_another_checkout_directory(self) -> None:
+        deployment = self.root / '.deployment'
+        inside = self.root / 'other-data'
+        inside.mkdir()
+        deployment.symlink_to(inside, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, r'\.deployment.*symlink'):
+            site_root(self.root)
 
     def test_existing_administrator_secret_is_never_replaced(self) -> None:
         path = self.root / '.deployment' / 'administrator'
@@ -314,7 +379,7 @@ class ServerctlTest(unittest.TestCase):
         expected = {
             'cvat_db': '/var/lib/postgresql/data',
             'cvat_redis_inmem': '/data',
-            'cvat_redis_ondisk': '/var/lib/kvrocks',
+            'cvat_redis_ondisk': '/var/lib/kvrocks/data',
             'cvat_server': '/home/django/data',
             'cvat_clickhouse': '/var/lib/clickhouse',
             'clearml_mongo': '/data/db',
@@ -335,6 +400,30 @@ class ServerctlTest(unittest.TestCase):
                         for v in mounts
                     )
                 )
+        self.assertEqual(
+            '${XXTRAIN_SITE_ROOT:?}/cvat/kvrocks/data:/var/lib/kvrocks/data',
+            services['cvat_redis_ondisk']['volumes'][0],
+        )
+        self.assertEqual(
+            [
+                'kvrocks',
+                '-c',
+                '/var/lib/kvrocks/kvrocks.conf',
+                '--dir',
+                '/var/lib/kvrocks/data',
+                '--pidfile',
+                '/var/run/kvrocks/kvrocks.pid',
+                '--bind',
+                '0.0.0.0',
+            ],
+            services['cvat_redis_ondisk']['entrypoint'],
+        )
+        self.assertIn('apiserver', services['clearml_apiserver']['networks']['default']['aliases'])
+        self.assertIn('fileserver', services['clearml_fileserver']['networks']['default']['aliases'])
+        self.assertEqual(
+            '${XXTRAIN_SITE_ROOT:?}/clearml/elasticsearch-logs:/usr/share/elasticsearch/logs',
+            services['clearml_elasticsearch']['volumes'][1],
+        )
         for name, service in services.items():
             self.assertNotIn('restart', service, name)
             for mount in service.get('volumes', []):
@@ -370,7 +459,7 @@ class ServerctlTest(unittest.TestCase):
         expected = {
             'cvat_db': '/var/lib/postgresql/data',
             'cvat_redis_inmem': '/data',
-            'cvat_redis_ondisk': '/var/lib/kvrocks',
+            'cvat_redis_ondisk': '/var/lib/kvrocks/data',
             'cvat_server': '/home/django/data',
             'cvat_clickhouse': '/var/lib/clickhouse',
             'clearml_mongo': '/data/db',

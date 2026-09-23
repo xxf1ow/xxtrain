@@ -21,7 +21,7 @@ Replace `origin/master` with the reviewed, published `origin/<branch>` when depl
 
 ## Prepare configuration
 
-Run installation from this checkout. It synchronizes locked dependencies with both extras, pulls Compose images, builds the custom CVAT UI, creates a private empty `.deployment/platform.env` only if absent, and registers/reloads the systemd unit on Linux. It does not start services or generate either JSON file. Repeating it preserves existing configuration and persistent data; an existing env file readable by group/others causes an error until its permissions are corrected.
+Run installation from this checkout. It synchronizes locked dependencies with both extras, prepares the CVAT, Kvrocks, and Elasticsearch writable bind directories for their pinned non-root image users, pulls Compose images, builds the custom CVAT UI, creates a private empty `.deployment/platform.env` only if absent, and registers/reloads the systemd unit on Linux. Directory preparation rejects symlinks and paths resolving outside `.deployment/`; it changes ownership and access bits on the six directories only, not their existing contents. Installation requires sudo for these ownership changes. It does not start services or generate either JSON file. Repeating it preserves existing configuration and persistent data; an existing env file readable by group/others causes an error until its permissions are corrected.
 
 ```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl install

@@ -56,8 +56,9 @@ services:
     image: apache/kvrocks:2.12.1
     init: true
     command: [--compact-cron, '0 3 * * *']
+    entrypoint: [kvrocks, -c, /var/lib/kvrocks/kvrocks.conf, --dir, /var/lib/kvrocks/data, --pidfile, /var/run/kvrocks/kvrocks.pid, --bind, 0.0.0.0]
     volumes:
-      - ${XXTRAIN_SITE_ROOT:?}/cvat/kvrocks:/var/lib/kvrocks
+      - ${XXTRAIN_SITE_ROOT:?}/cvat/kvrocks/data:/var/lib/kvrocks/data
 
   cvat_clickhouse:
     image: clickhouse/clickhouse-server:23.11-alpine
@@ -236,6 +237,9 @@ services:
       - ${XXTRAIN_SITE_ROOT:?}/clearml/logs:/var/log/clearml
       - ${XXTRAIN_SITE_ROOT:?}/clearml/files:/mnt/fileserver
       - ${XXTRAIN_SITE_ROOT:?}/clearml/config:/opt/clearml/config
+    networks:
+      default:
+        aliases: [fileserver]
 
   clearml_apiserver:
     image: clearml/server:2.4.0
@@ -253,6 +257,9 @@ services:
       - ${XXTRAIN_SITE_ROOT:?}/clearml/logs:/var/log/clearml
       - ${XXTRAIN_SITE_ROOT:?}/clearml/config:/opt/clearml/config
       - ${XXTRAIN_SITE_ROOT:?}/clearml/files:/mnt/fileserver
+    networks:
+      default:
+        aliases: [apiserver]
 
   clearml_webserver:
     image: clearml/server:2.4.0

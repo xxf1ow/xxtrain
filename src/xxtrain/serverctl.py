@@ -21,6 +21,8 @@ def site_root(root: Path | None = None) -> Path:
 
     checkout = Path(result.stdout.strip()).resolve()
     deployment = checkout / '.deployment'
+    if deployment.resolve() != deployment.absolute():
+        raise ValueError('.deployment must not be a symlink')
     if not deployment.resolve().is_relative_to(checkout):
         raise ValueError(f'{deployment} resolves outside the Git checkout')
     return checkout
@@ -71,6 +73,34 @@ def _check_private_env(path: Path) -> None:
         raise ValueError('.deployment/platform.env must have mode 0600; run chmod 600 .deployment/platform.env')
 
 
+def _prepare_writable_directories(root: Path, run: Callable[..., CompletedProcess]) -> None:
+    deployment = root / '.deployment'
+    directories = (
+        (Path('cvat/data'), '1000:1000'),
+        (Path('cvat/keys'), '1000:1000'),
+        (Path('cvat/logs'), '1000:1000'),
+        (Path('cvat/kvrocks/data'), '999:999'),
+        (Path('clearml/elasticsearch'), '1000:0'),
+        (Path('clearml/elasticsearch-logs'), '1000:0'),
+    )
+    resolved_deployment = deployment.resolve()
+    if resolved_deployment != deployment.absolute():
+        raise ValueError('.deployment must not be a symlink')
+    paths = [(deployment / relative, owner) for relative, owner in directories]
+    for path, _ in paths:
+        if path.resolve() != path.absolute() or not path.resolve().is_relative_to(resolved_deployment):
+            raise ValueError(f'{path.relative_to(root).as_posix()} resolves outside .deployment or through a symlink')
+    env = _environment(root)
+    for path, _ in paths:
+        run(['sudo', 'mkdir', '-p', '--', str(path)], cwd=root, env=env, check=True)
+    for path, owner in paths:
+        if path.resolve() != path.absolute() or not path.resolve().is_relative_to(resolved_deployment):
+            raise ValueError(f'{path.relative_to(root).as_posix()} resolves outside .deployment or through a symlink')
+    for path, owner in paths:
+        run(['sudo', 'chown', owner, str(path)], cwd=root, env=env, check=True)
+        run(['sudo', 'chmod', '0770', str(path)], cwd=root, env=env, check=True)
+
+
 def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Prepare dependencies and this checkout's private data without starting services."""
     root = site_root(root)
@@ -84,6 +114,7 @@ def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -
     else:
         os.close(descriptor)
     env = _environment(root)
+    _prepare_writable_directories(root, run)
     _run(['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'], root, run, env)
     _run([*_compose(root), 'pull', '--ignore-buildable'], root, run, env)
     _run([*_compose(root), 'build'], root, run, env)
