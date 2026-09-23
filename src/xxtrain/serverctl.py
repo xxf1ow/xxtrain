@@ -2,7 +2,9 @@ import os
 import secrets
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from subprocess import CompletedProcess
 
 
 def site_root(root: Path | None = None) -> Path:
@@ -42,8 +44,80 @@ def ensure_administrator(root: Path) -> Path:
     return path
 
 
+def _run(args: list[str], root: Path, run: Callable[..., CompletedProcess], env: dict[str, str]) -> None:
+    run(args, cwd=root, env=env, check=True)
+
+
+def _environment(root: Path) -> dict[str, str]:
+    return dict(os.environ, XXTRAIN_SITE_ROOT=str(root / '.deployment'))
+
+
+def _compose(root: Path) -> list[str]:
+    return ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(compose_files(root)[0])]
+
+
+def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
+    """Prepare dependencies and this checkout's private data without starting services."""
+    root = site_root(root)
+    deployment = root / '.deployment'
+    deployment.mkdir(parents=True, exist_ok=True)
+    env_file = deployment / 'platform.env'
+    try:
+        descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        os.close(descriptor)
+    env = _environment(root)
+    _run(['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'], root, run, env)
+    _run([*_compose(root), 'pull'], root, run, env)
+    _run([*_compose(root), 'build'], root, run, env)
+    if os.environ.get('XXTRAIN_INSTALL_SYSTEMD') == '1':
+        if sys.platform != 'linux':
+            raise ValueError('systemd installation requires Linux')
+        template = (root / 'deploy/server/xxtrain-server.service').read_text(encoding='utf-8')
+        unit = template.replace('{{ROOT}}', str(root))
+        run(
+            ['sudo', 'install', '-m', '0644', '/dev/stdin', '/etc/systemd/system/xxtrain-server.service'],
+            cwd=root,
+            env=env,
+            check=True,
+            input=unit,
+            text=True,
+        )
+        _run(['sudo', 'systemctl', 'daemon-reload'], root, run, env)
+
+
+def start(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
+    """Enable and start the site only after operator configuration is present."""
+    root = site_root(root)
+    for name in ('workspace.json', 'training.json', 'platform.env'):
+        if not (root / '.deployment' / name).is_file():
+            raise ValueError(f'missing .deployment/{name}; create the operator configuration before start')
+    ensure_administrator(root)
+    env = _environment(root)
+    _run(['sudo', 'systemctl', 'enable', 'xxtrain-server.service'], root, run, env)
+    _run(['sudo', 'systemctl', 'start', 'xxtrain-server.service'], root, run, env)
+
+
+def stop(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
+    """Stop this site's service and disable its boot startup without deleting data."""
+    root = site_root(root)
+    env = _environment(root)
+    try:
+        _run(['sudo', 'systemctl', 'stop', 'xxtrain-server.service'], root, run, env)
+    finally:
+        _run(['sudo', 'systemctl', 'disable', 'xxtrain-server.service'], root, run, env)
+
+
 def main(command: str, *, root: Path | None = None) -> int:
-    """Report that a server lifecycle action awaits its implementation."""
-    del root
+    """Run the selected server lifecycle operation or diagnose unavailable actions."""
+    if command in ('install', 'start', 'stop'):
+        try:
+            {'install': install, 'start': start, 'stop': stop}[command](site_root(root))
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f'serverctl {command}: {exc}', file=sys.stderr)
+            return 1
+        return 0
     print(f'serverctl {command} is not implemented yet', file=sys.stderr)
     return 2

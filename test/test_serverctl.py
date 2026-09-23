@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import yaml
 
-from xxtrain.serverctl import compose_files, ensure_administrator, main, site_root
+from xxtrain.serverctl import compose_files, ensure_administrator, install, main, site_root, start, stop
 
 
 class ServerctlTest(unittest.TestCase):
@@ -23,6 +23,88 @@ class ServerctlTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_install_is_repeatable_and_does_not_start_services(self) -> None:
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            install(self.root, run)
+            env_file = self.root / '.deployment/platform.env'
+            env_file.write_text('OPERATOR_SECRET=kept\n', encoding='utf-8')
+            install(self.root, run)
+        self.assertEqual('OPERATOR_SECRET=kept\n', env_file.read_text(encoding='utf-8'))
+        expected = [
+            ['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'],
+            ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(self.root / 'deploy/server/compose.yaml'), 'pull'],
+            ['docker', 'compose', '-p', 'xxtrain-server', '-f', str(self.root / 'deploy/server/compose.yaml'), 'build'],
+        ]
+        self.assertEqual(expected * 2, [args for args, _ in calls])
+        self.assertTrue(all(kwargs['check'] and kwargs['cwd'] == self.root for _, kwargs in calls))
+        self.assertTrue(
+            all(kwargs['env']['XXTRAIN_SITE_ROOT'] == str(self.root / '.deployment') for _, kwargs in calls)
+        )
+        self.assertFalse((self.root / '.deployment/administrator').exists())
+        self.assertFalse((self.root / '.deployment/workspace.json').exists())
+
+    def test_start_requires_operator_configs_before_secret_or_service_calls(self) -> None:
+        calls = []
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            with self.assertRaisesRegex(ValueError, 'workspace.json'):
+                start(self.root, lambda args, **kwargs: calls.append(args))
+            (self.root / '.deployment/workspace.json').parent.mkdir()
+            (self.root / '.deployment/workspace.json').write_text('{}', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'training.json'):
+                start(self.root, lambda args, **kwargs: calls.append(args))
+        self.assertFalse(calls)
+        self.assertFalse((self.root / '.deployment/administrator').exists())
+
+    def test_start_and_stop_repeat_without_replacing_secret(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        for name in ('workspace.json', 'training.json', 'platform.env'):
+            (deployment / name).write_text('operator-owned', encoding='utf-8')
+        secret = deployment / 'administrator'
+        secret.write_text('operator-secret\n', encoding='utf-8')
+        calls = []
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            for _ in range(2):
+                start(self.root, lambda args, **kwargs: calls.append(args))
+            for _ in range(2):
+                stop(self.root, lambda args, **kwargs: calls.append(args))
+        self.assertEqual('operator-secret\n', secret.read_text(encoding='utf-8'))
+        self.assertEqual(
+            [
+                ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'],
+                ['sudo', 'systemctl', 'start', 'xxtrain-server.service'],
+            ]
+            * 2
+            + [
+                ['sudo', 'systemctl', 'stop', 'xxtrain-server.service'],
+                ['sudo', 'systemctl', 'disable', 'xxtrain-server.service'],
+            ]
+            * 2,
+            calls,
+        )
+
+    def test_linux_opt_in_registers_checkout_unit(self) -> None:
+        unit_path = self.root / 'deploy/server/xxtrain-server.service'
+        unit_path.parent.mkdir(parents=True)
+        unit_path.write_text('WorkingDirectory={{ROOT}}\n', encoding='utf-8')
+        calls = []
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch.dict(os.environ, {'XXTRAIN_INSTALL_SYSTEMD': '1'}),
+            patch('xxtrain.serverctl.sys.platform', 'linux'),
+        ):
+            install(self.root, lambda args, **kwargs: calls.append((args, kwargs)))
+        self.assertEqual(
+            ['sudo', 'install', '-m', '0644', '/dev/stdin', '/etc/systemd/system/xxtrain-server.service'], calls[-2][0]
+        )
+        self.assertEqual(f'WorkingDirectory={self.root}\n', calls[-2][1]['input'])
+        self.assertEqual(['sudo', 'systemctl', 'daemon-reload'], calls[-1][0])
 
     def test_site_root_returns_git_top_level(self) -> None:
         nested = self.root / 'nested'
@@ -80,7 +162,7 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual('operator-replacement-secret\n', path.read_text(encoding='utf-8'))
 
     def test_unimplemented_actions_fail_without_preparing_start(self) -> None:
-        for action in ('install', 'start', 'stop', 'status', 'verify'):
+        for action in ('status', 'verify'):
             with self.subTest(action=action), redirect_stderr(StringIO()) as errors:
                 self.assertNotEqual(0, main(action, root=self.root))
                 self.assertIn(action, errors.getvalue())

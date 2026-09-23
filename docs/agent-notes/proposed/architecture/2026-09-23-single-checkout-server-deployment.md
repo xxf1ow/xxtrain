@@ -18,6 +18,8 @@ xxtrain 从源码 checkout 的 uv 环境直接运行，使用 systemd 托管单�
 
 `xxtrain serverctl` 注册 `install`、`start`、`stop`、`status` 和 `verify` 五个动作。尚未实现的动作以非零状态和诊断退出，不会报告成功；真实 `start` 实现负责调用 `ensure_administrator`。该辅助函数只在 checkout 内 `.deployment/administrator` 不存在时用独占创建和 `0600` 权限写入随机密钥，已存在文件保持字节与权限不变。`site_root` 通过 Git 查找 checkout 顶层，并拒绝解析到 checkout 外的 `.deployment` 路径。
 
+生命周期由单个 `xxtrain-server.service` 管理：启动前仅对 `xxtrain-server` Compose 项目执行 `up -d --no-build`，前台运行 checkout 的平台进程，停止后仅停止该项目的容器。容器没有独立重启策略。`install` 重复执行锁定依赖同步、镜像拉取和定制镜像构建，并仅创建缺失的 `.deployment/platform.env` 私有空文件；不生成需要操作者提供的 `workspace.json` 和 `training.json`，也不启动服务。Linux 上明确设置 `XXTRAIN_INSTALL_SYSTEMD=1` 才会通过特权命令注册单元并重载 systemd；`start` 缺少任一配置文件即报错，不生成管理员身份标识或 CVAT 令牌。`start` 启用并启动单元，`stop` 停止并取消启用状态；无论停止命令是否失败均尝试取消启用。
+
 服务端操作步骤属于独立的零起点部署指南；[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续拥有业务数据组织、主机与 Agent 的数据关系及后续方向。本次只实现服务端部署文档与运行验证。ClearML Agent 安装和 GPU 训练验收属于另一份后续文档，不以单机 Agent 成功冒充服务端验收。
 
 ## Verification and recovery

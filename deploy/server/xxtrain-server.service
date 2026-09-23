@@ -1,0 +1,19 @@
+[Unit]
+Description=xxtrain server and supporting containers
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=XXTRAIN_SITE_ROOT={{ROOT}}/.deployment
+EnvironmentFile={{ROOT}}/.deployment/platform.env
+ExecStartPre=/usr/bin/docker compose -p xxtrain-server -f {{ROOT}}/deploy/server/compose.yaml up -d --no-build
+ExecStart={{ROOT}}/.venv/bin/xxtrain-platform --config {{ROOT}}/.deployment/workspace.json --training-config {{ROOT}}/.deployment/training.json --host 127.0.0.1 --port 18001
+ExecStopPost=/usr/bin/docker compose -p xxtrain-server -f {{ROOT}}/deploy/server/compose.yaml stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
