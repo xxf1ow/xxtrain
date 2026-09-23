@@ -420,7 +420,8 @@ class ServerctlTest(unittest.TestCase):
         )
         self.assertIn('apiserver', services['clearml_apiserver']['networks']['default']['aliases'])
         self.assertIn('fileserver', services['clearml_fileserver']['networks']['default']['aliases'])
-        self.assertEqual('', services['cvat_server']['environment']['ENV_SMOKESCREEN_OPTS'])
+        self.assertEqual('', services['cvat_server']['environment']['SMOKESCREEN_OPTS'])
+        self.assertNotIn('ENV_SMOKESCREEN_OPTS', services['cvat_server']['environment'])
         self.assertIn('redis', services['clearml_redis']['networks']['default']['aliases'])
         self.assertEqual(
             {'condition': 'service_healthy'}, services['clearml_fileserver']['depends_on']['clearml_apiserver']
