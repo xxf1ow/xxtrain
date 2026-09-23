@@ -7,7 +7,9 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from xxtrain.serverctl import ensure_administrator, main, site_root
+import yaml
+
+from xxtrain.serverctl import compose_files, ensure_administrator, main, site_root
 
 
 class ServerctlTest(unittest.TestCase):
@@ -80,6 +82,58 @@ class ServerctlTest(unittest.TestCase):
                 self.assertNotEqual(0, main(action, root=self.root))
                 self.assertIn(action, errors.getvalue())
         self.assertFalse((self.root / '.deployment').exists())
+
+    def test_compose_topology_keeps_all_persistent_data_under_site_root(self) -> None:
+        checkout = Path(__file__).resolve().parents[1]
+        files = compose_files(checkout)
+        self.assertEqual((checkout / 'deploy/server/compose.yaml',), files)
+        manifest = yaml.safe_load(files[0].read_text(encoding='utf-8'))
+        self.assertEqual('xxtrain-server', manifest['name'])
+        services = manifest['services']
+        self.assertEqual('host', services['nginx']['network_mode'])
+        for worker in ('utils', 'import', 'export', 'annotation', 'webhooks', 'quality_reports', 'chunks', 'consensus'):
+            self.assertIn(f'cvat_worker_{worker}', services)
+        expected = {
+            'cvat_db': '/var/lib/postgresql/data',
+            'cvat_redis_inmem': '/data',
+            'cvat_redis_ondisk': '/var/lib/kvrocks',
+            'cvat_server': '/home/django/data',
+            'cvat_clickhouse': '/var/lib/clickhouse',
+            'clearml_mongo': '/data/db',
+            'clearml_redis': '/data',
+            'clearml_elasticsearch': '/usr/share/elasticsearch/data',
+            'clearml_fileserver': '/mnt/fileserver',
+        }
+        for service, target in expected.items():
+            with self.subTest(service=service):
+                mounts = services[service]['volumes']
+                self.assertTrue(
+                    any(
+                        (
+                            v.get('target') == target
+                            if isinstance(v, dict)
+                            else v.replace('${XXTRAIN_SITE_ROOT:?}', 'SITE_ROOT').split(':')[1] == target
+                        )
+                        for v in mounts
+                    )
+                )
+        for name, service in services.items():
+            self.assertNotIn('restart', service, name)
+            for mount in service.get('volumes', []):
+                if isinstance(mount, str):
+                    parts = mount.replace('${XXTRAIN_SITE_ROOT:?}', 'SITE_ROOT').split(':')
+                    source, mode = (
+                        parts[0].replace('SITE_ROOT', '${XXTRAIN_SITE_ROOT:?}'),
+                        (parts[2] if len(parts) > 2 else ''),
+                    )
+                    self.assertTrue(source.startswith('${XXTRAIN_SITE_ROOT:?}/') or mode == 'ro', (name, mount))
+                elif mount.get('type') != 'tmpfs':
+                    self.assertTrue(
+                        mount['source'].startswith('${XXTRAIN_SITE_ROOT:?}/') or mount.get('read_only'), (name, mount)
+                    )
+            for port in service.get('ports', []):
+                self.assertTrue(str(port).startswith('127.0.0.1:'), (name, port))
+        self.assertNotIn('volumes', manifest)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,272 @@
+name: xxtrain-server
+
+x-cvat-env: &cvat-env
+  CVAT_POSTGRES_HOST: cvat_db
+  CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+  CVAT_REDIS_INMEM_PORT: 6379
+  CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+  CVAT_REDIS_ONDISK_PORT: 6666
+  CVAT_LOG_IMPORT_ERRORS: 'true'
+  DJANGO_LOG_SERVER_HOST: cvat_vector
+  DJANGO_LOG_SERVER_PORT: 8282
+  no_proxy: cvat_clickhouse,cvat_vector,cvat_opa,opa,clickhouse,vector
+
+x-cvat-deps: &cvat-deps
+  cvat_db: {condition: service_started}
+  cvat_redis_inmem: {condition: service_started}
+  cvat_redis_ondisk: {condition: service_started}
+  cvat_clickhouse: {condition: service_started}
+
+x-cvat-mounts: &cvat-mounts
+  - ${XXTRAIN_SITE_ROOT:?}/cvat/data:/home/django/data
+  - ${XXTRAIN_SITE_ROOT:?}/cvat/keys:/home/django/keys
+  - ${XXTRAIN_SITE_ROOT:?}/cvat/logs:/home/django/logs
+
+x-clearml-env: &clearml-env
+  CLEARML_ELASTIC_SERVICE_HOST: clearml_elasticsearch
+  CLEARML_ELASTIC_SERVICE_PORT: 9200
+  CLEARML_MONGODB_SERVICE_HOST: clearml_mongo
+  CLEARML_MONGODB_SERVICE_PORT: 27017
+  CLEARML_REDIS_SERVICE_HOST: clearml_redis
+  CLEARML_REDIS_SERVICE_PORT: 6379
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    network_mode: host
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  cvat_db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_DB: cvat
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/cvat/postgres:/var/lib/postgresql/data
+
+  cvat_redis_inmem:
+    image: redis:7.2.11-alpine
+    command: [redis-server, --save, '60', '100', --appendonly, 'yes']
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/cvat/redis:/data
+
+  cvat_redis_ondisk:
+    image: apache/kvrocks:2.12.1
+    init: true
+    command: [--compact-cron, '0 3 * * *']
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/cvat/kvrocks:/var/lib/kvrocks
+
+  cvat_clickhouse:
+    image: clickhouse/clickhouse-server:23.11-alpine
+    environment: &clickhouse-env
+      CLICKHOUSE_HOST: cvat_clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: user
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/cvat/clickhouse:/var/lib/clickhouse
+
+  cvat_vector:
+    image: timberio/vector:0.26.0-alpine
+    user: '1000:1000'
+    depends_on: [cvat_clickhouse]
+    environment: *clickhouse-env
+    volumes:
+      - ./vector.toml:/etc/vector/vector.toml:ro
+      - type: tmpfs
+        target: /vector-data-dir
+
+  cvat_opa:
+    image: openpolicyagent/opa:0.63.0
+    command:
+      - run
+      - --server
+      - --log-level=error
+      - --set=services.cvat.url=http://cvat_server:8080
+      - --set=bundles.cvat.service=cvat
+      - --set=bundles.cvat.resource=/api/auth/rules
+      - --set=bundles.cvat.polling.min_delay_seconds=5
+      - --set=bundles.cvat.polling.max_delay_seconds=15
+    networks:
+      default:
+        aliases: [opa]
+
+  cvat_server:
+    image: cvat/server:v2.51.0
+    depends_on:
+      <<: *cvat-deps
+      cvat_opa: {condition: service_started}
+    environment:
+      <<: *cvat-env
+      CLICKHOUSE_HOST: cvat_clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: user
+      DJANGO_MODWSGI_EXTRA_ARGS: ''
+      ALLOWED_HOSTS: '*'
+      ADAPTIVE_AUTO_ANNOTATION: 'false'
+      NUMPROCS: 2
+      CVAT_ANALYTICS: 1
+    command: init run server
+    ports: ['127.0.0.1:18080:8080']
+    volumes: *cvat-mounts
+    networks:
+      default:
+        aliases: [cvat-server]
+
+  cvat_worker_utils:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment:
+      <<: *cvat-env
+      CVAT_REDIS_INMEM_PASSWORD: ''
+      NUMPROCS: 1
+    command: run worker notifications cleaning
+    volumes: *cvat-mounts
+
+  cvat_worker_import:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment: {<<: *cvat-env, NUMPROCS: 2}
+    command: run worker import
+    volumes: *cvat-mounts
+
+  cvat_worker_export:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment:
+      <<: *cvat-env
+      CLICKHOUSE_HOST: cvat_clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: user
+      NUMPROCS: 2
+    command: run worker export
+    volumes: *cvat-mounts
+
+  cvat_worker_annotation:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment: {<<: *cvat-env, NUMPROCS: 1}
+    command: run worker annotation
+    volumes: *cvat-mounts
+
+  cvat_worker_webhooks:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment: {<<: *cvat-env, NUMPROCS: 1}
+    command: run worker webhooks
+    volumes: *cvat-mounts
+
+  cvat_worker_quality_reports:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment: {<<: *cvat-env, NUMPROCS: 1}
+    command: run worker quality_reports
+    volumes: *cvat-mounts
+
+  cvat_worker_chunks:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment: {<<: *cvat-env, NUMPROCS: 2}
+    command: run worker chunks
+    volumes: *cvat-mounts
+
+  cvat_worker_consensus:
+    image: cvat/server:v2.51.0
+    depends_on: *cvat-deps
+    environment: {<<: *cvat-env, NUMPROCS: 1}
+    command: run worker consensus
+    volumes: *cvat-mounts
+
+  cvat_ui:
+    build:
+      context: ../..
+      dockerfile: deploy/platform/cvat-ui.Dockerfile
+    image: xxtrain-cvat-ui:2.51.0
+    depends_on: [cvat_server]
+    ports: ['127.0.0.1:18081:8000']
+
+  clearml_mongo:
+    image: mongo:8.0.15
+    command: --setParameter internalQueryMaxBlockingSortMemoryUsageBytes=196100200
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/mongo:/data/db
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/mongo-config:/data/configdb
+
+  clearml_redis:
+    image: redis:8.2.3
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/redis:/data
+
+  clearml_elasticsearch:
+    image: elasticsearch:8.19.9
+    environment:
+      bootstrap.memory_lock: 'true'
+      cluster.name: clearml
+      cluster.routing.allocation.node_initial_primaries_recoveries: '500'
+      cluster.routing.allocation.disk.watermark.low: 500mb
+      cluster.routing.allocation.disk.watermark.high: 500mb
+      cluster.routing.allocation.disk.watermark.flood_stage: 500mb
+      discovery.type: single-node
+      http.compression_level: '7'
+      node.name: clearml
+      reindex.remote.whitelist: "'*.*'"
+      xpack.security.enabled: 'false'
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+      nofile: {soft: 65536, hard: 65536}
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/elasticsearch:/usr/share/elasticsearch/data
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/elasticsearch-logs:/usr/share/elasticsearch/logs
+
+  clearml_fileserver:
+    image: clearml/server:2.4.0
+    command: [fileserver]
+    environment:
+      CLEARML__fileserver__delete__allow_batch: 'true'
+    ports: ['127.0.0.1:18082:8081']
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/logs:/var/log/clearml
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/files:/mnt/fileserver
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/config:/opt/clearml/config
+
+  clearml_apiserver:
+    image: clearml/server:2.4.0
+    command: [apiserver]
+    depends_on: [clearml_redis, clearml_mongo, clearml_elasticsearch, clearml_fileserver]
+    environment:
+      <<: *clearml-env
+      CLEARML_SERVER_DEPLOYMENT_TYPE: linux
+      CLEARML__apiserver__pre_populate__enabled: 'true'
+      CLEARML__apiserver__pre_populate__zip_files: /opt/clearml/db-pre-populate
+      CLEARML__apiserver__pre_populate__artifacts_path: /mnt/fileserver
+      CLEARML__services__async_urls_delete__enabled: 'true'
+    ports: ['127.0.0.1:18083:8008']
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/logs:/var/log/clearml
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/config:/opt/clearml/config
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/files:/mnt/fileserver
+
+  clearml_webserver:
+    image: clearml/server:2.4.0
+    command: [webserver]
+    depends_on: [clearml_apiserver]
+    ports: ['127.0.0.1:18084:80']
+
+  clearml_async_delete:
+    image: clearml/server:2.4.0
+    depends_on: [clearml_apiserver, clearml_redis, clearml_mongo, clearml_elasticsearch, clearml_fileserver]
+    environment:
+      <<: *clearml-env
+      PYTHONPATH: /opt/clearml/apiserver
+    entrypoint: [python3, -m, jobs.async_urls_delete, --fileserver-host, 'http://clearml_fileserver:8081']
+    volumes:
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/logs:/var/log/clearml
+      - ${XXTRAIN_SITE_ROOT:?}/clearml/config:/opt/clearml/config

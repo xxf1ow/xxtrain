@@ -21,6 +21,11 @@ def site_root(root: Path | None = None) -> Path:
     return checkout
 
 
+def compose_files(root: Path) -> tuple[Path, ...]:
+    """Return the tracked Compose manifest for a Git checkout."""
+    return (site_root(root) / 'deploy' / 'server' / 'compose.yaml',)
+
+
 def ensure_administrator(root: Path) -> Path:
     """Create a private administrator secret only when the file is absent."""
     checkout = site_root(root)
