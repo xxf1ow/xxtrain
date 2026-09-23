@@ -5,6 +5,7 @@ import unittest
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from xxtrain.serverctl import ensure_administrator, main, site_root
 
@@ -57,6 +58,21 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual(path, ensure_administrator(self.root))
         self.assertEqual(first_content, path.read_bytes())
         self.assertEqual(first_mode, os.stat(path).st_mode & 0o777)
+
+    def test_secret_file_failure_does_not_delete_replacement_file(self) -> None:
+        path = self.root / '.deployment' / 'administrator'
+
+        def replace_then_fail(descriptor: int, *_args: str, **_kwargs: str) -> None:
+            os.close(descriptor)
+            path.unlink()
+            path.write_text('operator-replacement-secret\n', encoding='utf-8')
+            raise OSError('secret file open failed')
+
+        with patch('xxtrain.serverctl.os.fdopen', side_effect=replace_then_fail):
+            with self.assertRaisesRegex(OSError, 'secret file open failed'):
+                ensure_administrator(self.root)
+
+        self.assertEqual('operator-replacement-secret\n', path.read_text(encoding='utf-8'))
 
     def test_unimplemented_actions_fail_without_preparing_start(self) -> None:
         for action in ('install', 'start', 'stop', 'status', 'verify'):

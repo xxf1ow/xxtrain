@@ -31,13 +31,9 @@ def ensure_administrator(root: Path) -> Path:
     except FileExistsError:
         return path
 
-    try:
-        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-            stream.write(secrets.token_urlsafe(32))
-            stream.write('\n')
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+        stream.write(secrets.token_urlsafe(32))
+        stream.write('\n')
     return path
 
 
