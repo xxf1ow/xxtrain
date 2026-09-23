@@ -2,6 +2,8 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,6 +62,66 @@ class TrainingConfigTest(unittest.TestCase):
 
 
 class TrainingEntrypointTest(unittest.TestCase):
+    def test_training_startup_requires_explicit_local_clearml_endpoints(self) -> None:
+        from xxtrain.platform.__main__ import main
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'workspace/images').mkdir(parents=True)
+            (root / 'shared').mkdir()
+            worker = root / 'worker.py'
+            worker.write_text('pass\n', encoding='utf-8')
+            workspace = root / 'workspace.json'
+            workspace.write_text(
+                json.dumps(
+                    {
+                        'workspace_id': 'site',
+                        'display_name': 'Site',
+                        'owner_user_id': 17,
+                        'workspace_dir': 'workspace',
+                        'runtime_dir': 'shared/runtime',
+                        'cvat_internal_url': 'http://cvat.test',
+                    }
+                ),
+                encoding='utf-8',
+            )
+            training = root / 'training.json'
+            training.write_text(
+                json.dumps(
+                    {
+                        'project': 'xxtrain',
+                        'queue': 'training',
+                        'shared_root': 'shared',
+                        'metadata_dir': 'metadata',
+                        'worker_script': 'worker.py',
+                        'run_root': 'runs',
+                    }
+                ),
+                encoding='utf-8',
+            )
+            environment = {
+                'XXTRAIN_CVAT_SERVICE_TOKEN': 'cvat',
+                'CLEARML_API_ACCESS_KEY': 'access',
+                'CLEARML_API_SECRET_KEY': 'secret',
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch('xxtrain.platform.__main__.WorkspaceData'),
+                patch('xxtrain.platform.__main__.RuntimeCache'),
+                patch('xxtrain.platform.__main__.CvatClient'),
+                patch('xxtrain.platform.__main__.AnnotationService'),
+                patch('xxtrain.platform.__main__.TrainingRunStore'),
+                patch('xxtrain.platform.__main__.ClearMLClient'),
+                patch('xxtrain.platform.__main__.TrainingService'),
+                patch('xxtrain.platform.__main__.create_app'),
+                patch('xxtrain.platform.__main__.httpx.Client'),
+                patch('xxtrain.platform.__main__.uvicorn.run'),
+            ):
+                with redirect_stderr(StringIO()) as errors:
+                    with self.assertRaises(SystemExit):
+                        main(['--config', str(workspace), '--training-config', str(training)])
+                self.assertIn('CLEARML_API_HOST', errors.getvalue())
+
     def test_training_config_builds_service_and_binds_edit_guard(self) -> None:
         from xxtrain.platform.__main__ import main
 
@@ -144,6 +206,9 @@ class TrainingEntrypointTest(unittest.TestCase):
                 'XXTRAIN_CVAT_SERVICE_TOKEN': 'cvat',
                 'CLEARML_API_ACCESS_KEY': 'access',
                 'CLEARML_API_SECRET_KEY': 'secret',
+                'CLEARML_API_HOST': 'http://127.0.0.1:18083',
+                'CLEARML_WEB_HOST': 'http://127.0.0.1:18084',
+                'CLEARML_FILES_HOST': 'http://127.0.0.1:18082',
             }
             with (
                 patch.dict(os.environ, environment, clear=True),

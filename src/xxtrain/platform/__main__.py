@@ -21,6 +21,7 @@ from xxtrain.workspace_data import WorkspaceData
 
 _SERVICE_TOKEN_ENV = 'XXTRAIN_CVAT_SERVICE_TOKEN'
 _CLEARML_KEY_ENVS = ('CLEARML_API_ACCESS_KEY', 'CLEARML_API_SECRET_KEY')
+_CLEARML_ENDPOINT_ENVS = ('CLEARML_API_HOST', 'CLEARML_WEB_HOST', 'CLEARML_FILES_HOST')
 
 
 def _bind_host(value: str) -> str:
@@ -66,9 +67,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     config = load_config(args.config)
     training_config = load_training_config(args.training_config) if args.training_config is not None else None
     if training_config is not None:
-        missing_keys = [name for name in _CLEARML_KEY_ENVS if not os.environ.get(name)]
-        if missing_keys:
-            parser.error(f'{", ".join(missing_keys)} must be set')
+        missing_settings = [name for name in (*_CLEARML_KEY_ENVS, *_CLEARML_ENDPOINT_ENVS) if not os.environ.get(name)]
+        if missing_settings:
+            parser.error(f'{", ".join(missing_settings)} must be set')
         cache_root = (config.runtime_dir / 'cache').resolve()
         if not cache_root.is_relative_to(training_config.shared_root):
             parser.error('workspace runtime cache must be inside training shared_root')

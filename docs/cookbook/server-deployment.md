@@ -59,7 +59,17 @@ with Path('.deployment/platform.env').open('a', encoding='utf-8') as env:
 PY
 ```
 
-For a dedicated service identity, provision it in CVAT and repeat the same login-token operation for that account; the owner user ID must still identify the intended workspace owner. Avoid duplicate env assignments on repetition. Open `http://<host>:8082/settings/workspace-configuration` in a browser, select **Settings → Workspace → Create new credentials**, and copy the access and secret keys. These are the [official ClearML setup steps](https://clear.ml/docs/latest/docs/clearml_sdk/clearml_sdk_setup). Add `CLEARML_API_ACCESS_KEY=<access-key>` and `CLEARML_API_SECRET_KEY=<secret-key>` to `.deployment/platform.env` with a private editor; do not commit or paste them into shell history. Keep this file at `0600`. The unit reads it at startup; Compose receives `XXTRAIN_SITE_ROOT` from the unit and `serverctl`, not from this file. After both credentials exist, stop only this temporary Compose project; `serverctl start` then takes over the full set:
+For a dedicated service identity, provision it in CVAT and repeat the same login-token operation for that account; the owner user ID must still identify the intended workspace owner. Avoid duplicate env assignments on repetition. Open `http://<host>:8082/settings/workspace-configuration` in a browser, select **Settings → Workspace → Create new credentials**, and copy the access and secret keys. These are the [official ClearML setup steps](https://clear.ml/docs/latest/docs/clearml_sdk/clearml_sdk_setup). Add the credentials and all three SDK service addresses to `.deployment/platform.env` with a private editor; do not commit or paste credentials into shell history. The platform process uses the host-loopback Compose mappings below, not the public nginx ports. Omitting any endpoint is a startup error because the ClearML SDK otherwise falls back to ClearML Cloud.
+
+```dotenv
+CLEARML_API_ACCESS_KEY=<access-key>
+CLEARML_API_SECRET_KEY=<secret-key>
+CLEARML_API_HOST=http://127.0.0.1:18083
+CLEARML_WEB_HOST=http://127.0.0.1:18084
+CLEARML_FILES_HOST=http://127.0.0.1:18082
+```
+
+Keep this file at `0600`. The unit reads it at startup; Compose receives `XXTRAIN_SITE_ROOT` from the unit and `serverctl`, not from this file. After credentials and endpoint addresses exist, stop only this temporary Compose project; `serverctl start` then takes over the full set:
 
 ```sh
 XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml stop
