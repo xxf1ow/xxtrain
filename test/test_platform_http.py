@@ -171,6 +171,24 @@ class PlatformHttpTest(unittest.TestCase):
                 self.assertEqual(401, response.status_code)
         self.assertEqual([], self.service.calls)
 
+    def test_internal_cvat_auth_accepts_any_valid_session_without_workspace_access(self) -> None:
+        path = '/platform/internal/cvat-auth'
+        self.assertEqual(401, self.client.get(path).status_code)
+        self.cvat.user_id = 99
+        self.service.errors['view'] = PlatformAccessError('not owner')
+        self.client.cookies.set('sessionid', 'active')
+        valid = self.client.get(path)
+        self.assertEqual(204, valid.status_code)
+        self.assertEqual(b'', valid.content)
+        self.assertEqual([], self.service.calls)
+        self.client.cookies.set('sessionid', 'expired')
+        self.assertEqual(401, self.client.get(path).status_code)
+        self.cvat.errors['current_user'] = PlatformError('secret backend failure')
+        self.client.cookies.set('sessionid', 'active')
+        failed = self.client.get(path)
+        self.assertEqual(502, failed.status_code)
+        self.assertNotIn('secret backend failure', failed.text)
+
     def test_workspace_owner_denial_is_distinct_from_authentication(self) -> None:
         self.cvat.user_id = 99
         self.service.errors['view'] = PlatformAccessError('private owner detail')

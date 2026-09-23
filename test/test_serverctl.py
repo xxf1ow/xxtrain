@@ -5,14 +5,14 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 
-from xxtrain.serverctl import compose_files, ensure_administrator, install, main, site_root, start, stop
+from xxtrain.serverctl import compose_files, ensure_administrator, install, main, site_root, start, status, stop, verify
 
 
 class ServerctlTest(unittest.TestCase):
@@ -209,11 +209,88 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual('operator-replacement-secret\n', path.read_text(encoding='utf-8'))
 
     def test_unimplemented_actions_fail_without_preparing_start(self) -> None:
-        for action in ('status', 'verify'):
-            with self.subTest(action=action), redirect_stderr(StringIO()) as errors:
-                self.assertNotEqual(0, main(action, root=self.root))
-                self.assertIn(action, errors.getvalue())
+        with redirect_stderr(StringIO()) as errors:
+            self.assertNotEqual(0, main('unknown', root=self.root))
+            self.assertIn('unknown', errors.getvalue())
         self.assertFalse((self.root / '.deployment').exists())
+
+    def test_status_reports_git_systemd_and_each_container_state_without_secrets(self) -> None:
+        sha = 'a' * 40
+
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'rev-parse']:
+                return subprocess.CompletedProcess(args, 0, sha + '\n', '')
+            if args[:2] == ['git', 'status']:
+                return subprocess.CompletedProcess(args, 0, ' M src/xxtrain/serverctl.py\n', '')
+            if args[:2] == ['systemctl', 'is-enabled']:
+                return subprocess.CompletedProcess(args, 0, 'enabled\n', '')
+            if args[:2] == ['systemctl', 'is-active']:
+                return subprocess.CompletedProcess(args, 3, 'inactive\n', '')
+            if args[-2:] == ['config', '--services']:
+                return subprocess.CompletedProcess(args, 0, 'nginx\ncvat_server\n', '')
+            if args[-4:] == ['ps', '--all', '--format', 'json']:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    json.dumps(
+                        [
+                            {'Service': 'nginx', 'State': 'running', 'Health': 'healthy'},
+                            {'Service': 'cvat_server', 'State': 'exited', 'Health': ''},
+                        ]
+                    ),
+                    '',
+                )
+            raise AssertionError(args)
+
+        output = StringIO()
+        with patch('xxtrain.serverctl.site_root', return_value=self.root), redirect_stdout(output):
+            status(self.root, run)
+        result = output.getvalue()
+        for value in (
+            sha,
+            'dirty',
+            'enabled',
+            'inactive',
+            'nginx: running (healthy)',
+            'cvat_server: exited (health unavailable)',
+        ):
+            self.assertIn(value, result)
+        self.assertNotIn('OPERATOR_SECRET', result)
+
+    def test_status_reports_missing_compose_service_as_failure(self) -> None:
+        def run(args, **kwargs):
+            if args[:2] == ['git', 'rev-parse']:
+                value = 'a' * 40
+            elif args[:2] == ['git', 'status']:
+                value = ''
+            elif args[-2:] == ['config', '--services']:
+                value = 'nginx\ncvat_server\n'
+            elif args[-4:] == ['ps', '--all', '--format', 'json']:
+                value = json.dumps([{'Service': 'nginx', 'State': 'running', 'Health': 'healthy'}])
+            else:
+                value = 'active' if 'is-active' in args else 'enabled'
+            return subprocess.CompletedProcess(args, 0, value, '')
+
+        output = StringIO()
+        with patch('xxtrain.serverctl.site_root', return_value=self.root), redirect_stdout(output):
+            self.assertFalse(status(self.root, run))
+        self.assertIn('cvat_server: missing', output.getvalue())
+
+    def test_verify_reports_failed_health_and_returns_failure(self) -> None:
+        import urllib.error
+
+        def request(url, timeout):
+            if url.endswith('/api/server/health/'):
+                raise urllib.error.URLError('backend unavailable')
+            return type(
+                'Reply', (), {'status': 200, '__enter__': lambda self: self, '__exit__': lambda self, *args: None}
+            )()
+
+        output = StringIO()
+        with patch('xxtrain.serverctl.site_root', return_value=self.root), redirect_stdout(output):
+            self.assertFalse(verify(self.root, request))
+        self.assertIn('FAIL', output.getvalue())
+        self.assertNotIn('backend unavailable', output.getvalue())
 
     def test_compose_topology_keeps_all_persistent_data_under_site_root(self) -> None:
         checkout = Path(__file__).resolve().parents[1]

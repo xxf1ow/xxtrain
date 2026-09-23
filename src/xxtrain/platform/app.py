@@ -301,6 +301,11 @@ def create_app(
     def session(request: Request) -> dict[str, object]:
         return {'authenticated': True, 'user_id': authenticated_user(request)}
 
+    @app.get('/platform/internal/cvat-auth', status_code=status.HTTP_204_NO_CONTENT)
+    def cvat_auth(request: Request) -> Response:
+        authenticated_user(request)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @app.get('/platform/api/workspace')
     def workspace(request: Request) -> dict[str, object]:
         user_id = authenticated_user(request)

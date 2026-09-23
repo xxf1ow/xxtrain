@@ -1,3 +1,4 @@
+import json
 import os
 import secrets
 import subprocess
@@ -5,6 +6,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from subprocess import CompletedProcess
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 
 def site_root(root: Path | None = None) -> Path:
@@ -122,14 +125,99 @@ def stop(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> N
         _run(['sudo', 'systemctl', 'disable', 'xxtrain-server.service'], root, run, env)
 
 
+def status(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> bool:
+    """Print checkout, service and container states; return false if observations fail."""
+    root = site_root(root)
+    env = _environment(root)
+    commands = (
+        ('revision', ['git', 'rev-parse', 'HEAD']),
+        ('worktree', ['git', 'status', '--porcelain', '--untracked-files=normal']),
+        ('systemd enabled', ['systemctl', 'is-enabled', 'xxtrain-server.service']),
+        ('systemd active', ['systemctl', 'is-active', 'xxtrain-server.service']),
+        ('services', [*_compose(root), 'config', '--services']),
+        ('containers', [*_compose(root), 'ps', '--all', '--format', 'json']),
+    )
+    success = True
+    services: set[str] = set()
+    for label, args in commands:
+        try:
+            result = run(args, cwd=root, env=env, check=False, capture_output=True, text=True)
+            value = result.stdout.strip()
+            if label == 'worktree':
+                value = 'dirty' if value else 'clean'
+            elif label == 'services':
+                services = set(value.splitlines())
+                value = f'{len(services)} configured'
+            elif label == 'containers':
+                entries = (
+                    json.loads(value) if value.startswith('[') else [json.loads(line) for line in value.splitlines()]
+                )
+                present = {entry['Service']: entry for entry in entries}
+                value = (
+                    ', '.join(
+                        f'{name}: {present[name]["State"]}'
+                        + f' ({present[name].get("Health") or "health unavailable"})'
+                        if name in present
+                        else f'{name}: missing'
+                        for name in sorted(services | present.keys())
+                    )
+                    or 'none'
+                )
+            elif label == 'revision' and (len(value) != 40 or any(char not in '0123456789abcdef' for char in value)):
+                raise ValueError('invalid full Git SHA')
+            if result.returncode and label not in ('systemd enabled', 'systemd active'):
+                raise ValueError('command failed')
+            print(f'{label}: {value}')
+            if label == 'containers' and (
+                not services
+                or services != present.keys()
+                or any(entry['State'] != 'running' or entry.get('Health') == 'unhealthy' for entry in entries)
+            ):
+                success = False
+            if label.startswith('systemd') and result.returncode:
+                success = False
+        except (OSError, ValueError, KeyError) as exc:
+            print(f'{label}: unavailable ({type(exc).__name__})')
+            success = False
+    return success
+
+
+def verify(root: Path, request: Callable[..., object] = urlopen) -> bool:
+    """Probe real local public and backend HTTP endpoints; return false on any failed check."""
+    site_root(root)
+    checks = (
+        ('platform', 'http://127.0.0.1:8080/platform/', 200),
+        ('CVAT unauthenticated', 'http://127.0.0.1:8080/api/users/self', 401),
+        ('CVAT backend', 'http://127.0.0.1:18080/api/server/health/', 200),
+        ('ClearML API', 'http://127.0.0.1:8008/', 200),
+        ('ClearML files', 'http://127.0.0.1:8081/', 200),
+        ('ClearML web', 'http://127.0.0.1:8082/', 200),
+    )
+    success = True
+    for label, url, expected in checks:
+        try:
+            with request(url, timeout=5) as response:
+                code = response.status
+        except HTTPError as exc:
+            code = exc.code
+        except (OSError, URLError):
+            code = None
+        matched = code == expected
+        observed = code if code is not None else 'unavailable'
+        print(f'{label}: {"PASS" if matched else "FAIL"} (HTTP {observed}; expected {expected})')
+        success &= matched
+    return success
+
+
 def main(command: str, *, root: Path | None = None) -> int:
     """Run the selected server lifecycle operation or diagnose unavailable actions."""
-    if command in ('install', 'start', 'stop'):
+    if command in ('install', 'start', 'stop', 'status', 'verify'):
         try:
-            {'install': install, 'start': start, 'stop': stop}[command](site_root(root))
+            operation = {'install': install, 'start': start, 'stop': stop, 'status': status, 'verify': verify}[command]
+            result = operation(site_root(root))
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             print(f'serverctl {command}: {exc}', file=sys.stderr)
             return 1
-        return 0
+        return 0 if result is not False else 1
     print(f'serverctl {command} is not implemented yet', file=sys.stderr)
     return 2
