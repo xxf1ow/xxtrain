@@ -8,7 +8,7 @@ Status: proposed
 
 ## Proposal
 
-服务端在目标 Linux 主机上只有一个 Git 源码 checkout。版本由这个 checkout 的提交身份确定，不设多版本发布目录、worktree 或临时源码副本。部署从已经推送的 `origin` 获取指定分支、标签或提交；运行版本必须显示完整提交哈希，选择最新版本时先 `git fetch origin`，再明确选择远端引用指向的提交，不以本地分支名或目录修改时间推断。功能分支在同一源码目录测试；升级或降级须先核对数据库兼容性并准备一致性备份，再停止服务、确认工作树干净、切换到已取得的提交并运行 `uv sync --locked --extra platform --extra clearml`；不得自动清理或覆盖 `.deployment/`。测试机仅部署本地验证并经人工审阅后发布到 `origin` 的修订，不直接编辑代码或在测试机提交。
+服务端在目标 Linux 主机上只有一个 Git 源码 checkout。版本由这个 checkout 的提交身份确定，不设多版本发布目录、worktree 或临时源码副本。部署从已经推送的 `origin` 获取指定分支、标签或提交；运行版本必须显示完整提交哈希，选择最新版本时先 `git fetch origin`，再明确选择远端引用指向的提交，不以本地分支名或目录修改时间推断。功能分支在同一源码目录测试；升级须先准备一致性备份，再停止服务、确认工作树干净、切换到已取得的提交并运行 `uv sync --locked --extra platform --extra clearml`；不得自动清理或覆盖 `.deployment/`。本次不提供降级流程或对旧提交启动的兼容保证。测试机仅部署本地验证并经人工审阅后发布到 `origin` 的修订，不直接编辑代码或在测试机提交。
 
 被 Git 忽略的 checkout 内 `.deployment/` 是现场配置、凭据、工作区、SQLite、可重建缓存和容器持久数据的唯一现场目录。编排文件、镜像定制和服务管理实现留在受版本控制的源码内；容器使用含义明确的服务名和绑定挂载目录名，所有持久挂载均位于 `.deployment/`，不以 Docker 命名卷暗藏现场数据。Docker 镜像、容器及系统服务本身是运行资源，不是第二套现场数据。`install`、`start`、`stop` 不删除工作区或容器持久数据。平台注册 systemd 单元是对目录边界的唯一窄例外：单元文件位于系统规定位置，指向当前唯一 checkout；操作服务单元不意味着将现场数据写到系统目录。目标主机已具备 uv 和 Docker；安装 uv 或 Docker 不属于本流程，也不要求部署文档执行 `source .bashrc`。
 
@@ -16,15 +16,17 @@ xxtrain 从源码 checkout 的 uv 环境直接运行，使用 systemd 托管单�
 
 ClearML SDK 环境显式设置 `CLEARML_API_HOST`、`CLEARML_WEB_HOST` 和 `CLEARML_FILES_HOST`。在源码 checkout 上运行的 xxtrain 指向本机 Compose 映射 `http://127.0.0.1:18083`、`http://127.0.0.1:18084` 和 `http://127.0.0.1:18082`；nginx 对外发布的 `8008`、`8082` 和 `8081` 分别供外部 API、Web 与 files 客户端使用。这三个入口不经过平台的 CVAT 会话检查，不能假定 ClearML 自身对所有页面和 API 提供访问控制；只在受控网络中开放，不直接映射公网。服务启动拒绝缺失的端点变量，避免 SDK 默认连接 ClearML Cloud。
 
-唯一服务端管理入口与 `xxtrain train` 并列，为 `uv run --locked --extra platform --extra clearml xxtrain serverctl install|start|stop|status|verify`。`install` 负责锁定依赖同步、拉取外部服务镜像、构建项目定制镜像、自动准备本地配置与凭据并检查挂载及系统服务前置条件，不启动服务；用户执行该命令后不需要交互式创建账号、密钥或 JSON。`start` 对同一服务集合幂等启动并设置开机自启，同时自动完成需要运行中服务的身份和机器凭据初始化；`stop` 幂等停止并取消开机自启。重复安装、启停和升级不得自行轮换现有凭据或覆盖持久数据。systemd 管理整个服务集合的开机状态，容器不得有绕过 `stop` 的独立开机自启策略。`status` 展示 checkout 提交、工作树状态、systemd、容器和健康状态；`verify` 从真实对外入口及后端验证可用性，非零退出指出失败位置。文档必须说明明文文件的权限与备份责任、每个命令的前置条件和成功信号，不能要求操作者猜哪个脚本负责安装或启动。
+唯一服务端管理入口与 `xxtrain train` 并列，为 `uv run --locked --extra platform --extra clearml xxtrain serverctl install|start|stop|status|verify`。`install` 负责锁定依赖同步、拉取外部服务镜像、构建项目定制镜像、自动准备本地配置与凭据并检查挂载及系统服务前置条件，不启动服务；用户执行该命令后不需要交互式创建账号、密钥或 JSON。`start` 对同一服务集合幂等启动并设置开机自启，同时完成需要运行中服务的身份校验；`stop` 幂等停止并取消开机自启。重复安装、启停和升级不得自行轮换现有凭据或覆盖持久数据。systemd 管理整个服务集合的开机状态，容器不得有绕过 `stop` 的独立开机自启策略。`status` 展示 checkout 提交、工作树状态、systemd、容器和健康状态；`verify` 从真实对外入口及后端验证可用性，非零退出指出失败位置。文档必须说明明文文件的权限与备份责任、每个命令的前置条件和成功信号，不能要求操作者猜哪个脚本负责安装或启动。
 
-固定 CVAT 管理员用户名为 `xxadmin`，其密码的唯一可读来源为 `.deployment/.xxxxx`，以明文 `0600` 保存。`install` 和 `start` 共用同一个缺失时随机生成、已存在则保持原样的辅助函数；两者均不打印密码。操作者可以在 `start` 前编辑该文件；每次 `start` 必须使 CVAT 中 `xxadmin` 的密码与文件内容一致，包括服务已运行时再次调用 `start`。因此单独丢失密码文件、但 CVAT 持久数据仍在时，下次 `start` 可以重新生成并同步密码，无需另设 `reset` 命令。同步通过就绪的 CVAT 容器内 Django 管理入口创建超级用户或调用用户模型的密码更新操作，从标准输入提供密码；不依赖知道旧密码，也不在命令行参数、日志或 shell 历史暴露密码。同步失败必须报错，不得报告正常启动。整份 `.deployment/` 或数据库丢失仍须由一致性备份恢复，生成新密码不恢复业务数据。CVAT 服务令牌与 ClearML API 密钥分别遵循其自身协议，由部署流程自动取得并私下持久保存，已有有效凭据不被重复安装或启动替换；管理员密码字符串不能直接充当这些机器凭据。ClearML Agent 的独立凭据签发与分发留待 Agent 部署设计。
+固定 CVAT 管理员用户名为 `xxadmin`，其密码的唯一可读来源为 `.deployment/.xxxxx`，以明文 `0600` 保存。`install` 和 `start` 共用同一个缺失时随机生成、已存在则保持原样的辅助函数；两者均不打印密码。操作者可以在 `start` 前编辑该文件；每次 `start` 必须使 CVAT 中 `xxadmin` 的密码与文件内容一致，包括服务已运行时再次调用 `start`。因此单独丢失密码文件、但 CVAT 持久数据仍在时，下次 `start` 可以重新生成并同步密码，无需另设 `reset` 命令。同步通过就绪的 CVAT 容器内 Django 管理入口创建超级用户或调用用户模型的密码更新操作，从标准输入提供密码；不依赖知道旧密码，也不在命令行参数、日志或 shell 历史暴露密码。同步失败必须报错，不得报告正常启动。整份 `.deployment/` 或数据库丢失仍须由一致性备份恢复，生成新密码不恢复业务数据。CVAT 服务令牌与 ClearML API 密钥分别遵循其自身协议，由部署流程私下持久保存，已有有效凭据不被重复安装或启动替换；管理员密码字符串不能直接充当这些机器凭据。ClearML Agent 的独立凭据签发与分发留待 Agent 部署设计。
+
+新站点的 ClearML 平台服务身份由 `install` 随机生成一次 API access key 与 secret key，保存到私有的 `.deployment/platform.env`，已有完整凭据保持原样。配置生成步骤从该文件派生 `.deployment/clearml/config/secure.conf` 中 `secure.credentials` 的专用 `user` 身份，不把派生文件视为第二份可手工编辑的凭据来源；在 ClearML API 容器启动前缺失或过期的派生文件可从权威文件重建。固定镜像的 `BasicConfig` 在默认配置后读取已挂载的 `/opt/clearml/config/*.conf`，Mongo 初始化据此创建服务用户并将配置中的 key/secret 作为认证凭据。平台进程直接使用 `platform.env` 的同一对值；引导通过实际认证请求确认配置生效，不调用需要先登录的 `auth.create_credentials`，也不要求用户进入 ClearML Web 签发密钥。已有凭据格式不完整或与已运行的服务不一致时显式报错，不悄悄轮换。首次现场部署须验证该固定镜像中的配置身份可通过真实认证请求。
 
 `xxtrain serverctl` 注册 `install`、`start`、`stop`、`status` 和 `verify` 五个动作。尚未实现的动作以非零状态和诊断退出，不会报告成功；已有 `ensure_administrator` 只创建私有随机文件，尚未建立 CVAT 账号或同步密码。实施时将其改为供 `install`、`start` 共用的 `.deployment/.xxxxx` 创建入口，再由 `start` 执行 CVAT 账号创建或密码同步。`site_root` 通过 Git 查找 checkout 顶层，并拒绝 `.deployment` 目录符号链接及解析到 checkout 外的路径。
 
-生命周期由单个 `xxtrain-server.service` 管理：systemd 启动时先对 `xxtrain-server` Compose 项目执行 `up -d --no-build`，再运行受限时、可重复的内部引导，最后才在前台运行 checkout 的平台进程。内部引导等待 CVAT 数据库迁移完成且 Django 管理入口可用，并等待 ClearML API 满足实际凭据操作所需的就绪条件；容器仅处于 running 状态或健康端点返回 200 均不足以替代这些检查。引导期间创建或同步 CVAT 管理员并处理机器凭据，失败使 unit 启动失败，不对外宣告平台就绪。手动 `start` 与开机自启使用同一引导实现；如果 unit 已处于运行状态，`serverctl start` 仍须调用该实现以同步被修改的管理员密码，不能把 `systemctl start` 的空操作当成同步成功。停止后仅停止该项目的容器，容器没有独立重启策略。`install` 重复执行锁定依赖同步、拉取外部镜像并构建本地镜像；拉取时忽略可本地构建的 Compose 服务，随后由 checkout 构建这些镜像。它创建或校正 CVAT UID 1000、Kvrocks UID 999 和 Elasticsearch UID 1000/GID 0 所需的六个 `.deployment/` bind 目录，拒绝目录符号链接或路径解析逃逸后才运行特权 `chown`、`chmod`，不递归更改目录内容；当前实现仅创建缺失的 `.deployment/platform.env` 私有空文件。目标实现还自动生成缺失的 `workspace.json`、`training.json` 和 `.xxxxx`，已有文件保持原样，`install` 不启动服务。已有环境文件若在 Linux 上允许组或其他用户读取则报错且保持原字节。非交互式 SSH shell 必须将既有 uv 安装目录加入该次命令的 `PATH`，因为 `install` 内部还会调用 `uv sync`；uv cache 与托管 Python 安装目录位于 `.deployment/`。Linux 的 `install` 默认通过特权命令注册单元并重载 systemd；Windows 的假运行器测试不注册单元。`install` 和 `start` 拒绝配置文件符号链接解析到 checkout 之外。`stop` 停止并取消启用状态；无论停止命令是否失败均尝试取消启用。
+生命周期由单个 `xxtrain-server.service` 管理：systemd 启动时先确认本地凭据和由其派生的 ClearML 私有配置，再对 `xxtrain-server` Compose 项目执行 `up -d --no-build`，随后运行受限时、可重复的内部引导，最后才在前台运行 checkout 的平台进程。内部引导等待 CVAT 数据库迁移完成且 Django 管理入口可用，并等待 ClearML API 接受所配置的服务身份；容器仅处于 running 状态或健康端点返回 200 均不足以替代这些检查。引导期间创建或同步 CVAT 管理员并取得 CVAT 服务令牌，失败使 unit 启动失败，不对外宣告平台就绪；前台平台进程须读取引导完成后的 `platform.env`，不能沿用引导前的凭据环境。手动 `start` 与开机自启使用同一引导实现，并保证新建的私有文件由现场操作用户读取；如果 unit 已处于运行状态，`serverctl start` 仍须调用该实现以同步被修改的管理员密码，不能把 `systemctl start` 的空操作当成同步成功。停止后仅停止该项目的容器，容器没有独立重启策略。`install` 重复执行锁定依赖同步、拉取外部镜像并构建本地镜像；拉取时忽略可本地构建的 Compose 服务，随后由 checkout 构建这些镜像。它创建或校正 CVAT UID 1000、Kvrocks UID 999 和 Elasticsearch UID 1000/GID 0 所需的六个 `.deployment/` bind 目录，拒绝目录符号链接或路径解析逃逸后才运行特权 `chown`、`chmod`，不递归更改目录内容；当前实现仅创建缺失的 `.deployment/platform.env` 私有空文件。目标实现还自动生成缺失的 `workspace.json`、`training.json` 和 `.xxxxx`，已有文件保持原样，`install` 不启动服务。已有环境文件若在 Linux 上允许组或其他用户读取则报错且保持原字节。非交互式 SSH shell 必须将既有 uv 安装目录加入该次命令的 `PATH`，因为 `install` 内部还会调用 `uv sync`；uv cache 与托管 Python 安装目录位于 `.deployment/`。Linux 的 `install` 默认通过特权命令注册单元并重载 systemd；Windows 的假运行器测试不注册单元。`install` 和 `start` 拒绝配置文件符号链接解析到 checkout 之外。`stop` 停止并取消启用状态；无论停止命令是否失败均尝试取消启用。
 
-服务端操作步骤属于独立的零起点部署指南；[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续拥有业务数据组织、主机与 Agent 的数据关系及后续方向。本次只实现服务端部署文档与运行验证。ClearML Agent 安装和 GPU 训练验收属于另一份后续文档，不以单机 Agent 成功冒充服务端验收。
+无人值守运行 `install/start/stop` 的目标用户须预先获准执行各动作需要的特权命令；命令在改动现场前以非交互方式检查权限，不在中途等待 sudo 密码。部署流程不修改 `/home/lxx/xxtest` 外的授权配置。服务端操作步骤属于独立的零起点部署指南；[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续拥有业务数据组织、主机与 Agent 的数据关系及后续方向。本次只实现服务端部署文档与运行验证。ClearML Agent 安装和 GPU 训练验收属于另一份后续文档，不以单机 Agent 成功冒充服务端验收。
 
 ## Verification and recovery
 
@@ -32,7 +34,7 @@ ClearML SDK 环境显式设置 `CLEARML_API_HOST`、`CLEARML_WEB_HOST` 和 `CLEA
 
 会话子请求只通过 CVAT `current_user` 确认浏览器会话，不检查现场所有者；缺少或失效的会话返回 401，CVAT 后端失败返回 502。代理禁止外部直接请求子请求路径；宿主机 loopback 上可直接访问平台，但无法绕过 CVAT 代理进入其内容。`status` 查询完整 Git 哈希、工作树、systemd 状态及编排内各容器运行与健康信息，缺失容器不显示为健康。`verify` 检查公开平台页面、未登录 CVAT 拒绝、CVAT 内部健康及三个公开 ClearML 入口，任一失败返回非零；离线模拟不能证明真实浏览器登录或两个用户的 CVAT 权限隔离。
 
-现有焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖 CLI 保持既有子命令、动作注册与退出码、Git 根发现、部署目录边界及旧文件首次创建和保留。完整入口与配置测试还必须覆盖无人工输入的首次及重复 `install/start/stop`、手动和开机启动共用引导、后端未就绪时有界等待及失败、运行中修改密码后再次 `start`、共享文件创建函数、文件单独丢失后的恢复、凭据保持、启用与取消自启、无外部持久挂载、版本显示、脏工作树拒绝切换，以及代理未登录拒绝和登录后 CVAT 内置双用户数据隔离。实现代码在本地提交后同步到测试机；在 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证、停止及恢复，并记录系统服务和浏览器现场问题及解决步骤。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，使用 Git 选择已取得的旧提交、`uv sync --locked` 和正常启动入口恢复；不得以额外源码副本或新发布目录回避失败。
+现有焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖 CLI 保持既有子命令、动作注册与退出码、Git 根发现、部署目录边界及旧文件首次创建和保留。完整入口与配置测试还必须覆盖无人工输入的首次及重复 `install/start/stop`、手动和开机启动共用引导、后端未就绪时有界等待及失败、运行中修改密码后再次 `start`、共享文件创建函数、文件单独丢失后的恢复、ClearML 配置凭据持久且可认证、启用与取消自启、无外部持久挂载、版本显示、脏工作树拒绝切换，以及代理未登录拒绝和登录后 CVAT 内置双用户数据隔离。实现代码在本地提交后同步到测试机；在 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证、停止及恢复，并记录系统服务和浏览器现场问题及解决步骤。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，核对失败位置与备份，不以额外源码副本或新发布目录回避失败。
 
 ## Alternatives considered
 
@@ -47,15 +49,15 @@ ClearML SDK 环境显式设置 `CLEARML_API_HOST`、`CLEARML_WEB_HOST` 和 `CLEA
 ## Acceptance criteria
 
 - 测试机仅在 `/home/lxx/xxtest` 内放置源码和 `.deployment/` 现场数据；平台注册 systemd 单元是经批准的唯一目录外窄例外，无需修改其他目录或维护第二份源码。
-- 从仓库零起点文档可明确选择远端提交、执行 `install/start/status/verify/stop`、复启和升级；兼容数据库格式时可切回旧提交，不兼容时只能恢复与旧提交匹配的一致性数据备份。`install` 后无人工账号或密钥初始化，目录、脚本、已安装依赖及当前版本无需猜测。
+- 从仓库零起点文档可明确选择远端提交、执行 `install/start/status/verify/stop`、复启和升级；`install` 后无人工账号或密钥初始化，目录、脚本、已安装依赖及当前版本无需猜测。
 - 重复安装和启停不轮换已有机器凭据、配置或持久数据；`start` 使 CVAT 管理员密码与私有文件一致，启动启用自启，停止取消自启；实际服务健康且只有代理暴露需要的入口。
 - 未登录不能浏览 CVAT 数据；两个已登录用户各自只能访问其 CVAT 权限允许的内容；ClearML Server 可由服务端访问并为以后多 Agent 提供入口，其独立对外端口只供受控网络使用。
 - 实际部署问题与解决方法进入服务端指南，服务端验证结果与尚未执行的 Agent/GPU 验收明确区分。
 
 ## Risks
 
-零起点指南需要足够空间同时覆盖发布修订、自动准备配置与凭据、备份、启停、验证和数据库兼容恢复，因此 `docs/cookbook/server-deployment.md` 的文档预算设为 1900 词。CVAT Personal Access Token 使用 `Bearer`，不能代替当前适配器发送的 `Token` 密钥；自动登录所得服务令牌需要按实际协议核验。ClearML API 密钥签发需要经过其服务端的认证或首次引导机制，不能假设匿名请求可签发；实施前须针对固定镜像验证无需人工交互的可行路径。现场验收仍需验证登录和双用户权限，不能把匿名 `verify` 当作已登录验收。配置文件符号链接只受 checkout 边界检查，不强制目标在 `.deployment/` 内，现场数据归属仍由操作规程约束。
+零起点指南需要足够空间同时覆盖发布修订、自动准备配置与凭据、备份、启停和验证，因此 `docs/cookbook/server-deployment.md` 的文档预算设为 1900 词。CVAT Personal Access Token 使用 `Bearer`，不能代替当前适配器发送的 `Token` 密钥；自动登录所得服务令牌需要按实际协议核验。ClearML 私有配置可从平台环境文件重建，但实际认证失败时不能尝试匿名签发新密钥或继续启动；固定镜像的配置路径须由首次真实部署的认证请求验收。现场验收仍需验证登录和双用户权限，不能把匿名 `verify` 当作已登录验收。配置文件符号链接只受 checkout 边界检查，不强制目标在 `.deployment/` 内，现场数据归属仍由操作规程约束。
 
-- 单一可变 checkout 在切换提交时需要短暂停机；未提交改动必须先在本地处理，远端脏工作树不能强行覆盖。Git 切换不恢复 SQLite、CVAT 或 ClearML 数据库格式；版本兼容性和一致性备份须在升级或降级前核对，不承诺自动识别迁移或自动快照。
+- 单一可变 checkout 在升级时需要短暂停机；未提交改动必须先在本地处理，远端脏工作树不能强行覆盖。Git 切换不恢复 SQLite、CVAT 或 ClearML 数据库格式；升级前应准备一致性备份，部署流程不自动快照。
 - `.deployment/` 与源码同处 checkout，整目录误删会同时删除权威数据；部署命令禁止执行删除 checkout 或清理 Git 忽略文件，备份和恢复责任须在指南中明确。
 - 明文管理员密码必须限制文件权限与读取人群；文件丢失后的自动同步不替代 `.deployment/` 数据备份。代理登录门槛不替代 CVAT 的任务权限或公网 TLS。目标是受控测试机和局域网部署，公网安全入口需单独设计。

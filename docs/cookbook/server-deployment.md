@@ -128,9 +128,9 @@ PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PY
 
 The post-stop status reports an inactive/disabled unit and is expected to exit nonzero; `stop` never removes `.deployment/`. Compose containers have no independent boot restart policy. To resume, run `start`, `status` and `verify` again.
 
-## Test a branch, upgrade or downgrade
+## Test a branch or upgrade
 
-Arrange downtime and a consistent `.deployment/` backup. Check the target version's database schema/migration compatibility and its recovery path before a downgrade: switching Git commits does not undo SQLite, CVAT or ClearML database migrations. Stop services, check `git status --porcelain` is empty (ignored `.deployment/` remains), fetch, choose the reviewed published revision and record its exact SHA. Do not force-switch a dirty checkout or assume a local branch tracks the intended published commit.
+Arrange downtime and a consistent `.deployment/` backup before upgrading. Switching Git commits does not undo SQLite, CVAT or ClearML database migrations. Stop services, check `git status --porcelain` is empty (ignored `.deployment/` remains), fetch, choose the reviewed published revision and record its exact SHA. Do not force-switch a dirty checkout or assume a local branch tracks the intended published commit.
 
 ```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl stop
@@ -145,4 +145,4 @@ PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PY
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl verify
 ```
 
-For rollback, stop and select the previously recorded, already fetched full SHA instead of `origin/<reviewed-branch>`, then repeat sync, install, start, status and verify. Restore the matching consistent data backup when schema compatibility requires it; never treat Git rollback alone as database rollback. Keep all configuration and data in the original `.deployment/` throughout. The same procedure tests a published feature branch in this one checkout. Server verification is separate from later ClearML Agent and GPU acceptance.
+Keep all configuration and data in the original `.deployment/` throughout. The same procedure tests a published feature branch in this one checkout. Server verification is separate from later ClearML Agent and GPU acceptance.
