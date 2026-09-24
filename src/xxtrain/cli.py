@@ -2,6 +2,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from xxtrain.serverctl import main as serverctl_main
 from xxtrain.training import export, review, train
 
 
@@ -21,6 +22,9 @@ def _build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument('--weights', type=Path, required=True)
     review_parser.add_argument('--directory', type=Path, required=True)
     review_parser.add_argument('--unlabeled', action='store_true')
+
+    server_parser = subparsers.add_parser('serverctl')
+    server_parser.add_argument('action', choices=('install', 'start', 'stop', 'status', 'verify'))
     return parser
 
 
@@ -30,5 +34,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         train(args.scenario)
     elif args.command == 'export':
         export(args.scenario, args.weights)
-    else:
+    elif args.command == 'review':
         review(args.scenario, args.weights, args.directory, args.unlabeled)
+    else:
+        raise SystemExit(serverctl_main(args.action))

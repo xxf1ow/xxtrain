@@ -1,0 +1,16 @@
+[Unit]
+Description=xxtrain annotation and training server
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{ROOT}}
+ExecStart="{{ROOT}}/.venv/bin/python" -m xxtrain.serverctl foreground
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

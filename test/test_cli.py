@@ -8,6 +8,13 @@ from xxtrain.cli import main
 
 
 class CliTest(unittest.TestCase):
+    def test_serverctl_status_dispatches_and_propagates_failure(self) -> None:
+        with patch('xxtrain.cli.serverctl_main', return_value=1, create=True) as controller:
+            with self.assertRaises(SystemExit) as raised:
+                main(['serverctl', 'status'])
+        controller.assert_called_once_with('status')
+        self.assertEqual(raised.exception.code, 1)
+
     @patch('xxtrain.cli.train')
     def test_train_dispatches_scenario(self, train) -> None:
         main(['train', 'data/standard-detect/standard_detect.py'])
