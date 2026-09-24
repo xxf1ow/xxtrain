@@ -254,7 +254,7 @@ class ServerLifecycleTests(unittest.TestCase):
         self.assertTrue(all(not kwargs.get('input') for _, kwargs in migration_calls))
         self.assertNotIn('edited-password', output.getvalue())
 
-    def test_bootstrap_syncs_admin_and_persists_authenticated_identities(self):
+    def test_bootstrap_uses_default_workspace_labels_and_preserves_existing_workspace(self):
         calls = []
 
         def run(args, **kwargs):
@@ -319,20 +319,33 @@ class ServerLifecycleTests(unittest.TestCase):
             serverctl.bootstrap(self.root, timeout=5)
             saved_credentials = (self.root / '.deployment/platform.env').read_bytes()
             serverctl.bootstrap(self.root, timeout=5)
+            workspace = json.loads((self.root / '.deployment/workspace.json').read_text())
+            self.assertEqual(workspace['workspace_id'], 'xxtrain')
+            self.assertEqual(workspace['display_name'], 'xxtrain')
+            self.assertEqual(workspace['owner_user_id'], 17)
+            self.assertEqual(saved_credentials, (self.root / '.deployment/platform.env').read_bytes())
+            workspace_path = self.root / '.deployment/workspace.json'
+            workspace_path.write_bytes(
+                b'{"workspace_id":"operator-workspace","display_name":"Reviewed workspace",'
+                b'"owner_user_id":17,"workspace_dir":"workspace","runtime_dir":"training-shared/runtime",'
+                b'"cvat_internal_url":"http://127.0.0.1:18080"}'
+            )
+            saved_workspace = workspace_path.read_bytes()
+            saved_credentials = (self.root / '.deployment/platform.env').read_bytes()
+            serverctl.bootstrap(self.root, timeout=5)
+            self.assertEqual(workspace_path.read_bytes(), saved_workspace)
+            self.assertEqual((self.root / '.deployment/platform.env').read_bytes(), saved_credentials)
         self.assertEqual((self.root / '.deployment/.xxxxx').read_text(), 'edited-password\n')
         values = serverctl._platform_environment(self.root / '.deployment/platform.env')
         self.assertEqual(values['CLEARML_API_ACCESS_KEY'], 'access')
         self.assertEqual(values['CLEARML_API_SECRET_KEY'], 'secret')
         self.assertEqual(values['XXTRAIN_CVAT_SERVICE_TOKEN'], 'cvat-token')
         self.assertTrue((self.root / '.deployment/workspace.json').is_file())
-        workspace = json.loads((self.root / '.deployment/workspace.json').read_text())
-        self.assertEqual(workspace['owner_user_id'], 17)
         if os.name == 'posix':
             self.assertEqual((self.root / '.deployment/platform.env').stat().st_mode & 0o777, 0o600)
         self.assertNotEqual(saved, saved_credentials)
-        self.assertEqual(saved_credentials, (self.root / '.deployment/platform.env').read_bytes())
         self.assertEqual(Client.logins, 1)
-        self.assertEqual(sum('shell' in args and kwargs.get('input') == 'edited-password' for args, kwargs in calls), 2)
+        self.assertEqual(sum('shell' in args and kwargs.get('input') == 'edited-password' for args, kwargs in calls), 3)
         self.assertFalse(any('edited-password' in ' '.join(args) for args, _ in calls))
 
     def test_start_stop_status_verify_and_unit_share_the_lifecycle_contract(self):
