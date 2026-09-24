@@ -24,14 +24,23 @@ def _build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument('--unlabeled', action='store_true')
 
     serverctl_parser = subparsers.add_parser('serverctl')
-    serverctl_parser.add_argument('action', choices=('install', 'start', 'stop', 'status', 'verify'))
+    serverctl_parser.add_argument(
+        'action',
+        choices=('install', 'start', 'stop', 'status', 'verify', 'prepare', 'bootstrap', 'foreground'),
+        metavar='{install,start,stop,status,verify}',
+    )
+    serverctl_parser.add_argument('--timeout', type=float, default=120, help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     if args.command == 'serverctl':
-        status = serverctl.main(args.action)
+        status = (
+            serverctl.main(args.action, timeout=args.timeout)
+            if args.action == 'bootstrap'
+            else serverctl.main(args.action)
+        )
         if status:
             raise SystemExit(status)
     elif args.command == 'train':

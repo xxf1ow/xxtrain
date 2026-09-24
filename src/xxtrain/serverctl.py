@@ -1,3 +1,5 @@
+import base64
+import getpass
 import json
 import os
 import re
@@ -5,11 +7,12 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from subprocess import CompletedProcess
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from xxtrain.platform.training_config import load_training_config
 
@@ -19,7 +22,7 @@ _CLEARML_ENDPOINTS = {
     'CLEARML_WEB_HOST': 'http://127.0.0.1:18084',
     'CLEARML_FILES_HOST': 'http://127.0.0.1:18082',
 }
-_OWNED_ENV_KEYS = set(_CLEARML_KEYS) | set(_CLEARML_ENDPOINTS)
+_OWNED_ENV_KEYS = set(_CLEARML_KEYS) | set(_CLEARML_ENDPOINTS) | {'XXTRAIN_CVAT_SERVICE_TOKEN'}
 _ENV_ASSIGNMENT = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
 
 
@@ -219,6 +222,177 @@ def _check_private_env(path: Path) -> None:
         raise ValueError('.deployment/platform.env must have mode 0600; run chmod 600 .deployment/platform.env')
 
 
+def _http_json(
+    request: Callable[..., object],
+    url: str,
+    *,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5,
+) -> dict:
+    with request(Request(url, data=data, headers=headers or {}), timeout=timeout) as response:
+        value = json.load(response)
+    if not isinstance(value, dict):
+        raise ValueError('service returned an invalid JSON object')
+    return value
+
+
+def bootstrap(
+    root: Path,
+    *,
+    run: Callable[..., CompletedProcess] = subprocess.run,
+    request: Callable[..., object] = urlopen,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout: float = 120,
+) -> None:
+    """Synchronize service identity and create a missing workspace within a bounded readiness window."""
+    root = site_root(root)
+    if timeout <= 0:
+        raise ValueError('bootstrap timeout must be positive')
+    env_file = _check_deployment_file(root, 'platform.env')
+    password_file = _check_deployment_file(root, '.xxxxx')
+    workspace_file = _check_deployment_file(root, 'workspace.json')
+    _check_private_env(env_file)
+    if sys.platform == 'linux' and password_file.stat().st_mode & 0o077:
+        raise ValueError('.deployment/.xxxxx must have mode 0600')
+    lines, values = _platform_environment(env_file)
+    access, secret = (values.get(name) for name in _CLEARML_KEYS)
+    if not access or not secret:
+        raise ValueError('.deployment/platform.env requires complete ClearML credentials')
+    base = [*_compose(root), 'exec', '-T', 'cvat_server', 'python', 'manage.py']
+    deadline = monotonic() + timeout
+
+    def remaining() -> float:
+        left = deadline - monotonic()
+        if left <= 0:
+            raise ValueError('bootstrap deadline exceeded')
+        return left
+
+    while True:
+        if monotonic() >= deadline:
+            raise ValueError('CVAT Django migrations did not become ready before bootstrap deadline')
+        try:
+            run(
+                [*base, 'migrate', '--check'],
+                cwd=root,
+                env=_environment(root),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=remaining(),
+            )
+            break
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if monotonic() >= deadline:
+                raise ValueError('CVAT Django migrations did not become ready before bootstrap deadline') from None
+            sleep(min(1, max(0, deadline - monotonic())))
+
+    script = (
+        'import sys; from django.contrib.auth import get_user_model; '
+        'model=get_user_model(); user,_=model.objects.get_or_create('
+        'username="xxadmin", defaults={"email":"xxadmin@localhost"}); '
+        'user.is_staff=True; user.is_superuser=True; '
+        'user.set_password(sys.stdin.readline().rstrip("\\n")); user.save()'
+    )
+    try:
+        run(
+            [*base, 'shell', '-c', script],
+            cwd=root,
+            env=_environment(root),
+            check=True,
+            input=password_file.read_text(encoding='utf-8'),
+            text=True,
+            capture_output=True,
+            timeout=remaining(),
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise ValueError('CVAT administrator synchronization failed') from None
+
+    cvat_url = 'http://127.0.0.1:18080'
+    token = values.get('XXTRAIN_CVAT_SERVICE_TOKEN')
+    user = None
+    if token:
+        try:
+            user = _http_json(
+                request,
+                cvat_url + '/api/users/self',
+                headers={'Authorization': 'Token ' + token},
+                timeout=min(5, remaining()),
+            )
+        except HTTPError as exc:
+            if exc.code not in (401, 403):
+                raise ValueError('CVAT identity lookup failed') from None
+        except (OSError, URLError, ValueError):
+            raise ValueError('CVAT identity lookup failed') from None
+    if user is None:
+        try:
+            login = _http_json(
+                request,
+                cvat_url + '/api/auth/login',
+                data=json.dumps(
+                    {'username': 'xxadmin', 'password': password_file.read_text(encoding='utf-8').rstrip('\n')}
+                ).encode(),
+                headers={'Content-Type': 'application/json'},
+                timeout=min(5, remaining()),
+            )
+            issued = login['key']
+            if not isinstance(issued, str) or not issued:
+                raise ValueError('missing token')
+            user = _http_json(
+                request,
+                cvat_url + '/api/users/self',
+                headers={'Authorization': 'Token ' + issued},
+                timeout=min(5, remaining()),
+            )
+        except (HTTPError, OSError, URLError, ValueError, KeyError):
+            raise ValueError('CVAT service login or identity lookup failed') from None
+        token = issued
+    identity = user.get('id')
+    if isinstance(identity, bool) or not isinstance(identity, int) or identity <= 0:
+        raise ValueError('CVAT identity must have a positive user ID')
+
+    authorization = base64.b64encode(f'{access}:{secret}'.encode()).decode('ascii')
+    while True:
+        try:
+            authenticated = _http_json(
+                request,
+                'http://127.0.0.1:18083/auth.login',
+                headers={'Authorization': 'Basic ' + authorization},
+                timeout=min(5, remaining()),
+            )
+        except HTTPError:
+            raise ValueError('ClearML rejected configured service credentials') from None
+        except (OSError, URLError):
+            if monotonic() >= deadline:
+                raise ValueError('ClearML API did not become ready before bootstrap deadline') from None
+            sleep(min(1, max(0, deadline - monotonic())))
+            continue
+        except (ValueError, AttributeError):
+            raise ValueError('ClearML rejected configured service credentials') from None
+        if authenticated.get('meta', {}).get('result_code') != 200 or not authenticated.get('data', {}).get('token'):
+            raise ValueError('ClearML rejected configured service credentials')
+        break
+
+    if token != values.get('XXTRAIN_CVAT_SERVICE_TOKEN'):
+        content = ''.join(line for line in lines if not line.startswith('XXTRAIN_CVAT_SERVICE_TOKEN='))
+        if content and not content.endswith(('\n', '\r')):
+            content += '\n'
+        content += f'XXTRAIN_CVAT_SERVICE_TOKEN={token}\n'
+        _write_private_file(env_file, content.encode('utf-8'))
+    if not workspace_file.exists():
+        payload = {
+            'workspace_id': 'point-site-01',
+            'display_name': '一号现场',
+            'owner_user_id': identity,
+            'workspace_dir': 'workspace',
+            'runtime_dir': 'runtime',
+            'cvat_internal_url': cvat_url,
+            'task_entry': 'xxtrain.business_tasks.point:point_task_definition',
+        }
+        _write_private_file(workspace_file, (json.dumps(payload, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
+
+
 def _prepare_writable_directories(root: Path, run: Callable[..., CompletedProcess]) -> None:
     deployment = root / '.deployment'
     directories = (
@@ -258,7 +432,7 @@ def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -
     _run([*_compose(root), 'build'], root, run, env)
     if sys.platform == 'linux':
         template = (root / 'deploy/server/xxtrain-server.service').read_text(encoding='utf-8')
-        unit = template.replace('{{ROOT}}', str(root))
+        unit = template.replace('{{ROOT}}', str(root)).replace('{{USER}}', getpass.getuser())
         run(
             ['sudo', 'install', '-m', '0644', '/dev/stdin', '/etc/systemd/system/xxtrain-server.service'],
             cwd=root,
@@ -273,13 +447,44 @@ def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -
 def start(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Prepare local configuration, then enable and start the site."""
     root = site_root(root)
-    workspace_file = _check_deployment_file(root, 'workspace.json')
     _prepare_local_configuration(root)
-    if not workspace_file.is_file():
-        raise ValueError('missing .deployment/workspace.json; create the workspace configuration before start')
     env = _environment(root)
+    was_active = run(['systemctl', 'is-active', '--quiet', 'xxtrain-server.service'], cwd=root, env=env, check=False)
     _run(['sudo', 'systemctl', 'enable', 'xxtrain-server.service'], root, run, env)
     _run(['sudo', 'systemctl', 'start', 'xxtrain-server.service'], root, run, env)
+    if was_active is not None and was_active.returncode == 0:
+        try:
+            bootstrap(root, run=run)
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            _run(['sudo', 'systemctl', 'stop', 'xxtrain-server.service'], root, run, env)
+            raise
+
+
+def foreground(root: Path) -> None:
+    """Replace this process with the platform using post-bootstrap private configuration."""
+    root = site_root(root)
+    env_file = _check_deployment_file(root, 'platform.env')
+    _check_private_env(env_file)
+    _, values = _platform_environment(env_file)
+    required = (*_CLEARML_KEYS, *_CLEARML_ENDPOINTS, 'XXTRAIN_CVAT_SERVICE_TOKEN')
+    if any(not values.get(name) for name in required):
+        raise ValueError('.deployment/platform.env is missing post-bootstrap service configuration')
+    binary = root / '.venv/bin/xxtrain-platform'
+    os.execve(
+        str(binary),
+        [
+            str(binary),
+            '--config',
+            str(root / '.deployment/workspace.json'),
+            '--training-config',
+            str(root / '.deployment/training.json'),
+            '--host',
+            '127.0.0.1',
+            '--port',
+            '18001',
+        ],
+        dict(_environment(root), **{name: values[name] for name in required}),
+    )
 
 
 def stop(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
@@ -376,14 +581,25 @@ def verify(root: Path, request: Callable[..., object] = urlopen) -> bool:
     return success
 
 
-def main(command: str, *, root: Path | None = None) -> int:
+def main(command: str, *, root: Path | None = None, timeout: float = 120) -> int:
     """Run the selected server lifecycle operation or diagnose unavailable actions."""
-    if command in ('install', 'start', 'stop', 'status', 'verify'):
+    if command in ('install', 'start', 'stop', 'status', 'verify', 'prepare', 'bootstrap', 'foreground'):
         try:
-            operation = {'install': install, 'start': start, 'stop': stop, 'status': status, 'verify': verify}[command]
-            result = operation(site_root(root))
+            operation = {
+                'install': install,
+                'start': start,
+                'stop': stop,
+                'status': status,
+                'verify': verify,
+                'prepare': _prepare_local_configuration,
+                'bootstrap': bootstrap,
+                'foreground': foreground,
+            }[command]
+            result = (
+                operation(site_root(root), timeout=timeout) if command == 'bootstrap' else operation(site_root(root))
+            )
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            print(f'serverctl {command}: {exc}', file=sys.stderr)
+            print(f'serverctl {command}: {exc if isinstance(exc, ValueError) else type(exc).__name__}', file=sys.stderr)
             return 1
         return 0 if result is not False else 1
     print(f'serverctl {command} is not implemented yet', file=sys.stderr)

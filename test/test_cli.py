@@ -56,6 +56,14 @@ class CliTest(unittest.TestCase):
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             main(['serverctl', 'restart'])
 
+    @patch('xxtrain.serverctl.main', return_value=0)
+    def test_internal_bootstrap_accepts_deadline_without_public_help_listing(self, control) -> None:
+        main(['serverctl', 'bootstrap', '--timeout', '12'])
+        control.assert_called_once_with('bootstrap', timeout=12)
+        with patch('sys.stdout', new_callable=StringIO) as output, self.assertRaises(SystemExit):
+            main(['serverctl', '--help'])
+        self.assertNotIn('bootstrap', output.getvalue())
+
     def test_required_subcommand_and_arguments_are_enforced(self) -> None:
         invalid_arguments = [
             [],

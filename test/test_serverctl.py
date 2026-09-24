@@ -16,6 +16,276 @@ from xxtrain.platform.training_config import load_training_config
 from xxtrain.serverctl import compose_files, ensure_administrator, install, main, site_root, start, status, stop, verify
 
 
+class BootstrapTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        self.deployment = self.root / '.deployment'
+        self.deployment.mkdir()
+        (self.deployment / '.xxxxx').write_text('private-password\n', encoding='utf-8')
+        (self.deployment / 'platform.env').write_text(
+            'CLEARML_API_ACCESS_KEY=access\nCLEARML_API_SECRET_KEY=secret\n', encoding='utf-8'
+        )
+        if os.name != 'nt':
+            os.chmod(self.deployment / '.xxxxx', 0o600)
+            os.chmod(self.deployment / 'platform.env', 0o600)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_bootstrap_waits_for_migrations_and_uses_actual_cvat_identity(self) -> None:
+        from xxtrain.serverctl import bootstrap
+
+        commands = []
+        clock = [0.0]
+
+        def run(args, **kwargs):
+            commands.append((args, kwargs))
+            if len(commands) == 1:
+                raise subprocess.CalledProcessError(1, args)
+            return subprocess.CompletedProcess(args, 0)
+
+        class Response:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        requests = []
+
+        def request(req, timeout=5):
+            requests.append(req)
+            if req.full_url.endswith('/api/auth/login'):
+                return Response({'key': 'issued-key'})
+            if req.full_url.endswith('/api/users/self'):
+                return Response({'id': 89})
+            return Response({'meta': {'result_code': 200}, 'data': {'token': 'jwt'}})
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            bootstrap(self.root, run=run, request=request, monotonic=lambda: clock[0], sleep=sleep, timeout=8)
+        self.assertGreaterEqual(len(commands), 3)
+        self.assertTrue(all('private-password' not in ' '.join(args) for args, _ in commands))
+        self.assertEqual('private-password\n', commands[-1][1]['input'])
+        self.assertIn('xxadmin', ' '.join(commands[-1][0]))
+        self.assertEqual(
+            89, json.loads((self.deployment / 'workspace.json').read_text(encoding='utf-8'))['owner_user_id']
+        )
+        self.assertIn('XXTRAIN_CVAT_SERVICE_TOKEN=issued-key\n', (self.deployment / 'platform.env').read_text())
+        self.assertEqual('Token issued-key', requests[-2].get_header('Authorization'))
+
+    def test_bootstrap_timeout_does_not_print_password(self) -> None:
+        from xxtrain.serverctl import bootstrap
+
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            with self.assertRaisesRegex(ValueError, 'CVAT') as error:
+                bootstrap(
+                    self.root,
+                    run=lambda args, **kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, args)),
+                    monotonic=lambda: clock[0],
+                    sleep=sleep,
+                    timeout=2,
+                )
+        self.assertNotIn('private-password', str(error.exception))
+        self.assertFalse((self.deployment / 'workspace.json').exists())
+
+    def test_valid_stored_token_and_existing_workspace_survive_bootstrap(self) -> None:
+        from xxtrain.serverctl import bootstrap
+
+        env_file = self.deployment / 'platform.env'
+        original_env = env_file.read_bytes() + b'XXTRAIN_CVAT_SERVICE_TOKEN=stable\n'
+        env_file.write_bytes(original_env)
+        workspace = self.deployment / 'workspace.json'
+        workspace.write_bytes(b'{ "preserved": true }\n')
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def request(req, timeout=5):
+            if req.full_url.endswith('/api/users/self'):
+                self.assertEqual('Token stable', req.get_header('Authorization'))
+                return Response({'id': 17})
+            self.assertTrue(req.full_url.endswith('/auth.login'))
+            self.assertTrue(req.get_header('Authorization').startswith('Basic '))
+            return Response({'meta': {'result_code': 200}, 'data': {'token': 'jwt'}})
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            bootstrap(self.root, run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0), request=request)
+        self.assertEqual(original_env, env_file.read_bytes())
+        self.assertEqual(b'{ "preserved": true }\n', workspace.read_bytes())
+
+    def test_clearml_anonymous_response_cannot_authenticate_and_token_is_not_saved(self) -> None:
+        from xxtrain.serverctl import bootstrap
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def request(req, timeout=5):
+            if req.full_url.endswith('/api/auth/login'):
+                return Response({'key': 'unsaved'})
+            if req.full_url.endswith('/api/users/self'):
+                return Response({'id': 7})
+            return Response({'meta': {'result_code': 200}, 'data': {}})
+
+        original = (self.deployment / 'platform.env').read_bytes()
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            with self.assertRaisesRegex(ValueError, 'ClearML'):
+                bootstrap(self.root, run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0), request=request)
+        self.assertEqual(original, (self.deployment / 'platform.env').read_bytes())
+        self.assertFalse((self.deployment / 'workspace.json').exists())
+
+    def test_clearml_api_unavailable_is_retried_within_deadline(self) -> None:
+        from xxtrain.serverctl import bootstrap
+
+        clock = [0.0]
+        attempts = [0]
+        (self.deployment / 'platform.env').write_bytes(
+            (self.deployment / 'platform.env').read_bytes() + b'XXTRAIN_CVAT_SERVICE_TOKEN=stable\n'
+        )
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def request(req, timeout=5):
+            if req.full_url.endswith('/api/users/self'):
+                return Response({'id': 7})
+            attempts[0] += 1
+            if attempts[0] == 1:
+                raise OSError('not ready')
+            return Response({'meta': {'result_code': 200}, 'data': {'token': 'jwt'}})
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            bootstrap(
+                self.root,
+                run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0),
+                request=request,
+                monotonic=lambda: clock[0],
+                sleep=sleep,
+                timeout=3,
+            )
+        self.assertEqual(2, attempts[0])
+
+    def test_clearml_rejected_key_secret_fails_without_retry(self) -> None:
+        from urllib.error import HTTPError
+
+        from xxtrain.serverctl import bootstrap
+
+        (self.deployment / 'platform.env').write_bytes(
+            (self.deployment / 'platform.env').read_bytes() + b'XXTRAIN_CVAT_SERVICE_TOKEN=stable\n'
+        )
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return b'{"id": 7}'
+
+        attempts = []
+
+        def request(req, timeout=5):
+            if req.full_url.endswith('/api/users/self'):
+                return Response()
+            attempts.append(req.get_header('Authorization'))
+            raise HTTPError(req.full_url, 401, 'wrong credentials', {}, None)
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            with self.assertRaisesRegex(ValueError, 'ClearML') as failure:
+                bootstrap(self.root, run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0), request=request)
+        self.assertEqual(1, len(attempts))
+        self.assertTrue(attempts[0].startswith('Basic '))
+        self.assertNotIn('secret', str(failure.exception))
+
+    def test_rejected_stored_token_is_replaced_only_after_login_and_authentication(self) -> None:
+        from urllib.error import HTTPError
+
+        from xxtrain.serverctl import bootstrap
+
+        env_file = self.deployment / 'platform.env'
+        env_file.write_bytes(env_file.read_bytes() + b'XXTRAIN_CVAT_SERVICE_TOKEN=expired\n')
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def request(req, timeout=5):
+            if req.full_url.endswith('/api/users/self'):
+                if req.get_header('Authorization') == 'Token expired':
+                    raise HTTPError(req.full_url, 401, 'invalid', {}, None)
+                self.assertEqual('Token fresh', req.get_header('Authorization'))
+                return Response({'id': 15})
+            if req.full_url.endswith('/api/auth/login'):
+                return Response({'key': 'fresh'})
+            return Response({'meta': {'result_code': 200}, 'data': {'token': 'jwt'}})
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            bootstrap(self.root, run=lambda args, **kwargs: subprocess.CompletedProcess(args, 0), request=request)
+        self.assertEqual(1, env_file.read_text(encoding='utf-8').count('XXTRAIN_CVAT_SERVICE_TOKEN='))
+        self.assertIn('XXTRAIN_CVAT_SERVICE_TOKEN=fresh\n', env_file.read_text(encoding='utf-8'))
+
+
 class ServerctlTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -188,6 +458,7 @@ class ServerctlTest(unittest.TestCase):
         self.assertTrue('changed-secret' in regenerated)
         self.assertEqual(
             [
+                ['systemctl', 'is-active', '--quiet', 'xxtrain-server.service'],
                 ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'],
                 ['sudo', 'systemctl', 'start', 'xxtrain-server.service'],
             ]
@@ -249,15 +520,13 @@ class ServerctlTest(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(args[0] == 'sudo' for args in calls))
 
-    def test_start_prepares_local_configuration_but_requires_workspace_file(self) -> None:
+    def test_start_prepares_local_configuration_before_unit_bootstrap_creates_workspace(self) -> None:
         calls = []
         with patch('xxtrain.serverctl.site_root', return_value=self.root):
-            with self.assertRaisesRegex(ValueError, 'workspace.json'):
-                start(self.root, lambda args, **kwargs: calls.append(args))
-            (self.root / '.deployment/workspace.json').write_text('{}', encoding='utf-8')
             start(self.root, lambda args, **kwargs: calls.append(args))
         self.assertEqual(
             [
+                ['systemctl', 'is-active', '--quiet', 'xxtrain-server.service'],
                 ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'],
                 ['sudo', 'systemctl', 'start', 'xxtrain-server.service'],
             ],
@@ -265,6 +534,7 @@ class ServerctlTest(unittest.TestCase):
         )
         self.assertTrue((self.root / '.deployment/training.json').is_file())
         self.assertTrue((self.root / '.deployment/.xxxxx').is_file())
+        self.assertFalse((self.root / '.deployment/workspace.json').exists())
 
     def test_start_and_stop_repeat_without_replacing_secret(self) -> None:
         deployment = self.root / '.deployment'
@@ -287,6 +557,7 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual('operator-secret\n', secret.read_text(encoding='utf-8'))
         self.assertEqual(
             [
+                ['systemctl', 'is-active', '--quiet', 'xxtrain-server.service'],
                 ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'],
                 ['sudo', 'systemctl', 'start', 'xxtrain-server.service'],
             ]
@@ -316,6 +587,55 @@ class ServerctlTest(unittest.TestCase):
         )
         self.assertEqual(f'WorkingDirectory={self.root}\n', calls[-2][1]['input'])
         self.assertEqual(['sudo', 'systemctl', 'daemon-reload'], calls[-1][0])
+
+    def test_installed_unit_orders_private_prepare_compose_bootstrap_and_foreground(self) -> None:
+        actual = Path(__file__).resolve().parents[1] / 'deploy/server/xxtrain-server.service'
+        destination = self.root / 'deploy/server/xxtrain-server.service'
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(actual.read_bytes())
+        calls = []
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl.sys.platform', 'linux'),
+            patch('xxtrain.serverctl._check_private_env'),
+            patch('xxtrain.serverctl.getpass.getuser', return_value='site-operator'),
+        ):
+            install(self.root, lambda args, **kwargs: calls.append((args, kwargs)))
+        unit = calls[-2][1]['input']
+        lines = unit.splitlines()
+        self.assertIn('User=site-operator', lines)
+        self.assertLess(
+            next(i for i, line in enumerate(lines) if 'serverctl prepare' in line),
+            next(i for i, line in enumerate(lines) if 'up -d --no-build' in line),
+        )
+        self.assertLess(
+            next(i for i, line in enumerate(lines) if 'up -d --no-build' in line),
+            next(i for i, line in enumerate(lines) if 'serverctl bootstrap --timeout 120' in line),
+        )
+        self.assertLess(
+            next(i for i, line in enumerate(lines) if 'serverctl bootstrap' in line),
+            next(i for i, line in enumerate(lines) if 'serverctl foreground' in line),
+        )
+        self.assertNotIn('EnvironmentFile=', unit)
+        self.assertIn('ExecStopPost=/usr/bin/docker compose', unit)
+
+    def test_active_start_repeats_password_synchronization(self) -> None:
+        calls = []
+        secret = self.root / '.deployment/.xxxxx'
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(args, 0)
+
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl.bootstrap') as synchronize,
+        ):
+            start(self.root, run)
+            secret.write_text('edited\n', encoding='utf-8')
+            start(self.root, run)
+        self.assertEqual(2, synchronize.call_count)
+        self.assertEqual('edited\n', secret.read_text(encoding='utf-8'))
 
     def test_install_rejects_existing_permissive_env_without_changing_contents(self) -> None:
         deployment = self.root / '.deployment'

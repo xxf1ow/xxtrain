@@ -7,10 +7,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory={{ROOT}}
+User={{USER}}
 Environment=XXTRAIN_SITE_ROOT={{ROOT}}/.deployment
-EnvironmentFile={{ROOT}}/.deployment/platform.env
+TimeoutStartSec=180
+ExecStartPre={{ROOT}}/.venv/bin/xxtrain serverctl prepare
 ExecStartPre=/usr/bin/docker compose -p xxtrain-server -f {{ROOT}}/deploy/server/compose.yaml up -d --no-build
-ExecStart={{ROOT}}/.venv/bin/xxtrain-platform --config {{ROOT}}/.deployment/workspace.json --training-config {{ROOT}}/.deployment/training.json --host 127.0.0.1 --port 18001
+ExecStartPre={{ROOT}}/.venv/bin/xxtrain serverctl bootstrap --timeout 120
+ExecStart={{ROOT}}/.venv/bin/xxtrain serverctl foreground
 ExecStopPost=/usr/bin/docker compose -p xxtrain-server -f {{ROOT}}/deploy/server/compose.yaml stop
 Restart=on-failure
 RestartSec=5
