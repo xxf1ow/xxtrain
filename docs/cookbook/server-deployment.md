@@ -1,148 +1,82 @@
 # Deploy the xxtrain server
 
-This tutorial starts with a clean Linux host and ends with a running xxtrain platform, CVAT and ClearML Server. It does not install or test a ClearML Agent or prove GPU training. Use a controlled host or LAN: these HTTP listeners do not provide public-network TLS.
+This tutorial takes a clean Linux host to a running xxtrain platform, CVAT and ClearML Server using one Git checkout. It does not install or validate a ClearML Agent or GPU training. Use a controlled LAN: ClearML's external API, files and web ports do not provide a public-network security boundary.
 
 ## Prerequisites and published revision
 
-Install and enable Docker with Compose v2, and provide an existing `uv`, Git, SSH access to `git@github.com:xxf1ow/xxtrain.git`, and permission to register a systemd unit through `sudo`. The operator must be able to run Docker. Reserve ports 8080, 8008, 8081 and 8082; ensure the host can pull the pinned images listed in [server versions](../../deploy/server/versions.md). The target directory is `/home/lxx/xxtest/xxtrain`; `.deployment/` beneath it owns all application configuration and persistent data. Docker image/container storage and `/etc/systemd/system/xxtrain-server.service` are the runtime exceptions.
+Provide Git, SSH access to `git@github.com:xxf1ow/xxtrain.git`, Docker with Compose v2, an existing `uv`, and a user allowed to run Docker and the required `sudo` commands non-interactively. `install`, `start` and `stop` check privilege before changing site state; configure authorization beforehand. The process does not modify sudo policy. Reserve ports 8080, 8008, 8081 and 8082, and allow access to the pinned images in [server versions](../../deploy/server/versions.md).
 
-Develop and test changes locally, commit them, and obtain human review and explicit approval before publishing the branch. Do not edit or commit source on the host. Choose a published `origin` branch or tag and record its full revision; `origin/master` is only an example, not a claim that it contains the latest reviewed change:
+The checkout is `/home/lxx/xxtest/xxtrain`; its ignored `.deployment/` directory is the only site configuration and application-data directory. The systemd unit and Docker's own image/container storage are runtime exceptions. Develop and test locally, commit, obtain human review and approval, and publish before deploying: the host only consumes a revision already present on `origin`. Choose the reviewed remote branch or tag; do not assume a fixed branch is current.
 
 ```sh
 git clone git@github.com:xxf1ow/xxtrain.git /home/lxx/xxtest/xxtrain
 cd /home/lxx/xxtest/xxtrain
 git fetch origin
-git switch --detach origin/master
+git switch --detach origin/<reviewed-branch-or-tag>
 git rev-parse HEAD
 git status --porcelain
 ```
 
-Replace `origin/master` with the reviewed, published `origin/<branch>` when deploying a feature branch. The status output must be empty before switching versions. Never use `git clean`, delete the checkout, or create a second checkout to switch revisions. In noninteractive SSH commands, `uv` may be installed at `/home/lxx/.local/bin/uv` without that directory on `PATH`. Give the command and its child processes a `PATH` containing `/home/lxx/.local/bin`; `serverctl install` invokes `uv sync` itself, so calling the outer `uv` by absolute path alone is insufficient. Keep uv's cache and managed Python installations in `.deployment/`, and do not source or edit shell startup files:
+Record the full SHA. The status must be empty before switching revisions. Never use `git clean`, remove the checkout, edit or commit source on the host, or create another checkout to switch versions. For noninteractive SSH, include the existing uv installation directory in `PATH` because `install` itself calls uv. Keep uv's cache and managed Python under `.deployment/`; do not source shell startup files.
 
-## Prepare configuration
+## Prepare and start
 
-Run installation from this checkout. It synchronizes locked dependencies with both extras, prepares the CVAT, Kvrocks, and Elasticsearch writable bind directories for their pinned non-root image users, pulls Compose images, builds the custom CVAT UI, creates a private empty `.deployment/platform.env` only if absent, and registers/reloads the systemd unit on Linux. Directory preparation rejects symlinks and paths resolving outside `.deployment/`; it changes ownership and access bits on the six directories only, not their existing contents. Installation requires sudo for these ownership changes. It does not start services or generate either JSON file. Repeating it preserves existing configuration and persistent data; an existing env file readable by group/others causes an error until its permissions are corrected.
+The zero-start path is two commands from the checkout. `install` synchronizes locked dependencies, prepares the six writable bind directories, pulls pinned external images, builds the custom CVAT UI, creates missing private configuration and credentials, and registers/reloads the systemd unit. It does not start services. `start` enables and starts that unit; its bootstrap creates or synchronizes CVAT's `xxadmin` account, service token and first workspace configuration before the platform becomes ready.
 
 ```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl install
-chmod 600 .deployment/platform.env
-```
-
-On a new installation, bootstrap credentials before starting the platform. The checked-in Compose project can temporarily start its CVAT and ClearML services without invoking systemd; nginx serves ClearML while its platform route remains unavailable. Run from the checkout after `install`:
-
-```sh
-XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml up -d cvat_server clearml_webserver nginx
-XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml exec cvat_server bash -ic 'python3 ~/manage.py createsuperuser'
-```
-
-Enter a new CVAT superuser name, email and password at the prompt. Wait until CVAT responds on `127.0.0.1:18080`; do not publish this loopback backend. The [official CVAT installation instructions](https://docs.cvat.ai/docs/administration/community/basics/installation/) specify `createsuperuser`, and its [Auth API](https://docs.cvat.ai/docs/api_sdk/sdk/reference/apis/auth-api/) documents `POST /api/auth/login` returning a `Token` with a `key`. The platform uses `Authorization: Token <key>`; CVAT Personal Access Tokens use `Bearer` and do not satisfy that interface. This interactive command obtains the login token without putting the password or token in shell history, appends it to the private env file, and prints the user ID needed in `workspace.json`:
-
-```sh
-python3 - <<'PY'
-import getpass
-import json
-from pathlib import Path
-from urllib.request import Request, urlopen
-
-username = input('CVAT superuser name: ')
-password = getpass.getpass('CVAT password: ')
-root = 'http://127.0.0.1:18080'
-payload = json.dumps({'username': username, 'password': password}).encode()
-request = Request(root + '/api/auth/login', payload, {'Content-Type': 'application/json', 'Accept': 'application/vnd.cvat+json'})
-with urlopen(request) as response:
-    token = json.load(response)['key']
-request = Request(root + '/api/users/self', headers={'Authorization': 'Token ' + token, 'Accept': 'application/vnd.cvat+json'})
-with urlopen(request) as response:
-    print('CVAT owner_user_id:', json.load(response)['id'])
-with Path('.deployment/platform.env').open('a', encoding='utf-8') as env:
-    env.write('XXTRAIN_CVAT_SERVICE_TOKEN=' + token + '\n')
-PY
-```
-
-For a dedicated service identity, provision it in CVAT and repeat the same login-token operation for that account; the owner user ID must still identify the intended workspace owner. Avoid duplicate env assignments on repetition. Open `http://<host>:8082/settings/workspace-configuration` in a browser, select **Settings → Workspace → Create new credentials**, and copy the access and secret keys. These are the [official ClearML setup steps](https://clear.ml/docs/latest/docs/clearml_sdk/clearml_sdk_setup). Add the credentials and all three SDK service addresses to `.deployment/platform.env` with a private editor; do not commit or paste credentials into shell history. The platform process uses the host-loopback Compose mappings below, not the public nginx ports. Omitting any endpoint is a startup error because the ClearML SDK otherwise falls back to ClearML Cloud.
-
-```dotenv
-CLEARML_API_ACCESS_KEY=<access-key>
-CLEARML_API_SECRET_KEY=<secret-key>
-CLEARML_API_HOST=http://127.0.0.1:18083
-CLEARML_WEB_HOST=http://127.0.0.1:18084
-CLEARML_FILES_HOST=http://127.0.0.1:18082
-```
-
-Keep this file at `0600`. The unit reads it at startup; Compose receives `XXTRAIN_SITE_ROOT` from the unit and `serverctl`, not from this file. After credentials and endpoint addresses exist, stop only this temporary Compose project; `serverctl start` then takes over the full set:
-
-```sh
-XXTRAIN_SITE_ROOT="$PWD/.deployment" docker compose -p xxtrain-server -f deploy/server/compose.yaml stop
-```
-
-Create `.deployment/workspace.json` with the following exact keys (optional `task_entry` defaults to the Point definition). Replace the positive `owner_user_id` with the real CVAT user ID, and choose an identity and display name for the site. Relative paths resolve from `.deployment/`; keep every path used for application data beneath that directory.
-
-```json
-{
-  "workspace_id": "site",
-  "display_name": "Site",
-  "owner_user_id": 1,
-  "workspace_dir": "workspace",
-  "runtime_dir": "runtime",
-  "cvat_internal_url": "http://127.0.0.1:18080"
-}
-```
-
-Replace the example `owner_user_id` with the ID printed during bootstrap. Create `.deployment/training.json` with its exact six keys. The `project` and `queue` are ClearML names you administer; `worker_script` is the deployed worker file, not a data directory. Verify that file exists at the selected revision. `runtime/cache` must lie under `shared_root`; `metadata_dir` must remain outside the disposable workspace runtime. Change these example paths together if your site layout differs.
-
-```json
-{
-  "project": "xxtrain",
-  "queue": "default",
-  "shared_root": "runtime",
-  "metadata_dir": "metadata",
-  "worker_script": "../src/xxtrain/integrations/clearml/worker.py",
-  "run_root": "runs"
-}
-```
-
-Check `worker_script` against the actual checkout before starting; do not assume this example file path is valid for every revision. The configuration loaders require non-empty strings, a positive integer user ID, and exactly these keys. `start` requires all three files and rejects configuration symlinks resolving outside the checkout, but does not require the targets to remain within `.deployment/`; operators must keep every data path there. Protect the JSON files and back up `.deployment/` securely, including `workspace/`, `runtime/`, `metadata/`, `runs/`, `cvat/`, `clearml/`, the administrator file and credentials. SQLite and backend database directories are authoritative; runtime caches are reconstructible, but do not discard them during an upgrade. Coordinate a consistent backup with services stopped.
-
-## Start and verify
-
-```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl start
+```
+
+On success, `install` exits zero without starting the unit, and `start` exits zero only after the service bootstrap succeeds. Repeating either command preserves existing credentials and JSON. `install` generates `.deployment/training.json`; the first successful `start` generates `.deployment/workspace.json` using CVAT's actual user ID. The latter cannot be prepared earlier because that ID comes from the running CVAT service.
+
+The administrator is always `xxadmin`. Its password is stored as readable plaintext in `.deployment/.xxxxx`, mode `0600`; anyone who can read that file can log in as the administrator. Protect the host account and include the file in a restricted, consistent `.deployment/` backup. `.deployment/platform.env` holds ClearML keys and the CVAT service token and must also remain private (`0600`). ClearML's `secure.conf` is derived from the authoritative ClearML pair. Do not copy either secret to shell arguments, logs, tickets or source control.
+
+To choose the administrator password, create or edit `.deployment/.xxxxx` privately before `start`, preserving mode `0600`; every `start`, including one while the unit is already active, synchronizes CVAT to the file's current contents. This also converges a manual edit on the next start. Repetition does not rotate machine credentials. If `.xxxxx` alone is lost while CVAT data remains, `start` creates a replacement and synchronizes it; loss of `.deployment/` or its databases requires restoring the consistent backup and is not repaired by generating a new password.
+
+Back up all of `.deployment/` consistently before changes that could affect databases; stop services while taking a filesystem copy. Preserve SQLite, CVAT and ClearML databases and workspace data. Do not delete the directory or treat generated caches as a backup of authoritative data.
+
+## Observe and verify
+
+```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl status
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl verify
 ```
 
-`start` enables `xxtrain-server.service` for boot and starts it; subsequent starts do not replace credentials or data. On its first invocation it creates `.deployment/administrator` as a plaintext random key with mode `0600`, only when absent. If you need to supply your own key, create that file privately before the first start. Existing content and permissions remain unchanged on later starts; restrict readers, securely back it up and never commit it. There is no administrator web page promised by this deployment.
+`status` reports the full checkout SHA, worktree state, unit enabled/active state, and each Compose service's state and health. `verify` reports PASS/FAIL and HTTP observations for the platform entry, anonymous CVAT denial, loopback CVAT health and the three published ClearML listeners. Either exits nonzero on failure. A passing `verify` does not prove browser login, two-user CVAT isolation, Agent connectivity or GPU training.
 
-`status` prints the full checkout SHA, clean/dirty working-tree state, unit enabled/active status, configured services and each container's state/health. Inspect those observations after each operation; a missing, stopped or unhealthy container causes a nonzero status. `verify` prints PASS/FAIL and observed HTTP codes for the platform (`/platform/`), unauthenticated CVAT denial, the loopback CVAT backend, and ClearML API, files and web listeners. It exits nonzero if any probe fails; initial backend readiness may take time. For startup failures inspect `sudo systemctl status xxtrain-server.service` and `sudo journalctl -u xxtrain-server.service -n 100 --no-pager`, then rerun status and verify. A passing HTTP probe does not establish authenticated usability.
+Open `http://<host>:8080/platform/` and sign in with a CVAT user. Confirm that each user can access only the CVAT objects their CVAT permissions allow. CVAT pages and APIs pass through the same-origin proxy; do not expose the backend or xxtrain listener directly. ClearML's API, files and web interfaces are available at `http://<host>:8008/`, `http://<host>:8081/` and `http://<host>:8082/`. These ports are not protected by the CVAT session check; restrict them to a controlled LAN and never map them directly to the public internet.
 
-Open `http://<host>:8080/platform/`, log in using a CVAT user and confirm that the user can open only CVAT objects granted by CVAT itself. In a separate unauthenticated browser, CVAT content must redirect to platform login or reject API requests; never expose the CVAT backend or xxtrain port directly. The nginx proxy is the external entry for the same-origin platform and CVAT; only host-loopback binds serve the backends. ClearML listeners are `http://<host>:8008/` (API), `:8081/` (files) and `:8082/` (web). Control LAN access to all four external ports. Authenticated multi-user CVAT authorization needs explicit site acceptance; `verify` does not test it.
+If startup fails, inspect the specific unit and recent journal output, then compare `status` and `verify` observations:
 
-## Reconnect, reboot and stop
+```sh
+sudo systemctl status xxtrain-server.service
+sudo journalctl -u xxtrain-server.service -n 100 --no-pager
+```
 
-SSH disconnect does not stop the systemd unit. Reconnect in the same checkout and run `status` and `verify`; after a host reboot do the same and inspect `systemctl is-enabled xxtrain-server.service` and `systemctl is-active xxtrain-server.service`. `start` enables boot startup. To stop and disable it, including when already stopped:
+Correct the reported prerequisite or configuration problem and retry `start`. The service does not report ready when migrations, CVAT identity synchronization or authenticated ClearML bootstrap fails. Keep `.deployment/` and the selected checkout intact while diagnosing; do not start an alternate temporary Compose project.
+
+## Reboot and stop
+
+The unit starts on boot after `start` enables it. After reconnecting or rebooting, check `status` and `verify`; `systemctl is-enabled xxtrain-server.service` and `systemctl is-active xxtrain-server.service` expose the corresponding systemd states. To stop the service and disable boot startup:
 
 ```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl stop
-PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl status
 ```
 
-The post-stop status reports an inactive/disabled unit and is expected to exit nonzero; `stop` never removes `.deployment/`. Compose containers have no independent boot restart policy. To resume, run `start`, `status` and `verify` again.
+`stop` attempts to disable the unit even if stopping it fails. It does not delete `.deployment/`; containers have no independent boot-restart policy. A post-stop `status` is expected to report inactive/disabled and exit nonzero. Run `start` to resume.
 
-## Test a branch or upgrade
+## Test a published branch or upgrade
 
-Arrange downtime and a consistent `.deployment/` backup before upgrading. Switching Git commits does not undo SQLite, CVAT or ClearML database migrations. Stop services, check `git status --porcelain` is empty (ignored `.deployment/` remains), fetch, choose the reviewed published revision and record its exact SHA. Do not force-switch a dirty checkout or assume a local branch tracks the intended published commit.
+Arrange downtime and a consistent `.deployment/` backup first. Switching Git revisions does not reverse SQLite, CVAT or ClearML schema migrations; this procedure does not promise downgrade support. Stop the service, verify the worktree has no changes, fetch and select the reviewed published revision, then synchronize dependencies and run the same installation and start commands above. Inspect `status` and `verify` before returning the site to users.
 
 ```sh
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl stop
 git status --porcelain
 git fetch origin
-git switch --detach origin/<reviewed-branch>
+git switch --detach origin/<reviewed-branch-or-tag>
 git rev-parse HEAD
 PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv sync --locked --extra platform --extra clearml
-PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl install
-PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl start
-PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl status
-PATH="/home/lxx/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.deployment/uv-cache" UV_PYTHON_INSTALL_DIR="$PWD/.deployment/uv-python" uv run --locked --extra platform --extra clearml xxtrain serverctl verify
 ```
 
-Keep all configuration and data in the original `.deployment/` throughout. The same procedure tests a published feature branch in this one checkout. Server verification is separate from later ClearML Agent and GPU acceptance.
+Run the two commands in [Prepare and start](#prepare-and-start) from the same checkout after switching. Keep the original `.deployment/` throughout; do not force-switch a dirty worktree or infer the intended revision from a local branch name. The server procedure ends at server verification. Agent setup and GPU acceptance require their own procedure and evidence.

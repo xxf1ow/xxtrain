@@ -375,6 +375,71 @@ class ServerctlTest(unittest.TestCase):
         if os.name != 'nt':
             self.assertEqual(0o600, os.stat(self.root / '.deployment/clearml/config/secure.conf').st_mode & 0o777)
 
+    def test_lifecycle_actions_require_noninteractive_sudo_before_site_changes(self) -> None:
+        for action in (install, start, stop):
+            with self.subTest(action=action.__name__):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    calls = []
+
+                    def run(args, **kwargs):
+                        calls.append(args)
+                        result = subprocess.CompletedProcess(args, 1 if args == ['sudo', '-n', '-v'] else 0)
+                        if result.returncode and kwargs.get('check'):
+                            raise subprocess.CalledProcessError(result.returncode, args)
+                        return result
+
+                    with (
+                        patch('xxtrain.serverctl.site_root', return_value=root),
+                        patch('xxtrain.serverctl.sys.platform', 'linux'),
+                        patch('xxtrain.serverctl._check_private_env'),
+                        self.assertRaises(subprocess.CalledProcessError),
+                    ):
+                        action(root, run)
+
+                    self.assertEqual([['sudo', '-n', '-v']], calls)
+                    self.assertFalse((root / '.deployment').exists())
+
+    def test_cli_lifecycle_entry_runs_real_install_start_and_stop_controllers(self) -> None:
+        from xxtrain import serverctl
+        from xxtrain.cli import main as cli_main
+        from xxtrain.serverctl import install as controller_install
+        from xxtrain.serverctl import start as controller_start
+        from xxtrain.serverctl import stop as controller_stop
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls = []
+
+            def run(args, **kwargs):
+                calls.append(args)
+                if args[:4] == ['sudo', 'mkdir', '-p', '--']:
+                    Path(args[-1]).mkdir(parents=True, exist_ok=True)
+                if args[:3] == ['systemctl', 'is-active', '--quiet']:
+                    return subprocess.CompletedProcess(args, 3)
+                return subprocess.CompletedProcess(args, 0)
+
+            with (
+                patch('xxtrain.serverctl.site_root', return_value=root),
+                patch('xxtrain.serverctl.sys.platform', 'win32'),
+                patch.object(serverctl, 'install', side_effect=lambda path: controller_install(path, run)),
+                patch.object(serverctl, 'start', side_effect=lambda path: controller_start(path, run)),
+                patch.object(serverctl, 'stop', side_effect=lambda path: controller_stop(path, run)),
+            ):
+                for action in ('install', 'start', 'stop'):
+                    cli_main(['serverctl', action])
+
+            deployment = root / '.deployment'
+            self.assertTrue((deployment / '.xxxxx').is_file())
+            self.assertTrue((deployment / 'platform.env').is_file())
+            self.assertTrue((deployment / 'training.json').is_file())
+            self.assertFalse((deployment / 'workspace.json').exists())
+            self.assertFalse(any('up' in args for args in calls))
+            self.assertIn(['sudo', 'systemctl', 'enable', 'xxtrain-server.service'], calls)
+            self.assertIn(['sudo', 'systemctl', 'start', 'xxtrain-server.service'], calls)
+            self.assertIn(['sudo', 'systemctl', 'stop', 'xxtrain-server.service'], calls)
+            self.assertIn(['sudo', 'systemctl', 'disable', 'xxtrain-server.service'], calls)
+
     def test_install_rejects_partial_clearml_pair_without_changing_environment(self) -> None:
         deployment = self.root / '.deployment'
         deployment.mkdir()
@@ -637,6 +702,28 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual(2, synchronize.call_count)
         self.assertEqual('edited\n', secret.read_text(encoding='utf-8'))
 
+    def test_cli_start_propagates_bootstrap_failure_and_stops_active_unit(self) -> None:
+        from xxtrain.cli import main as cli_main
+        from xxtrain.serverctl import start as controller_start
+
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0)
+
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl._prepare_local_configuration'),
+            patch('xxtrain.serverctl.start', side_effect=lambda root: controller_start(root, run)),
+            patch('xxtrain.serverctl.bootstrap', side_effect=ValueError('CVAT not ready')),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            cli_main(['serverctl', 'start'])
+
+        self.assertEqual(1, raised.exception.code)
+        self.assertIn(['sudo', 'systemctl', 'stop', 'xxtrain-server.service'], calls)
+
     def test_install_rejects_existing_permissive_env_without_changing_contents(self) -> None:
         deployment = self.root / '.deployment'
         deployment.mkdir()
@@ -651,7 +738,7 @@ class ServerctlTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r'platform.env.*0600'):
                 install(self.root, lambda args, **kwargs: calls.append(args))
         self.assertEqual('API_SECRET=keep\n', env_file.read_text(encoding='utf-8'))
-        self.assertEqual([], calls)
+        self.assertEqual([['sudo', '-n', '-v']], calls)
 
     def test_start_rejects_env_symlink_escaping_checkout(self) -> None:
         deployment = self.root / '.deployment'

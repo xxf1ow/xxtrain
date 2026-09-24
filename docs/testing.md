@@ -28,6 +28,12 @@
 python -m unittest test.test_pipeline_core -v
 ```
 
+服务端入口、生命周期、凭据引导和部署目录回归覆盖 CLI 与 controller；服务端行为变更运行：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v
+```
+
 运行完整 suite：
 
 ```powershell

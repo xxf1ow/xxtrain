@@ -56,6 +56,14 @@ class CliTest(unittest.TestCase):
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             main(['serverctl', 'restart'])
 
+    def test_serverctl_lifecycle_actions_reach_controller_entry(self) -> None:
+        from xxtrain import serverctl
+
+        for action, operation in (('install', 'install'), ('start', 'start'), ('stop', 'stop')):
+            with self.subTest(action=action), patch.object(serverctl, operation) as controller:
+                main(['serverctl', action])
+            controller.assert_called_once()
+
     @patch('xxtrain.serverctl.main', return_value=0)
     def test_internal_bootstrap_accepts_deadline_without_public_help_listing(self, control) -> None:
         main(['serverctl', 'bootstrap', '--timeout', '12'])
