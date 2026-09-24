@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import yaml
 
+from xxtrain.platform.training_config import load_training_config
 from xxtrain.serverctl import compose_files, ensure_administrator, install, main, site_root, start, status, stop, verify
 
 
@@ -24,7 +25,7 @@ class ServerctlTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def test_install_is_repeatable_and_does_not_start_services(self) -> None:
+    def test_install_prepares_local_configuration_once_without_starting_services(self) -> None:
         calls = []
 
         def run(args, **kwargs):
@@ -32,12 +33,27 @@ class ServerctlTest(unittest.TestCase):
             if args[:4] == ['sudo', 'mkdir', '-p', '--']:
                 Path(args[-1]).mkdir(parents=True, exist_ok=True)
 
+        (self.root / '.deployment').mkdir()
+        env_file = self.root / '.deployment/platform.env'
+        env_file.write_text('OPERATOR_SECRET=kept\nXXTRAIN_CVAT_SERVICE_TOKEN=preserve-me\n', encoding='utf-8')
+        if os.name != 'nt':
+            os.chmod(env_file, 0o600)
         with patch('xxtrain.serverctl.site_root', return_value=self.root):
             install(self.root, run)
-            env_file = self.root / '.deployment/platform.env'
-            env_file.write_text('OPERATOR_SECRET=kept\n', encoding='utf-8')
+            original = {
+                path.relative_to(self.root / '.deployment').as_posix(): path.read_bytes()
+                for path in (self.root / '.deployment').rglob('*')
+                if path.is_file()
+            }
             install(self.root, run)
-        self.assertEqual('OPERATOR_SECRET=kept\n', env_file.read_text(encoding='utf-8'))
+        self.assertEqual(
+            original,
+            {
+                path.relative_to(self.root / '.deployment').as_posix(): path.read_bytes()
+                for path in (self.root / '.deployment').rglob('*')
+                if path.is_file()
+            },
+        )
         expected = [
             ['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'],
             [
@@ -57,8 +73,95 @@ class ServerctlTest(unittest.TestCase):
         self.assertTrue(
             all(kwargs['env']['XXTRAIN_SITE_ROOT'] == str(self.root / '.deployment') for _, kwargs in calls)
         )
-        self.assertFalse((self.root / '.deployment/administrator').exists())
+        self.assertTrue((self.root / '.deployment/.xxxxx').is_file())
         self.assertFalse((self.root / '.deployment/workspace.json').exists())
+        training_path = self.root / '.deployment/training.json'
+        self.assertEqual(6, len(json.loads(training_path.read_text(encoding='utf-8'))))
+        training = load_training_config(training_path)
+        self.assertTrue(training.shared_root.is_relative_to((self.root / '.deployment').resolve()))
+        self.assertTrue(training.metadata_dir.is_relative_to((self.root / '.deployment').resolve()))
+        self.assertTrue(training.run_root.is_relative_to((self.root / '.deployment').resolve()))
+        self.assertEqual((self.root / 'src/xxtrain/integrations/clearml/worker.py').resolve(), training.worker_script)
+        if os.name != 'nt':
+            self.assertEqual(0o600, os.stat(self.root / '.deployment/.xxxxx').st_mode & 0o777)
+        env = dict(line.split('=', 1) for line in env_file.read_text(encoding='utf-8').splitlines())
+        self.assertEqual(
+            {
+                'CLEARML_API_HOST': 'http://127.0.0.1:18083',
+                'CLEARML_WEB_HOST': 'http://127.0.0.1:18084',
+                'CLEARML_FILES_HOST': 'http://127.0.0.1:18082',
+            },
+            {name: env[name] for name in ('CLEARML_API_HOST', 'CLEARML_WEB_HOST', 'CLEARML_FILES_HOST')},
+        )
+        self.assertTrue(env['CLEARML_API_ACCESS_KEY'])
+        self.assertTrue(env['CLEARML_API_SECRET_KEY'])
+        self.assertTrue(env['CLEARML_API_ACCESS_KEY'] != env['CLEARML_API_SECRET_KEY'])
+        self.assertEqual('preserve-me', env['XXTRAIN_CVAT_SERVICE_TOKEN'])
+        self.assertFalse(any('up' in args or ('systemctl' in args and 'start' in args) for args, _ in calls))
+        secure = (self.root / '.deployment/clearml/config/secure.conf').read_text(encoding='utf-8')
+        self.assertIn('      user {', secure)
+        self.assertTrue(env['CLEARML_API_ACCESS_KEY'] in secure)
+        self.assertTrue(env['CLEARML_API_SECRET_KEY'] in secure)
+        if os.name != 'nt':
+            self.assertEqual(0o600, os.stat(self.root / '.deployment/clearml/config/secure.conf').st_mode & 0o777)
+
+    def test_install_rejects_partial_clearml_pair_without_changing_environment(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        env_file = deployment / 'platform.env'
+        original = b'CLEARML_API_ACCESS_KEY=existing-key\nKEEP=value\n'
+        env_file.write_bytes(original)
+        calls = []
+
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl.sys.platform', 'win32'),
+        ):
+            with self.assertRaisesRegex(ValueError, 'CLEARML_API_SECRET_KEY'):
+                install(self.root, lambda args, **kwargs: calls.append(args))
+
+        self.assertEqual(original, env_file.read_bytes())
+        self.assertEqual([], calls)
+
+    def test_start_regenerates_clearml_derivative_from_authoritative_pair(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        (deployment / 'workspace.json').write_text('{}', encoding='utf-8')
+        env_file = deployment / 'platform.env'
+        env_file.write_text('CLEARML_API_ACCESS_KEY=first-key\nCLEARML_API_SECRET_KEY=first-secret\n', encoding='utf-8')
+        if os.name != 'nt':
+            os.chmod(env_file, 0o600)
+        calls = []
+
+        expected_pair = ('first-key', 'first-secret')
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[-2:] == ['systemctl', 'start']:
+                configured = (deployment / 'clearml/config/secure.conf').read_text(encoding='utf-8')
+                self.assertTrue(expected_pair[0] in configured and expected_pair[1] in configured)
+
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            start(self.root, run)
+            first_secure = (deployment / 'clearml/config/secure.conf').read_bytes()
+            env_file.write_text(
+                'CLEARML_API_ACCESS_KEY=changed-key\nCLEARML_API_SECRET_KEY=changed-secret\n', encoding='utf-8'
+            )
+            expected_pair = ('changed-key', 'changed-secret')
+            start(self.root, run)
+
+        regenerated = (deployment / 'clearml/config/secure.conf').read_text(encoding='utf-8')
+        self.assertTrue(first_secure != regenerated.encode())
+        self.assertTrue('changed-key' in regenerated)
+        self.assertTrue('changed-secret' in regenerated)
+        self.assertEqual(
+            [
+                ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'],
+                ['sudo', 'systemctl', 'start', 'xxtrain-server.service'],
+            ]
+            * 2,
+            calls,
+        )
 
     def test_install_prepares_only_pinned_non_root_bind_directories_idempotently(self) -> None:
         deployment = self.root / '.deployment'
@@ -114,25 +217,35 @@ class ServerctlTest(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(args[0] == 'sudo' for args in calls))
 
-    def test_start_requires_operator_configs_before_secret_or_service_calls(self) -> None:
+    def test_start_prepares_local_configuration_but_requires_workspace_file(self) -> None:
         calls = []
         with patch('xxtrain.serverctl.site_root', return_value=self.root):
             with self.assertRaisesRegex(ValueError, 'workspace.json'):
                 start(self.root, lambda args, **kwargs: calls.append(args))
-            (self.root / '.deployment/workspace.json').parent.mkdir()
             (self.root / '.deployment/workspace.json').write_text('{}', encoding='utf-8')
-            with self.assertRaisesRegex(ValueError, 'training.json'):
-                start(self.root, lambda args, **kwargs: calls.append(args))
-        self.assertFalse(calls)
-        self.assertFalse((self.root / '.deployment/administrator').exists())
+            start(self.root, lambda args, **kwargs: calls.append(args))
+        self.assertEqual(
+            [
+                ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'],
+                ['sudo', 'systemctl', 'start', 'xxtrain-server.service'],
+            ],
+            calls,
+        )
+        self.assertTrue((self.root / '.deployment/training.json').is_file())
+        self.assertTrue((self.root / '.deployment/.xxxxx').is_file())
 
     def test_start_and_stop_repeat_without_replacing_secret(self) -> None:
         deployment = self.root / '.deployment'
         deployment.mkdir()
-        for name in ('workspace.json', 'training.json', 'platform.env'):
-            (deployment / name).write_text('operator-owned', encoding='utf-8')
-        secret = deployment / 'administrator'
+        (deployment / 'workspace.json').write_text('{}', encoding='utf-8')
+        (deployment / 'platform.env').write_text(
+            'CLEARML_API_ACCESS_KEY=access\nCLEARML_API_SECRET_KEY=secret\n', encoding='utf-8'
+        )
+        secret = deployment / '.xxxxx'
         secret.write_text('operator-secret\n', encoding='utf-8')
+        if os.name != 'nt':
+            os.chmod(deployment / 'platform.env', 0o600)
+            os.chmod(secret, 0o600)
         calls = []
         with patch('xxtrain.serverctl.site_root', return_value=self.root):
             for _ in range(2):
@@ -163,6 +276,7 @@ class ServerctlTest(unittest.TestCase):
             patch('xxtrain.serverctl.site_root', return_value=self.root),
             patch.dict(os.environ, {'XXTRAIN_INSTALL_SYSTEMD': '0'}),
             patch('xxtrain.serverctl.sys.platform', 'linux'),
+            patch('xxtrain.serverctl._check_private_env'),
         ):
             install(self.root, lambda args, **kwargs: calls.append((args, kwargs)))
         self.assertEqual(
@@ -202,7 +316,8 @@ class ServerctlTest(unittest.TestCase):
         finally:
             outside.unlink()
         self.assertEqual([], calls)
-        self.assertFalse((deployment / 'administrator').exists())
+        self.assertFalse((deployment / '.xxxxx').exists())
+        self.assertFalse((deployment / 'clearml').exists())
 
     def test_install_rejects_env_symlink_escaping_checkout(self) -> None:
         deployment = self.root / '.deployment'
@@ -217,6 +332,7 @@ class ServerctlTest(unittest.TestCase):
         finally:
             outside.unlink()
         self.assertEqual([], calls)
+        self.assertEqual(['platform.env'], [path.name for path in deployment.iterdir()])
 
     def test_site_root_returns_git_top_level(self) -> None:
         nested = self.root / 'nested'
@@ -246,9 +362,11 @@ class ServerctlTest(unittest.TestCase):
             site_root(self.root)
 
     def test_existing_administrator_secret_is_never_replaced(self) -> None:
-        path = self.root / '.deployment' / 'administrator'
+        path = self.root / '.deployment' / '.xxxxx'
         path.parent.mkdir()
         path.write_text('operator-chosen-secret\n', encoding='utf-8')
+        if os.name != 'nt':
+            os.chmod(path, 0o600)
         original_mode = os.stat(path).st_mode & 0o777
 
         self.assertEqual(path, ensure_administrator(self.root))
@@ -268,7 +386,7 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual(first_mode, os.stat(path).st_mode & 0o777)
 
     def test_secret_file_failure_does_not_delete_replacement_file(self) -> None:
-        path = self.root / '.deployment' / 'administrator'
+        path = self.root / '.deployment' / '.xxxxx'
 
         def replace_then_fail(descriptor: int, *_args: str, **_kwargs: str) -> None:
             os.close(descriptor)

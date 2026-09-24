@@ -1,13 +1,26 @@
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from subprocess import CompletedProcess
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+
+from xxtrain.platform.training_config import load_training_config
+
+_CLEARML_KEYS = ('CLEARML_API_ACCESS_KEY', 'CLEARML_API_SECRET_KEY')
+_CLEARML_ENDPOINTS = {
+    'CLEARML_API_HOST': 'http://127.0.0.1:18083',
+    'CLEARML_WEB_HOST': 'http://127.0.0.1:18084',
+    'CLEARML_FILES_HOST': 'http://127.0.0.1:18082',
+}
+_OWNED_ENV_KEYS = set(_CLEARML_KEYS) | set(_CLEARML_ENDPOINTS)
+_ENV_ASSIGNMENT = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
 
 
 def site_root(root: Path | None = None) -> Path:
@@ -36,11 +49,13 @@ def compose_files(root: Path) -> tuple[Path, ...]:
 def ensure_administrator(root: Path) -> Path:
     """Create a private administrator secret only when the file is absent."""
     checkout = site_root(root)
-    path = checkout / '.deployment' / 'administrator'
+    path = _check_deployment_file(checkout, '.xxxxx')
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
+        if sys.platform == 'linux' and path.stat().st_mode & 0o077:
+            raise ValueError('.deployment/.xxxxx must have mode 0600; run chmod 600 .deployment/.xxxxx')
         return path
 
     with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
@@ -66,6 +81,135 @@ def _check_deployment_file(root: Path, name: str) -> Path:
     if not path.resolve().is_relative_to(root):
         raise ValueError(f'.deployment/{name} resolves outside the Git checkout')
     return path
+
+
+def _write_private_file(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _platform_environment(path: Path) -> tuple[list[str], dict[str, str]]:
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+    except UnicodeDecodeError as exc:
+        raise ValueError('.deployment/platform.env must be UTF-8') from exc
+    values: dict[str, str] = {}
+    for line in lines:
+        raw_line = line.rstrip('\r\n')
+        assignment = _ENV_ASSIGNMENT.fullmatch(raw_line)
+        if assignment is None:
+            if any(re.match(rf'^\s*(?:export\s+)?{re.escape(name)}(?:\s|$|:|=)', raw_line) for name in _OWNED_ENV_KEYS):
+                raise ValueError('.deployment/platform.env contains an invalid owned assignment')
+            continue
+        name, value = assignment.groups()
+        if name in _OWNED_ENV_KEYS:
+            if name in values:
+                raise ValueError(f'.deployment/platform.env contains duplicate {name}')
+            if not value or value != value.strip() or any(char in value for char in '\'"\\'):
+                raise ValueError(f'.deployment/platform.env contains an invalid {name}')
+            values[name] = value
+    return lines, values
+
+
+def _training_configuration(root: Path) -> bytes:
+    payload = {
+        'project': 'xxtrain',
+        'queue': 'training',
+        'shared_root': 'workspace',
+        'metadata_dir': 'clearml/metadata',
+        'worker_script': str(root / 'src/xxtrain/integrations/clearml/worker.py'),
+        'run_root': 'clearml/runs',
+    }
+    content = (json.dumps(payload, indent=2) + '\n').encode('utf-8')
+    path = root / '.deployment/training.json'
+    descriptor, temporary_name = tempfile.mkstemp(prefix='.training-config-', dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content)
+        load_training_config(temporary)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return content
+
+
+def _secure_configuration(access_key: str, secret_key: str) -> bytes:
+    return (
+        'secure {\n'
+        '  credentials {\n'
+        '    users {\n'
+        '      user {\n'
+        f'        username: {json.dumps(access_key)}\n'
+        f'        password: {json.dumps(secret_key)}\n'
+        '      }\n'
+        '    }\n'
+        '  }\n'
+        '}\n'
+    ).encode()
+
+
+def _prepare_local_configuration(root: Path) -> None:
+    """Create missing private configuration and derive ClearML credentials under .deployment."""
+    checkout = site_root(root)
+    deployment = checkout / '.deployment'
+    paths = (
+        _check_deployment_file(checkout, 'platform.env'),
+        _check_deployment_file(checkout, '.xxxxx'),
+        _check_deployment_file(checkout, 'training.json'),
+        _check_deployment_file(checkout, 'clearml/config/secure.conf'),
+    )
+    deployment.mkdir(parents=True, exist_ok=True)
+    env_file, _, training_file, secure_file = paths
+    try:
+        descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        _check_private_env(env_file)
+    else:
+        os.close(descriptor)
+
+    ensure_administrator(checkout)
+    if training_file.exists():
+        load_training_config(training_file)
+    else:
+        _write_private_file(training_file, _training_configuration(checkout))
+
+    lines, values = _platform_environment(env_file)
+    access_key, secret_key = (values.get(name) for name in _CLEARML_KEYS)
+    if bool(access_key) != bool(secret_key):
+        missing = _CLEARML_KEYS[0] if access_key is None else _CLEARML_KEYS[1]
+        raise ValueError(f'.deployment/platform.env must contain both ClearML keys; missing {missing}')
+    additions: dict[str, str] = {}
+    if access_key is None:
+        access_key = secrets.token_urlsafe(32)
+        secret_key = secrets.token_urlsafe(48)
+        additions.update(zip(_CLEARML_KEYS, (access_key, secret_key), strict=True))
+    for name, endpoint in _CLEARML_ENDPOINTS.items():
+        configured = values.get(name)
+        if configured is None:
+            additions[name] = endpoint
+        elif configured != endpoint:
+            raise ValueError(f'.deployment/platform.env {name} must equal {endpoint}')
+    if additions:
+        content = ''.join(lines)
+        if content and not content.endswith(('\n', '\r')):
+            content += '\n'
+        content += ''.join(f'{name}={value}\n' for name, value in additions.items())
+        _write_private_file(env_file, content.encode('utf-8'))
+    if sys.platform == 'linux':
+        _check_private_env(env_file)
+    secure_content = _secure_configuration(access_key, secret_key)
+    if not secure_file.exists() or secure_file.read_bytes() != secure_content:
+        secure_file.parent.mkdir(parents=True, exist_ok=True)
+        _write_private_file(secure_file, secure_content)
 
 
 def _check_private_env(path: Path) -> None:
@@ -104,15 +248,7 @@ def _prepare_writable_directories(root: Path, run: Callable[..., CompletedProces
 def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Prepare dependencies and this checkout's private data without starting services."""
     root = site_root(root)
-    deployment = root / '.deployment'
-    deployment.mkdir(parents=True, exist_ok=True)
-    env_file = _check_deployment_file(root, 'platform.env')
-    try:
-        descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        _check_private_env(env_file)
-    else:
-        os.close(descriptor)
+    _prepare_local_configuration(root)
     env = _environment(root)
     _prepare_writable_directories(root, run)
     _run(['uv', 'sync', '--locked', '--extra', 'platform', '--extra', 'clearml'], root, run, env)
@@ -133,14 +269,12 @@ def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -
 
 
 def start(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
-    """Enable and start the site only after operator configuration is present."""
+    """Prepare local configuration, then enable and start the site."""
     root = site_root(root)
-    for name in ('workspace.json', 'training.json', 'platform.env'):
-        if not _check_deployment_file(root, name).is_file():
-            raise ValueError(f'missing .deployment/{name}; create the operator configuration before start')
-    _check_private_env(root / '.deployment/platform.env')
-    _check_deployment_file(root, 'administrator')
-    ensure_administrator(root)
+    workspace_file = _check_deployment_file(root, 'workspace.json')
+    _prepare_local_configuration(root)
+    if not workspace_file.is_file():
+        raise ValueError('missing .deployment/workspace.json; create the workspace configuration before start')
     env = _environment(root)
     _run(['sudo', 'systemctl', 'enable', 'xxtrain-server.service'], root, run, env)
     _run(['sudo', 'systemctl', 'start', 'xxtrain-server.service'], root, run, env)
