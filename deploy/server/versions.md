@@ -12,4 +12,4 @@ The single Compose manifest is [compose.yaml](compose.yaml). It translates the o
 | ClearML MongoDB, Redis, Elasticsearch | `mongo:8.0.15`, `redis:8.2.3`, `elasticsearch:8.19.9` |
 | Public reverse proxy | `nginx:1.27-alpine` |
 
-CVAT Grafana and Traefik are omitted: nginx owns public routes, and the deployment does not expose upstream Grafana analytics. ClearML `agent-services` is omitted because this server deployment does not run an Agent. All application data uses `.deployment` bind mounts; the rendered nginx configuration, Vector's configuration, and the custom UI source are checked-in code assets.
+CVAT Grafana and Traefik are omitted: nginx owns public routes, and the deployment does not expose upstream Grafana analytics. ClearML `agent-services` is omitted because this server deployment does not run an Agent. All application data uses `.deployment` bind mounts. The nginx template, Vector and Kvrocks configurations, and custom UI source are checked-in assets; nginx uses a rendered configuration under `.deployment`.
