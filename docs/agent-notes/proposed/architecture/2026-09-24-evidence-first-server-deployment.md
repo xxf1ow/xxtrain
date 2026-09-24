@@ -12,9 +12,9 @@ xxtrain、CVAT、ClearML Server 和入口代理共同构成标注平台服务端
 
 唯一现场数据目录为 checkout 内被 Git 忽略的 `.deployment/`：配置、私有凭据、工作区、SQLite、运行缓存及容器持久绑定目录均放在其中；镜像与容器不是数据目录，不能用隐蔽的 Docker 命名卷代替现场绑定目录。不得在测试机直接修改或提交受版本控制的代码，也不得使用另一份源码运行测试。除注册和管理指向该 checkout 的 systemd unit 这一获准窄例外，测试机文件操作只在 `/home/lxx/xxtest` 内。源代码、镜像和其他项目不属于部署试验清理范围；清理前核对容器归属、挂载及目标真实路径，仅清除本项目容器与本项目 `.deployment/`。这些可重建的试验数据获准不备份，清理不得延伸到其他数据。
 
-宿主机从当前 checkout 的 uv 锁定环境运行单进程 xxtrain，由 systemd 托管且只监听 `127.0.0.1`。CVAT、ClearML Server 及独立 nginx 使用 Docker Compose；只有 nginx 对外提供所需入口，后端仅经宿主机 loopback 暴露。平台和 CVAT 同源，平台复用 CVAT 身份，代理在放行 CVAT 页面、API 和资源前通过 xxtrain 验证登录会话，具体 Job 可见性仍由 CVAT 内置权限决定；不建设按已领取 Job 动态授权。ClearML 的 Web、API 与文件端点独立提供给服务端及以后接入的 Agent，不经过平台登录门槛，只允许在受控网络开放，不能直接发布公网。部署服务端不安装 ClearML Agent，不以服务端验收替代 GPU/Agent 验收。[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续负责业务数据组织、主机与训练机数据关系及后续 NFS 方向。
+宿主机从当前 checkout 的 uv 锁定环境运行单进程 xxtrain，由 systemd 托管且只监听 `127.0.0.1`。CVAT、ClearML Server 及独立 nginx 使用 Docker Compose；只有 nginx 在指定的受控内网地址监听对外入口，所有后端仅向宿主机 loopback 映射，不使用默认的全网卡端口发布。平台和 CVAT 同源：平台登录向 CVAT 创建浏览器会话并返回其 Cookie，代理向 xxtrain 核验该 Cookie 后原样转发给 CVAT；不另设平台身份、公共 CVAT 会话或代理注入 SSO 身份。具体 Job 可见性仍由 CVAT 内置权限决定，不建设按已领取 Job 动态授权。ClearML 的 Web、API 与文件端点独立提供给服务端及以后接入的 Agent，不经过平台登录门槛，只允许在受控网络开放，不能直接发布公网。部署服务端不安装 ClearML Agent，不以服务端验收替代 GPU/Agent 验收。[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续负责业务数据组织、主机与训练机数据关系及后续 NFS 方向。
 
-唯一管理入口与 `xxtrain train` 并列：`uv run --locked --extra platform --extra clearml xxtrain serverctl install|start|stop|status|verify`。目标机已具备 uv 和 Docker。`install` 幂等同步锁定环境、拉取外部镜像、构建定制镜像、准备本地配置及能离线创建的凭据并注册 unit，但不启动服务；依赖运行中服务才能签发的身份由 `start` 自动完成。一条命令启动准备流程，此后不要求操作者交互式创建账号、密钥或配置。需要特权时，可在同一交互会话先执行一次 `sudo -v`，不改写主机 sudo 授权。`start` 幂等启动服务并启用开机自启；`stop` 幂等停服并取消开机自启。systemd 开机启动与人工 `start` 必须执行同一套就绪等待及凭据同步，Compose 创建容器不等于数据库迁移、身份验证或平台已就绪。`status` 明确展示实际提交与服务状态；`verify` 从真实入口检查服务可用性。重复安装、启停和升级保留已有凭据及持久数据，部署命令不得删除它们。
+唯一管理入口与 `xxtrain train` 并列：`uv run --locked --extra platform --extra clearml xxtrain serverctl install|start|stop|status|verify`。操作者负责预先提供唯一 checkout 与目标提交、可用的 uv 和 Docker Compose、仓库及依赖和镜像源的网络访问、所需仓库认证、受控内网地址以及可执行必要特权操作的 sudo 权限；缺失这些前置条件时部署命令应报错，不安装这些工具、不修复主机网络或 sudo 授权，也不代替操作者推送或拉取源码。服务间通信、端口和身份配置仍由本仓库负责。`install` 幂等同步锁定环境、拉取外部镜像、构建定制镜像、准备本地配置及能离线创建的凭据并注册 unit，但不启动服务；依赖运行中服务才能签发的身份由 `start` 自动完成。一条命令启动准备流程，此后不要求操作者交互式创建账号、密钥或配置。`serverctl` 由普通用户执行，必要时通过 sudo 调用系统命令；需要密码时可在每次执行特权命令前于同一交互会话运行 `sudo -v`，不改写主机 sudo 授权。`start` 幂等启动服务并启用开机自启；`stop` 幂等停服并取消开机自启。systemd 是唯一开机自启控制者，Compose 容器不使用 `restart: always` 或 `restart: unless-stopped`。systemd 开机启动与人工 `start` 必须执行同一套就绪等待及凭据同步，Compose 创建容器不等于数据库迁移、身份验证或平台已就绪。`status` 明确展示实际提交与服务状态；`verify` 从真实入口检查服务可用性。重复安装、启停和升级保留已有凭据及持久数据，部署命令不得删除它们。
 
 CVAT 管理员用户名固定为 `xxadmin`，该账号也可从平台登录；唯一可读密码来源是以 `0600` 权限明文保存的 `.deployment/.xxxxx`。`install` 与 `start` 共用缺失时随机创建、存在则保留的逻辑；每次 `start` 在 CVAT 数据库就绪后通过容器内管理入口创建或同步管理员密码，无须旧密码。启动前修改文件即可指定下次使用的密码；单独丢失文件时下次启动重新生成并同步，不等同于恢复丢失的数据库。CVAT 服务令牌与 ClearML 平台 API 密钥是独立的机器凭据，由部署流程无人值守地创建并私下持久保存；不能直接把管理员密码复用为机器凭据。ClearML Agent 的密钥签发和分发属于后续 Agent 部署设计。首次站点的凭据签发机制、CVAT 管理入口、ClearML 固定镜像认证路径和实际启动顺序必须通过现场试验确认，离线测试不能替代现场认证。
 
@@ -36,8 +36,8 @@ CVAT 管理员用户名固定为 `xxadmin`，该账号也可从平台登录；�
 
 ## Acceptance criteria
 
-- 从清理后的测试环境按实测路径启动完整服务端，平台登录后可进入 CVAT；未登录不能浏览 CVAT，已登录用户受 CVAT 自身权限限制，ClearML Web、API 和文件入口及平台到 ClearML 的认证连接可用。
-- 独立验证手工启动、停止、重启后的开机自启、重复安装和启动、管理员密码文件变更后的同步及私有凭据保留；`install` 完成准备但不会启动任何服务。
+- 从清理后的测试环境按实测路径启动完整服务端，平台登录后凭同一 CVAT 会话进入 CVAT；未登录不能浏览 CVAT，已登录用户受 CVAT 自身权限限制，对外端口仅在指定的内网地址监听，ClearML Web、API 和文件入口及平台到 ClearML 的认证连接可用。
+- 独立验证手工启动、停止、重启后的开机自启与停止后重启不自启、重复安装和启动、管理员密码文件变更后的同步及私有凭据保留；`install` 完成准备但不会启动任何服务。
 - `serverctl` 的回归覆盖关键身份、目录、生命周期与失败退出；从零起点指南仅凭确定的入口和目标机前置环境完成部署，不要求手动初始化凭据或猜测脚本及版本。
 - 最终验收使用经人工审核、从 `origin` 获取的确定提交；本地提交及 bundle 验证不能冒充正式发布验证。服务端通过不代表 Agent/GPU 部署通过。
 
