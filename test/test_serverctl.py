@@ -370,7 +370,15 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual('preserve-me', env['XXTRAIN_CVAT_SERVICE_TOKEN'])
         self.assertFalse(any('up' in args or ('systemctl' in args and 'start' in args) for args, _ in calls))
         secure = (self.root / '.deployment/clearml/config/secure.conf').read_text(encoding='utf-8')
-        self.assertIn('      user {', secure)
+        expected_identity = (
+            '    user {\n'
+            '      role: user\n'
+            f'      user_key: {json.dumps(env["CLEARML_API_ACCESS_KEY"])}\n'
+            f'      user_secret: {json.dumps(env["CLEARML_API_SECRET_KEY"])}\n'
+            '      display_name: "xxtrain service"\n'
+            '    }'
+        )
+        self.assertTrue(expected_identity in secure and '    users {' not in secure)
         self.assertTrue(env['CLEARML_API_ACCESS_KEY'] in secure)
         self.assertTrue(env['CLEARML_API_SECRET_KEY'] in secure)
         if os.name != 'nt':
