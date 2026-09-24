@@ -6,7 +6,7 @@ xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当�
 
 项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测、分类和指针分割标注入口。
 
-服务端从一个 Git checkout 的锁定 uv 环境运行 `xxtrain-platform`，由 `xxtrain-server.service` 管理平台进程与单个 Compose 项目。CVAT、ClearML Server 和 nginx 运行在 Compose 容器中；nginx 是对外入口，平台与 CVAT 后端仅在宿主机 loopback 监听。ClearML API 通过 `/debug.ping` 健康检查后，fileserver 才启动；API 预填充期间 fileserver 保持等待。ClearML Redis 同时提供上游 fileserver 要求的 `redis` 网络别名。ClearML SDK 的 API、Web 和 files 主机必须显式配置为本机 Compose 映射，防止 SDK 默认连接 ClearML Cloud。`.deployment/` 保存配置、凭据和持久数据，系统注册的 unit 是目录边界的例外。生命周期、版本切换和验证步骤见[服务端部署指南](cookbook/server-deployment.md)。
+服务端从一个 Git checkout 的锁定 uv 环境运行 `xxtrain-platform`，由 `xxtrain-server.service` 管理平台进程与单个 Compose 项目。CVAT、ClearML Server 和 nginx 运行在 Compose 容器中；nginx 是对外入口，平台与 CVAT 后端仅在宿主机 loopback 监听。CVAT 服务和 worker 共用 supervisor 所需的空 `SMOKESCREEN_OPTS`；OPA 使用 `cvat-server` 网络别名访问 CVAT。ClearML API 通过 `/debug.ping` 健康检查后，fileserver 才启动；Web 等待 API 健康和 fileserver 启动后再运行。API 预填充期间 fileserver 保持等待。ClearML Redis 同时提供上游 fileserver 要求的 `redis` 网络别名。ClearML SDK 的 API、Web 和 files 主机必须显式配置为本机 Compose 映射，防止 SDK 默认连接 ClearML Cloud。`.deployment/` 保存配置、凭据和持久数据，系统注册的 unit 是目录边界的例外。生命周期、版本切换和验证步骤见[服务端部署指南](cookbook/server-deployment.md)。
 
 ## Runtime flow
 

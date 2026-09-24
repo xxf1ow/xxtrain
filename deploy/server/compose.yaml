@@ -7,6 +7,7 @@ x-cvat-env: &cvat-env
   CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
   CVAT_REDIS_ONDISK_PORT: 6666
   CVAT_LOG_IMPORT_ERRORS: 'true'
+  SMOKESCREEN_OPTS: ''
   DJANGO_LOG_SERVER_HOST: cvat_vector
   DJANGO_LOG_SERVER_PORT: 8282
   no_proxy: cvat_clickhouse,cvat_vector,cvat_opa,opa,clickhouse,vector
@@ -87,7 +88,7 @@ services:
       - run
       - --server
       - --log-level=error
-      - --set=services.cvat.url=http://cvat_server:8080
+      - --set=services.cvat.url=http://cvat-server:8080
       - --set=bundles.cvat.service=cvat
       - --set=bundles.cvat.resource=/api/auth/rules
       - --set=bundles.cvat.polling.min_delay_seconds=5
@@ -109,7 +110,6 @@ services:
       CLICKHOUSE_USER: user
       CLICKHOUSE_PASSWORD: user
       DJANGO_MODWSGI_EXTRA_ARGS: ''
-      SMOKESCREEN_OPTS: ''
       ALLOWED_HOSTS: '*'
       ADAPTIVE_AUTO_ANNOTATION: 'false'
       NUMPROCS: 2
@@ -276,7 +276,9 @@ services:
   clearml_webserver:
     image: clearml/server:2.4.0
     command: [webserver]
-    depends_on: [clearml_apiserver]
+    depends_on:
+      clearml_apiserver: {condition: service_healthy}
+      clearml_fileserver: {condition: service_started}
     ports: ['127.0.0.1:18084:80']
 
   clearml_async_delete:

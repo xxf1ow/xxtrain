@@ -422,6 +422,10 @@ class ServerctlTest(unittest.TestCase):
         self.assertIn('fileserver', services['clearml_fileserver']['networks']['default']['aliases'])
         self.assertEqual('', services['cvat_server']['environment']['SMOKESCREEN_OPTS'])
         self.assertNotIn('ENV_SMOKESCREEN_OPTS', services['cvat_server']['environment'])
+        for worker in ('utils', 'import', 'export', 'annotation', 'webhooks', 'quality_reports', 'chunks', 'consensus'):
+            with self.subTest(worker=worker):
+                self.assertEqual('', services[f'cvat_worker_{worker}']['environment']['SMOKESCREEN_OPTS'])
+        self.assertIn('--set=services.cvat.url=http://cvat-server:8080', services['cvat_opa']['command'])
         self.assertIn('redis', services['clearml_redis']['networks']['default']['aliases'])
         self.assertEqual(
             {'condition': 'service_healthy'}, services['clearml_fileserver']['depends_on']['clearml_apiserver']
@@ -436,6 +440,12 @@ class ServerctlTest(unittest.TestCase):
             services['clearml_apiserver']['healthcheck']['test'],
         )
         self.assertNotIn('clearml_fileserver', services['clearml_apiserver']['depends_on'])
+        self.assertEqual(
+            {'condition': 'service_healthy'}, services['clearml_webserver']['depends_on']['clearml_apiserver']
+        )
+        self.assertEqual(
+            {'condition': 'service_started'}, services['clearml_webserver']['depends_on']['clearml_fileserver']
+        )
         self.assertEqual(
             '${XXTRAIN_SITE_ROOT:?}/clearml/elasticsearch-logs:/usr/share/elasticsearch/logs',
             services['clearml_elasticsearch']['volumes'][1],
