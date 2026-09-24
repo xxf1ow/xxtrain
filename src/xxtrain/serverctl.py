@@ -7,6 +7,7 @@ import os
 import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _CLEARML_KEYS = ('CLEARML_API_ACCESS_KEY', 'CLEARML_API_SECRET_KEY')
@@ -199,6 +200,244 @@ def _prepare_configuration(root: Path) -> None:
             raise ValueError('training storage paths must remain within .deployment')
 
 
+def prepare(root: Path) -> None:
+    """Create local credentials and configuration before Compose services start."""
+    root = site_root(root)
+    _prepare_configuration(root)
+    ensure_administrator(root)
+
+
+def _save_service_token(path: Path, token: str) -> None:
+    existing = path.read_text(encoding='utf-8').splitlines()
+    if f'XXTRAIN_CVAT_SERVICE_TOKEN={token}' in existing:
+        return
+    lines = [line for line in existing if not line.startswith('XXTRAIN_CVAT_SERVICE_TOKEN=')]
+    lines.append(f'XXTRAIN_CVAT_SERVICE_TOKEN={token}')
+    temporary = path.with_name(f'.{path.name}.{secrets.token_hex(8)}')
+    _create_private(temporary, '\n'.join(lines) + '\n')
+    temporary.replace(path)
+
+
+def _management(root: Path, password: str) -> int:
+    expression = (
+        'import sys; from django.contrib.auth import get_user_model; '
+        "u, _ = get_user_model().objects.get_or_create(username='xxadmin'); "
+        'u.is_staff = True; u.is_superuser = True; u.set_password(sys.stdin.read().strip()); '
+        'u.save(); print(u.pk)'
+    )
+    result = _run(
+        root,
+        [*_compose(root), 'exec', '-T', 'cvat_server', 'python', 'manage.py', 'shell', '-c', expression],
+        input=password,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise ValueError('CVAT management command returned no user ID') from exc
+
+
+def bootstrap(root: Path, *, timeout: float = 600) -> int:
+    """Wait for authenticated services, synchronize xxadmin, and persist their identities."""
+    import httpx
+
+    root = site_root(root)
+    deadline = time.monotonic() + timeout
+    password_path = ensure_administrator(root)
+    password = password_path.read_text(encoding='utf-8').strip()
+    migration = [*_compose(root), 'exec', '-T', 'cvat_server', 'python', 'manage.py', 'migrate', '--check']
+    while True:
+        try:
+            _run(root, migration, capture_output=True, text=True)
+            break
+        except (OSError, subprocess.CalledProcessError):
+            if time.monotonic() >= deadline:
+                raise TimeoutError('CVAT migrations did not become ready') from None
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+    user_id = _management(root, password)
+    values = _platform_environment(_deployment_path(root, 'platform.env'))
+    cvat_root = 'http://127.0.0.1:18080'
+    clearml_root = values['CLEARML_API_HOST']
+    while True:
+        try:
+            with httpx.Client(timeout=10) as client:
+                token = values.get('XXTRAIN_CVAT_SERVICE_TOKEN')
+                identity = None
+                if token:
+                    identity = client.get(f'{cvat_root}/api/users/self', headers={'Authorization': f'Token {token}'})
+                    if identity.status_code in (401, 403):
+                        token = None
+                if token is None:
+                    login = client.post(
+                        f'{cvat_root}/api/auth/login', json={'username': 'xxadmin', 'password': password}
+                    )
+                    login.raise_for_status()
+                    token = login.json()['key']
+                    identity = client.get(f'{cvat_root}/api/users/self', headers={'Authorization': f'Token {token}'})
+                identity.raise_for_status()
+                authenticated_user_id = int(identity.json()['id'])
+                if authenticated_user_id != user_id:
+                    raise ValueError('CVAT service token did not authenticate as xxadmin')
+                user_id = authenticated_user_id
+                clearml = client.get(
+                    f'{clearml_root}/auth.login', auth=(values[_CLEARML_KEYS[0]], values[_CLEARML_KEYS[1]])
+                )
+                clearml.raise_for_status()
+                clearml_response = clearml.json()
+                if clearml_response.get('meta', {}).get('result_code') != 200 or not clearml_response.get(
+                    'data', {}
+                ).get('token'):
+                    raise ValueError('ClearML service credentials were rejected')
+            break
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            if time.monotonic() >= deadline:
+                raise TimeoutError('authenticated CVAT and ClearML identities did not become ready') from None
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+    _save_service_token(_deployment_path(root, 'platform.env'), token)
+    workspace = _deployment_path(root, 'workspace.json')
+    _create_private(
+        workspace,
+        json.dumps(
+            {
+                'workspace_id': 'xxtrain',
+                'display_name': 'xxtrain',
+                'owner_user_id': user_id,
+                'workspace_dir': 'workspace',
+                'runtime_dir': 'training-shared/runtime',
+                'cvat_internal_url': 'http://127.0.0.1:18080',
+                'task_entry': 'xxtrain.business_tasks.point:point_task_definition',
+            },
+            indent=2,
+        )
+        + '\n',
+        require_private=False,
+    )
+    if int(json.loads(workspace.read_text(encoding='utf-8'))['owner_user_id']) != user_id:
+        raise ValueError('workspace.json owner_user_id does not match xxadmin')
+    return user_id
+
+
+def foreground(root: Path) -> None:
+    """Start the project services, bootstrap identities, and replace this process with xxtrain-platform."""
+    root = site_root(root)
+    _run(root, [*_compose(root), 'up', '-d'])
+    bootstrap(root)
+    values = _platform_environment(_deployment_path(root, 'platform.env'))
+    environment = _environment(root)
+    environment.update(values)
+    site = _deployment_path(root, '')
+    environment.update(
+        {
+            'CLEARML_CACHE_DIR': str(site / 'clearml/sdk-cache'),
+            'CLEARML_CONFIG_FILE': str(site / 'clearml/client.conf'),
+            'XDG_CACHE_HOME': str(site / 'cache'),
+        }
+    )
+    bypass = {'localhost', '127.0.0.1', '::1', _deployment_path(root, 'listen-ip').read_text(encoding='utf-8').strip()}
+    for key in ('NO_PROXY', 'no_proxy'):
+        bypass.update(item for item in environment.get(key, '').split(',') if item)
+        environment[key] = ','.join(sorted(bypass))
+    os.execve(
+        sys.executable,
+        [
+            sys.executable,
+            '-m',
+            'xxtrain.platform',
+            '--config',
+            str(_deployment_path(root, 'workspace.json')),
+            '--training-config',
+            str(_deployment_path(root, 'training.json')),
+            '--host',
+            '127.0.0.1',
+            '--port',
+            '18001',
+        ],
+        environment,
+    )
+
+
+def start(root: Path) -> None:
+    root = site_root(root)
+    if hasattr(os, 'geteuid') and os.geteuid() == 0:
+        raise ValueError('run serverctl as the normal checkout user; privileged commands use sudo')
+    _run(root, ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'])
+    _run(root, ['sudo', 'systemctl', 'restart', 'xxtrain-server.service'])
+
+
+def stop(root: Path) -> None:
+    root = site_root(root)
+    try:
+        _run(root, ['sudo', 'systemctl', 'stop', 'xxtrain-server.service'])
+    finally:
+        _run(root, ['sudo', 'systemctl', 'disable', 'xxtrain-server.service'])
+
+
+def status(root: Path) -> int:
+    root = site_root(root)
+    revision = _run(root, ['git', 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    unit = _run(
+        root,
+        ['sudo', 'systemctl', 'show', '--property=ActiveState', '--value', 'xxtrain-server.service'],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    result = _run(root, [*_compose(root), 'ps', '--format', 'json'], capture_output=True, text=True)
+    try:
+        payload = result.stdout.strip()
+        services = (
+            json.loads(payload)
+            if payload.startswith('[')
+            else [json.loads(line) for line in payload.splitlines() if line]
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError('Compose returned invalid service status') from exc
+    print(f'Git: {revision}')
+    print(f'systemd: {unit}')
+    for service in services:
+        name = service.get('Service', 'unknown')
+        state = service.get('State', 'unknown')
+        health = service.get('Health', 'no healthcheck')
+        print(f'{name}: {state} ({health})')
+    return 0
+
+
+def verify_endpoints(root: Path) -> None:
+    import httpx
+
+    root = site_root(root)
+    address = _deployment_path(root, 'listen-ip').read_text(encoding='utf-8').strip()
+    values = _platform_environment(_deployment_path(root, 'platform.env'))
+    password_path = _deployment_path(root, '.xxxxx')
+    _check_private(password_path)
+    password = password_path.read_text(encoding='utf-8').strip()
+    if not password:
+        raise ValueError('.deployment/.xxxxx must contain a nonempty password')
+    base = f'http://{address}'
+    try:
+        with httpx.Client(timeout=10) as client:
+            if client.get(f'{base}:8080/platform/').status_code != 200:
+                raise ValueError('platform endpoint is unavailable')
+            login = client.post(
+                'http://127.0.0.1:18080/api/auth/login', json={'username': 'xxadmin', 'password': password}
+            )
+            login.raise_for_status()
+            identity = client.get(f'{base}:8080/api/users/self', cookies=login.cookies)
+            identity.raise_for_status()
+            clearml_api = f'{base}:8008'
+            for url in (f'{base}:8082/', f'{base}:8081/', f'{clearml_api}/debug.ping'):
+                response = client.get(url)
+                response.raise_for_status()
+            clearml = client.get(f'{clearml_api}/auth.login', auth=(values[_CLEARML_KEYS[0]], values[_CLEARML_KEYS[1]]))
+            clearml.raise_for_status()
+            if clearml.json().get('meta', {}).get('result_code') != 200:
+                raise ValueError('ClearML service credentials were rejected')
+    except httpx.HTTPError:
+        raise OSError('verification endpoint request failed') from None
+
+
 def install(root: Path) -> None:
     """Prepare dependencies, private configuration and the unit without changing activation state."""
     root = site_root(root)
@@ -251,12 +490,26 @@ def install(root: Path) -> None:
 
 def main(command: str, *, root: Path | None = None) -> int:
     """Run an available server action; report failures without exposing subprocess output or secrets."""
-    if command != 'install':
-        print(f'serverctl {command}: unavailable', file=sys.stderr)
-        return 2
     try:
-        install(site_root(root))
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        checkout = site_root(root)
+        if command == 'install':
+            install(checkout)
+        elif command == 'prepare':
+            prepare(checkout)
+        elif command == 'foreground':
+            foreground(checkout)
+        elif command == 'start':
+            start(checkout)
+        elif command == 'stop':
+            stop(checkout)
+        elif command == 'status':
+            return status(checkout)
+        elif command == 'verify':
+            verify_endpoints(checkout)
+        else:
+            print(f'serverctl {command}: unavailable', file=sys.stderr)
+            return 2
+    except (OSError, ValueError, TimeoutError, subprocess.CalledProcessError) as exc:
         message = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         print(f'serverctl {command}: {message}', file=sys.stderr)
         return 1

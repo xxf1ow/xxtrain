@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -192,7 +192,7 @@ class ServerInstallTests(unittest.TestCase):
             self.assertNotEqual(self.install(None), 0)
 
     def test_unavailable_actions_fail_explicitly(self):
-        for action in ('start', 'stop', 'status', 'verify'):
+        for action in ('unknown',):
             with self.subTest(action=action), redirect_stderr(StringIO()) as output:
                 self.assertNotEqual(self.controller.main(action, root=self.root), 0)
                 self.assertIn('unavailable', output.getvalue())
@@ -202,6 +202,243 @@ class ServerInstallTests(unittest.TestCase):
             self.assertNotEqual(self.install(), 0)
         self.assertFalse((self.root / '.deployment').exists())
         self.assertEqual(self.calls, [])
+
+
+class ServerLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.operator = patch('xxtrain.serverctl.os.geteuid', return_value=1000, create=True)
+        self.operator.start()
+        self.addCleanup(self.operator.stop)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        subprocess.run(['git', 'init', '--quiet', str(self.root)], check=True, capture_output=True)
+        self.real_run = subprocess.run
+        (self.root / 'deploy/server').mkdir(parents=True)
+        (self.root / '.deployment/clearml/config').mkdir(parents=True)
+        (self.root / '.deployment/platform.env').write_text(
+            'CLEARML_API_ACCESS_KEY=access\nCLEARML_API_SECRET_KEY=secret\n'
+            'CLEARML_API_HOST=http://127.0.0.1:18083\n'
+            'CLEARML_WEB_HOST=http://127.0.0.1:18084\n'
+            'CLEARML_FILES_HOST=http://127.0.0.1:18082\n',
+            encoding='utf-8',
+        )
+        (self.root / '.deployment/platform.env').chmod(0o600)
+        (self.root / '.deployment/.xxxxx').write_text('edited-password\n', encoding='utf-8')
+        (self.root / '.deployment/.xxxxx').chmod(0o600)
+        (self.root / '.deployment/listen-ip').write_text('192.168.0.109\n', encoding='utf-8')
+
+    def test_bootstrap_retries_migration_check_and_never_prints_password(self):
+        calls = []
+
+        def run(args, **kwargs):
+            if args[0] == 'git':
+                return self.real_run(args, **kwargs)
+            calls.append((args, kwargs))
+            if 'migrate' in args:
+                raise subprocess.CalledProcessError(1, args, stderr='not ready')
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        clock = iter((0, 0, 1, 1, 2, 2, 3))
+        with (
+            patch('xxtrain.serverctl.subprocess.run', side_effect=run),
+            patch('time.monotonic', side_effect=lambda: next(clock)),
+            patch('time.sleep'),
+            redirect_stderr(StringIO()) as output,
+        ):
+            with self.assertRaises(TimeoutError):
+                serverctl.bootstrap(self.root, timeout=2)
+        migration_calls = [(args, kwargs) for args, kwargs in calls if 'migrate' in args]
+        self.assertGreaterEqual(len(migration_calls), 2)
+        self.assertTrue(all('migrate' in args and '--check' in args for args, _ in migration_calls))
+        self.assertTrue(all(not kwargs.get('input') for _, kwargs in migration_calls))
+        self.assertNotIn('edited-password', output.getvalue())
+
+    def test_bootstrap_syncs_admin_and_persists_authenticated_identities(self):
+        calls = []
+
+        def run(args, **kwargs):
+            if args[0] == 'git':
+                return self.real_run(args, **kwargs)
+            calls.append((args, kwargs))
+            if 'migrate' in args:
+                return subprocess.CompletedProcess(args, 0, '', '')
+            if 'manage.py' in args:
+                self.assertTrue(kwargs['input'] == 'edited-password', 'password stdin mismatch')
+                return subprocess.CompletedProcess(args, 0, '17\n', '')
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        class Response:
+            status_code = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+            def raise_for_status(self):
+                return None
+
+        testcase = self
+
+        class Client:
+            logins = 0
+
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def post(self, url, **kwargs):
+                type(self).logins += 1
+                self.assertion(url, kwargs)
+                return Response({'key': 'cvat-token'})
+
+            def get(self, url, **kwargs):
+                if url.endswith('/auth.login'):
+                    self.assertion(url, kwargs)
+                    return Response({'meta': {'result_code': 200}, 'data': {'token': 'clearml-token'}})
+                if url.endswith('/api/users/self'):
+                    testcase.assertEqual(kwargs['headers'], {'Authorization': 'Token cvat-token'})
+                return Response({'id': 17})
+
+            @staticmethod
+            def assertion(url, kwargs):
+                if url.endswith('/api/auth/login'):
+                    testcase.assertEqual(kwargs['json'], {'username': 'xxadmin', 'password': 'edited-password'})
+                if url.endswith('/auth.login'):
+                    testcase.assertEqual(kwargs['auth'], ('access', 'secret'))
+
+        saved = (self.root / '.deployment/platform.env').read_bytes()
+        with patch('xxtrain.serverctl.subprocess.run', side_effect=run), patch('httpx.Client', Client):
+            serverctl.bootstrap(self.root, timeout=5)
+            saved_credentials = (self.root / '.deployment/platform.env').read_bytes()
+            serverctl.bootstrap(self.root, timeout=5)
+        self.assertEqual((self.root / '.deployment/.xxxxx').read_text(), 'edited-password\n')
+        values = serverctl._platform_environment(self.root / '.deployment/platform.env')
+        self.assertEqual(values['CLEARML_API_ACCESS_KEY'], 'access')
+        self.assertEqual(values['CLEARML_API_SECRET_KEY'], 'secret')
+        self.assertEqual(values['XXTRAIN_CVAT_SERVICE_TOKEN'], 'cvat-token')
+        self.assertTrue((self.root / '.deployment/workspace.json').is_file())
+        workspace = json.loads((self.root / '.deployment/workspace.json').read_text())
+        self.assertEqual(workspace['owner_user_id'], 17)
+        if os.name == 'posix':
+            self.assertEqual((self.root / '.deployment/platform.env').stat().st_mode & 0o777, 0o600)
+        self.assertNotEqual(saved, saved_credentials)
+        self.assertEqual(saved_credentials, (self.root / '.deployment/platform.env').read_bytes())
+        self.assertEqual(Client.logins, 1)
+        self.assertEqual(sum('shell' in args and kwargs.get('input') == 'edited-password' for args, kwargs in calls), 2)
+        self.assertFalse(any('edited-password' in ' '.join(args) for args, _ in calls))
+
+    def test_start_stop_status_verify_and_unit_share_the_lifecycle_contract(self):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[:4] == ['sudo', 'systemctl', 'show', '--property=ActiveState']:
+                return subprocess.CompletedProcess(args, 0, 'inactive\n', '')
+            if args[:3] == ['git', 'rev-parse', '--show-toplevel']:
+                return self.real_run(args, **kwargs)
+            if args[:3] == ['git', 'rev-parse', 'HEAD']:
+                return subprocess.CompletedProcess(args, 0, 'a' * 40 + '\n', '')
+            if 'ps' in args:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    '[{"Service":"cvat_server","State":"running","Health":"healthy"},'
+                    '{"Service":"clearml_apiserver","State":"running","Health":"healthy"}]',
+                    '',
+                )
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        status_output = StringIO()
+        with (
+            patch('xxtrain.serverctl.subprocess.run', side_effect=run),
+            redirect_stderr(StringIO()),
+            redirect_stdout(status_output),
+        ):
+            self.assertEqual(serverctl.main('start', root=self.root), 0)
+            self.assertEqual(serverctl.main('stop', root=self.root), 0)
+            self.assertEqual(serverctl.main('status', root=self.root), 0)
+        start_commands = [
+            args
+            for args in calls
+            if args[:3] == ['sudo', 'systemctl', 'enable'] or args[:3] == ['sudo', 'systemctl', 'restart']
+        ]
+        self.assertEqual([args[2] for args in start_commands], ['enable', 'restart'])
+        self.assertLess(
+            calls.index(['sudo', 'systemctl', 'stop', 'xxtrain-server.service']),
+            calls.index(['sudo', 'systemctl', 'disable', 'xxtrain-server.service']),
+        )
+        self.assertIn('a' * 40, status_output.getvalue())
+        self.assertIn('systemd: inactive', status_output.getvalue())
+        self.assertIn('cvat_server: running (healthy)', status_output.getvalue())
+        self.assertIn('clearml_apiserver: running (healthy)', status_output.getvalue())
+        self.assertNotIn('access', status_output.getvalue())
+        self.assertNotIn('secret', status_output.getvalue())
+
+        unit = (DEPLOY / 'xxtrain-server.service').read_text()
+        self.assertLess(unit.index('ExecStartPre='), unit.index('ExecStart='))
+        self.assertIn('ExecStopPost=', unit)
+        self.assertNotIn('restart: always', (DEPLOY / 'compose.yaml').read_text())
+
+        class OfflineClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def get(self, url, **kwargs):
+                raise OSError('offline')
+
+        with patch('httpx.Client', OfflineClient), redirect_stderr(StringIO()):
+            self.assertNotEqual(serverctl.main('verify', root=self.root), 0)
+
+    def test_boot_sequence_prepares_then_starts_and_bootstraps_before_foreground(self):
+        events = []
+        process_environment = {}
+        prepare = serverctl._prepare_configuration
+
+        def record_prepare(root):
+            events.append('prepare')
+            prepare(root)
+
+        def record_run(args, **kwargs):
+            if args[0] == 'git':
+                return self.real_run(args, **kwargs)
+            if 'up' in args:
+                events.append('compose up')
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        def record_exec(_executable, _arguments, environment):
+            process_environment.update(environment)
+            events.append('foreground')
+
+        with (
+            patch('xxtrain.serverctl._prepare_configuration', side_effect=record_prepare),
+            patch('xxtrain.serverctl.subprocess.run', side_effect=record_run),
+            patch('xxtrain.serverctl.bootstrap', side_effect=lambda _root: events.append('bootstrap')),
+            patch('xxtrain.serverctl.os.execve', side_effect=record_exec),
+        ):
+            serverctl.main('prepare', root=self.root)
+            serverctl.main('foreground', root=self.root)
+        self.assertEqual(events, ['prepare', 'compose up', 'bootstrap', 'foreground'])
+        self.assertEqual(process_environment['CLEARML_API_ACCESS_KEY'], 'access')
+        self.assertTrue(Path(process_environment['CLEARML_CACHE_DIR']).is_relative_to(self.root / '.deployment'))
+        self.assertTrue(Path(process_environment['CLEARML_CONFIG_FILE']).is_relative_to(self.root / '.deployment'))
+        self.assertTrue(Path(process_environment['XDG_CACHE_HOME']).is_relative_to(self.root / '.deployment'))
+        self.assertIn('127.0.0.1', process_environment['NO_PROXY'])
+        self.assertIn('192.168.0.109', process_environment['no_proxy'])
+        self.assertNotIn('edited-password', str(process_environment))
 
 
 class ServerTopologyTests(unittest.TestCase):

@@ -8,7 +8,10 @@ Wants=network-online.target
 Type=simple
 User={{USER}}
 WorkingDirectory={{ROOT}}
+Environment=XXTRAIN_SITE_ROOT={{ROOT}}/.deployment
+ExecStartPre="{{ROOT}}/.venv/bin/python" -m xxtrain.serverctl prepare
 ExecStart="{{ROOT}}/.venv/bin/python" -m xxtrain.serverctl foreground
+ExecStopPost=/usr/bin/env docker compose -p xxtrain-server -f {{ROOT}}/deploy/server/compose.yaml stop --timeout 60
 TimeoutStartSec=600
 TimeoutStopSec=120
 
