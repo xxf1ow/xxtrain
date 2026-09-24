@@ -4,6 +4,7 @@
   "docs/architecture.md": 800,
   "docs/development.md": 700,
   "docs/testing.md": 650,
+  "docs/cookbook/server-deployment.md": 700,
   "docs/subsystems/annotation-data.md": 750,
   "docs/subsystems/dataset-pipeline.md": 900,
   "docs/subsystems/training-workflow.md": 900,
