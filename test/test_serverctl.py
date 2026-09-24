@@ -398,6 +398,7 @@ class ServerLifecycleTests(unittest.TestCase):
         unit = (DEPLOY / 'xxtrain-server.service').read_text()
         self.assertLess(unit.index('ExecStartPre='), unit.index('ExecStart='))
         self.assertIn('ExecStopPost=', unit)
+        self.assertIn('TimeoutStopSec=300', unit)
         self.assertNotIn('restart: always', (DEPLOY / 'compose.yaml').read_text())
 
         class OfflineClient:
