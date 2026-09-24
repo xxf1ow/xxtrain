@@ -147,14 +147,12 @@ def _training_configuration(root: Path) -> bytes:
 
 def _secure_configuration(access_key: str, secret_key: str) -> bytes:
     return (
-        'secure {\n'
-        '  credentials {\n'
-        '    user {\n'
-        '      role: user\n'
-        f'      user_key: {json.dumps(access_key)}\n'
-        f'      user_secret: {json.dumps(secret_key)}\n'
-        '      display_name: "xxtrain service"\n'
-        '    }\n'
+        'credentials {\n'
+        '  user {\n'
+        '    role: user\n'
+        f'    user_key: {json.dumps(access_key)}\n'
+        f'    user_secret: {json.dumps(secret_key)}\n'
+        '    display_name: "xxtrain service"\n'
         '  }\n'
         '}\n'
     ).encode()

@@ -14,7 +14,18 @@ from unittest.mock import patch
 import yaml
 
 from xxtrain.platform.training_config import load_training_config
-from xxtrain.serverctl import compose_files, ensure_administrator, install, main, site_root, start, status, stop, verify
+from xxtrain.serverctl import (
+    _prepare_local_configuration,
+    compose_files,
+    ensure_administrator,
+    install,
+    main,
+    site_root,
+    start,
+    status,
+    stop,
+    verify,
+)
 
 
 class BootstrapTest(unittest.TestCase):
@@ -34,6 +45,34 @@ class BootstrapTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_secure_conf_filename_indexing_exposes_direct_credentials(self) -> None:
+        with patch('xxtrain.serverctl.site_root', return_value=self.root):
+            _prepare_local_configuration(self.root)
+
+        source_tree = {}
+        stack = [source_tree]
+        for line in (self.deployment / 'clearml/config/secure.conf').read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if line.endswith('{'):
+                key = line[:-1].strip()
+                value = {}
+                stack[-1][key] = value
+                stack.append(value)
+            elif line == '}':
+                stack.pop()
+            elif ':' in line:
+                key, value = (part.strip() for part in line.split(':', 1))
+                stack[-1][key] = json.loads(value) if value.startswith('"') else value
+
+        # BasicConfig indexes secure.conf under "secure" before merging it with defaults.
+        effective_config = {'secure': source_tree}
+        credentials = effective_config['secure'].get('credentials', {})
+        self.assertTrue('user' in credentials)
+        self.assertEqual('user', credentials['user']['role'])
+        self.assertTrue('user_key' in credentials['user'])
+        self.assertTrue('user_secret' in credentials['user'])
+        self.assertTrue('display_name' in credentials['user'])
 
     def test_bootstrap_waits_for_migrations_and_uses_actual_cvat_identity(self) -> None:
         from xxtrain.serverctl import bootstrap
@@ -371,14 +410,14 @@ class ServerctlTest(unittest.TestCase):
         self.assertFalse(any('up' in args or ('systemctl' in args and 'start' in args) for args, _ in calls))
         secure = (self.root / '.deployment/clearml/config/secure.conf').read_text(encoding='utf-8')
         expected_identity = (
-            '    user {\n'
-            '      role: user\n'
-            f'      user_key: {json.dumps(env["CLEARML_API_ACCESS_KEY"])}\n'
-            f'      user_secret: {json.dumps(env["CLEARML_API_SECRET_KEY"])}\n'
-            '      display_name: "xxtrain service"\n'
-            '    }'
+            '  user {\n'
+            '    role: user\n'
+            f'    user_key: {json.dumps(env["CLEARML_API_ACCESS_KEY"])}\n'
+            f'    user_secret: {json.dumps(env["CLEARML_API_SECRET_KEY"])}\n'
+            '    display_name: "xxtrain service"\n'
+            '  }'
         )
-        self.assertTrue(expected_identity in secure and '    users {' not in secure)
+        self.assertTrue(secure.startswith('credentials {\n') and expected_identity in secure)
         self.assertTrue(env['CLEARML_API_ACCESS_KEY'] in secure)
         self.assertTrue(env['CLEARML_API_SECRET_KEY'] in secure)
         if os.name != 'nt':
