@@ -424,7 +424,8 @@ def verify_endpoints(root: Path) -> None:
                 'http://127.0.0.1:18080/api/auth/login', json={'username': 'xxadmin', 'password': password}
             )
             login.raise_for_status()
-            identity = client.get(f'{base}:8080/api/users/self', cookies=login.cookies)
+            session_cookie = '; '.join(f'{name}={value}' for name, value in login.cookies.items())
+            identity = client.get(f'{base}:8080/api/users/self', headers={'Cookie': session_cookie})
             identity.raise_for_status()
             clearml_api = f'{base}:8008'
             for url in (f'{base}:8082/', f'{base}:8081/', f'{clearml_api}/debug.ping'):

@@ -416,6 +416,29 @@ class ServerLifecycleTests(unittest.TestCase):
         with patch('httpx.Client', OfflineClient), redirect_stderr(StringIO()):
             self.assertNotEqual(serverctl.main('verify', root=self.root), 0)
 
+    def test_verify_forwards_loopback_login_session_to_lan_gate(self):
+        import httpx
+
+        site = self.root / '.deployment'
+        serverctl._prepare_configuration(self.root)
+        serverctl.ensure_administrator(self.root)
+        (site / 'listen-ip').write_text('192.168.0.109\n')
+        real_client = httpx.Client
+
+        def respond(request):
+            if request.url.path == '/api/auth/login':
+                return httpx.Response(200, headers={'set-cookie': 'sessionid=proof; Path=/'})
+            if request.url.path == '/api/users/self':
+                return httpx.Response(200 if request.headers.get('cookie') == 'sessionid=proof' else 401)
+            if request.url.path == '/auth.login':
+                return httpx.Response(200, json={'meta': {'result_code': 200}})
+            return httpx.Response(200)
+
+        with patch(
+            'httpx.Client', side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs)
+        ):
+            serverctl.verify_endpoints(self.root)
+
     def test_boot_sequence_prepares_then_starts_and_bootstraps_before_foreground(self):
         events = []
         process_environment = {}
