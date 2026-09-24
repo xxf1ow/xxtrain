@@ -376,30 +376,26 @@ class ServerctlTest(unittest.TestCase):
         if os.name != 'nt':
             self.assertEqual(0o600, os.stat(self.root / '.deployment/clearml/config/secure.conf').st_mode & 0o777)
 
-    def test_lifecycle_actions_require_noninteractive_sudo_before_site_changes(self) -> None:
-        for action in (install, start, stop):
-            with self.subTest(action=action.__name__):
-                with tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
-                    calls = []
+    def test_stop_attempts_its_privileged_commands_without_a_separate_preflight(self) -> None:
+        calls = []
 
-                    def run(args, **kwargs):
-                        calls.append(args)
-                        result = subprocess.CompletedProcess(args, 1 if args == ['sudo', '-n', '-v'] else 0)
-                        if result.returncode and kwargs.get('check'):
-                            raise subprocess.CalledProcessError(result.returncode, args)
-                        return result
+        def run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0)
 
-                    with (
-                        patch('xxtrain.serverctl.site_root', return_value=root),
-                        patch('xxtrain.serverctl.sys.platform', 'linux'),
-                        patch('xxtrain.serverctl._check_private_env'),
-                        self.assertRaises(subprocess.CalledProcessError),
-                    ):
-                        action(root, run)
+        with (
+            patch('xxtrain.serverctl.site_root', return_value=self.root),
+            patch('xxtrain.serverctl.sys.platform', 'linux'),
+        ):
+            stop(self.root, run)
 
-                    self.assertEqual([['sudo', '-n', '-v']], calls)
-                    self.assertFalse((root / '.deployment').exists())
+        self.assertEqual(
+            [
+                ['sudo', 'systemctl', 'stop', 'xxtrain-server.service'],
+                ['sudo', 'systemctl', 'disable', 'xxtrain-server.service'],
+            ],
+            calls,
+        )
 
     def test_cli_lifecycle_entry_runs_real_install_start_and_stop_controllers(self) -> None:
         from xxtrain import serverctl
@@ -871,7 +867,7 @@ class ServerctlTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r'platform.env.*0600'):
                 install(self.root, lambda args, **kwargs: calls.append(args))
         self.assertEqual('API_SECRET=keep\n', env_file.read_text(encoding='utf-8'))
-        self.assertEqual([['sudo', '-n', '-v']], calls)
+        self.assertEqual([], calls)
 
     def test_start_rejects_env_symlink_escaping_checkout(self) -> None:
         deployment = self.root / '.deployment'

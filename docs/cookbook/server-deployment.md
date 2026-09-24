@@ -4,7 +4,7 @@ This tutorial takes a clean Linux host to a running xxtrain platform, CVAT and C
 
 ## Prerequisites and published revision
 
-Provide Git, SSH access to `git@github.com:xxf1ow/xxtrain.git`, Docker with Compose v2, an existing `uv`, and a user allowed to run Docker and the required `sudo` commands non-interactively. `install`, `start` and `stop` check privilege before changing site state; configure authorization beforehand. The process does not modify sudo policy. Reserve ports 8080, 8008, 8081 and 8082, and allow access to the pinned images in [server versions](../../deploy/server/versions.md).
+Provide Git, SSH access to `git@github.com:xxf1ow/xxtrain.git`, Docker with Compose v2, an existing `uv`, and a user allowed to run Docker and the required `sudo` commands. If sudo needs a password, run `sudo -v` in the same interactive shell before `install`, `start` or `stop`; sudo may ask again if its authorization expires. The deployment process does not modify sudo policy. Reserve ports 8080, 8008, 8081 and 8082, and allow access to the pinned images in [server versions](../../deploy/server/versions.md).
 
 The checkout is `/home/lxx/xxtest/xxtrain`; its ignored `.deployment/` directory is the only site configuration and application-data directory. The systemd unit and Docker's own image/container storage are runtime exceptions. Develop and test locally, commit, obtain human review and approval, and publish before deploying: the host only consumes a revision already present on `origin`. Choose the reviewed remote branch or tag; do not assume a fixed branch is current.
 

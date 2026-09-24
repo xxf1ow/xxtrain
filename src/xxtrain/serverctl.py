@@ -71,11 +71,6 @@ def _run(args: list[str], root: Path, run: Callable[..., CompletedProcess], env:
     run(args, cwd=root, env=env, check=True)
 
 
-def _require_noninteractive_sudo(root: Path, run: Callable[..., CompletedProcess]) -> None:
-    if sys.platform == 'linux':
-        _run(['sudo', '-n', '-v'], root, run, _environment(root))
-
-
 def _environment(root: Path) -> dict[str, str]:
     return dict(os.environ, XXTRAIN_SITE_ROOT=str(root / '.deployment'))
 
@@ -429,7 +424,6 @@ def _prepare_writable_directories(root: Path, run: Callable[..., CompletedProces
 def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Prepare dependencies and this checkout's private data without starting services."""
     root = site_root(root)
-    _require_noninteractive_sudo(root, run)
     _prepare_local_configuration(root)
     env = _environment(root)
     _prepare_writable_directories(root, run)
@@ -453,7 +447,6 @@ def install(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -
 def start(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Prepare local configuration, then enable and start the site."""
     root = site_root(root)
-    _require_noninteractive_sudo(root, run)
     _prepare_local_configuration(root)
     env = _environment(root)
     was_active = run(['systemctl', 'is-active', '--quiet', 'xxtrain-server.service'], cwd=root, env=env, check=False)
@@ -497,7 +490,6 @@ def foreground(root: Path) -> None:
 def stop(root: Path, run: Callable[..., CompletedProcess] = subprocess.run) -> None:
     """Stop this site's service and disable its boot startup without deleting data."""
     root = site_root(root)
-    _require_noninteractive_sudo(root, run)
     env = _environment(root)
     try:
         _run(['sudo', 'systemctl', 'stop', 'xxtrain-server.service'], root, run, env)

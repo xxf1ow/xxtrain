@@ -26,7 +26,7 @@ ClearML SDK 环境显式设置 `CLEARML_API_HOST`、`CLEARML_WEB_HOST` 和 `CLEA
 
 生命周期由单个 `xxtrain-server.service` 管理：systemd 启动时先确认本地凭据和由其派生的 ClearML 私有配置，再对 `xxtrain-server` Compose 项目执行 `up -d --no-build`，随后运行受限时、可重复的内部引导，最后才在前台运行 checkout 的平台进程。内部引导等待 CVAT 数据库迁移完成且 Django 管理入口可用，并等待 ClearML API 接受所配置的服务身份；容器仅处于 running 状态或健康端点返回 200 均不足以替代这些检查。引导期间创建或同步 CVAT 管理员并取得 CVAT 服务令牌，从 CVAT 查询实际用户 ID 后生成缺失的 `workspace.json`；失败使 unit 启动失败，不对外宣告平台就绪。前台平台进程须读取引导完成后的 `platform.env`，不能沿用引导前的凭据环境。手动 `start` 与开机自启使用同一引导实现，并保证新建的私有文件由现场操作用户读取；如果 unit 已处于运行状态，`serverctl start` 仍须调用该实现以同步被修改的管理员密码，不能把 `systemctl start` 的空操作当成同步成功。停止后仅停止该项目的容器，容器没有独立重启策略。`install` 重复执行锁定依赖同步、拉取外部镜像并构建本地镜像；拉取时忽略可本地构建的 Compose 服务，随后由 checkout 构建这些镜像。它创建或校正 CVAT UID 1000、Kvrocks UID 999 和 Elasticsearch UID 1000/GID 0 所需的六个 `.deployment/` bind 目录，拒绝目录符号链接或路径解析逃逸后才运行特权 `chown`、`chmod`，不递归更改目录内容；当前实现仅创建缺失的 `.deployment/platform.env` 私有空文件。目标 `install` 还自动生成缺失的 `training.json`、`.xxxxx` 和 ClearML 凭据，已有文件保持原样，不启动服务；`workspace.json` 由首次 `start` 按真实 CVAT 用户 ID 自动生成。已有环境文件若在 Linux 上允许组或其他用户读取则报错且保持原字节。非交互式 SSH shell 必须将既有 uv 安装目录加入该次命令的 `PATH`，因为 `install` 内部还会调用 `uv sync`；uv cache 与托管 Python 安装目录位于 `.deployment/`。Linux 的 `install` 默认通过特权命令注册单元并重载 systemd；Windows 的假运行器测试不注册单元。`install` 和 `start` 拒绝配置文件符号链接解析到 checkout 之外。`stop` 停止并取消启用状态；无论停止命令是否失败均尝试取消启用。
 
-无人值守运行 `install/start/stop` 的目标用户须预先获准执行各动作需要的特权命令；Linux 操作在改动现场前通过 `sudo -n -v` 以非交互方式检查权限，不在中途等待 sudo 密码。部署流程不修改 `/home/lxx/xxtest` 外的授权配置。服务端操作步骤属于独立的零起点部署指南；[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续拥有业务数据组织、主机与 Agent 的数据关系及后续方向。仓库提供自动化部署指南和入口回归；测试机的真实安装及浏览器验收仍须现场执行。ClearML Agent 安装和 GPU 训练验收属于另一份后续文档，不以单机 Agent 成功冒充服务端验收。
+目标用户须获准执行 `install/start/stop` 所需的特权命令；需要密码时，可在同一交互会话中先执行 `sudo -v`，实际特权操作仍由各自的 sudo 命令检查权限。部署流程不修改 `/home/lxx/xxtest` 外的授权配置。服务端操作步骤属于独立的零起点部署指南；[平台部署与数据集存储](../feature/2026-09-14-platform-dataset-storage.md)继续拥有业务数据组织、主机与 Agent 的数据关系及后续方向。仓库提供自动化部署指南和入口回归；测试机的真实安装及浏览器验收仍须现场执行。ClearML Agent 安装和 GPU 训练验收属于另一份后续文档，不以单机 Agent 成功冒充服务端验收。
 
 ## Verification and recovery
 
@@ -34,7 +34,7 @@ ClearML SDK 环境显式设置 `CLEARML_API_HOST`、`CLEARML_WEB_HOST` 和 `CLEA
 
 会话子请求只通过 CVAT `current_user` 确认浏览器会话，不检查现场所有者；缺少或失效的会话返回 401，CVAT 后端失败返回 502。代理禁止外部直接请求子请求路径；宿主机 loopback 上可直接访问平台，但无法绕过 CVAT 代理进入其内容。`status` 查询完整 Git 哈希、工作树、systemd 状态及编排内各容器运行与健康信息，缺失容器不显示为健康。`verify` 检查公开平台页面、未登录 CVAT 拒绝、CVAT 内部健康及三个公开 ClearML 入口，任一失败返回非零；离线模拟不能证明真实浏览器登录或两个用户的 CVAT 权限隔离。
 
-现有焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖实际 CLI 动作分派及退出码、Git 根发现、部署目录边界、配置与凭据幂等、活动服务密码同步、启动失败退出、非交互特权预检、systemd 引导顺序及代理拒绝匿名 CVAT 请求。尚未由离线回归证明真实镜像拉取、固定镜像的 ClearML 认证、浏览器登录、两个 CVAT 用户的数据隔离、现场重启与备份恢复。测试机验收在人工审阅发布后，于 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证和停止，并记录系统服务及浏览器问题。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，核对失败位置与备份，不以额外源码副本或新发布目录回避失败。
+现有焦点回归由 `uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl -v` 覆盖实际 CLI 动作分派及退出码、Git 根发现、部署目录边界、配置与凭据幂等、活动服务密码同步、启动失败退出、实际 sudo 启停命令、systemd 引导顺序及代理拒绝匿名 CVAT 请求。尚未由离线回归证明真实镜像拉取、固定镜像的 ClearML 认证、浏览器登录、两个 CVAT 用户的数据隔离、现场重启与备份恢复。测试机验收在人工审阅发布后，于 `/home/lxx/xxtest` 内按零起点指南真实安装、启动、复启、验证和停止，并记录系统服务及浏览器问题。现场部署或版本切换失败时保留 `.deployment/` 和可核对的运行提交，核对失败位置与备份，不以额外源码副本或新发布目录回避失败。
 
 ## Alternatives considered
 
