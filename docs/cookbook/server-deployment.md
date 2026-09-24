@@ -1,6 +1,6 @@
 # Server deployment
 
-This procedure installs the server in one Linux checkout at `/home/lxx/xxtest/xxtrain`. It covers the platform, CVAT, ClearML Server, and their private-LAN proxy; it does not install a ClearML Agent or validate GPU training.
+Deploy the platform, CVAT, ClearML Server, and private-LAN proxy from `/home/lxx/xxtest/xxtrain`. This procedure does not install a ClearML Agent or validate GPU training.
 
 ## Prerequisites
 
@@ -15,10 +15,11 @@ git rev-parse origin/<approved-branch>
 git status --porcelain=v1
 ```
 
-Review the full SHA printed by `git rev-parse` and use that exact value below. A first install has no service to stop; for an upgrade, stop it and back up `.deployment/` before checking out the revision:
+Use the exact SHA printed by `git rev-parse`. For an upgrade, stop and back up `.deployment/` before switching. Skip stop and backup on first install. Choose a unique protected archive outside the checkout and confirm completion:
 
 ```sh
 uv run --locked --extra platform --extra clearml xxtrain serverctl stop
+sudo sh -c 'umask 077; tar --acls --xattrs --numeric-owner -C /home/lxx/xxtest/xxtrain -cpf /home/lxx/xxtest/xxtrain-deployment-<unique-date>.tar .deployment'
 git status --porcelain=v1
 git switch --detach <approved-full-SHA>
 git rev-parse HEAD

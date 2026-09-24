@@ -28,6 +28,12 @@
 python -m unittest test.test_pipeline_core -v
 ```
 
+服务端部署控制器、Compose 拓扑、CLI 分派和平台 HTTP 回归使用 `platform` 与 `clearml` 可选依赖；真实 systemd、端口和身份检查按[部署指南](cookbook/server-deployment.md)另行在受控 Linux 主机执行：
+
+```powershell
+uv run --locked --extra platform --extra clearml python -m unittest test.test_cli test.test_serverctl test.test_platform_http -v
+```
+
 运行完整 suite：
 
 ```powershell

@@ -4,7 +4,9 @@
 
 xxtrain 是围绕 Ultralytics YOLO 的已安装 Python 包和训练工具。当前系统读取外部标注，把样本转换为任务数据集，生成模型配置，准备预训练权重，执行训练与预测检查，并导出 ONNX 模型。平台增量包含预置现场的数据存储边界、Point 任务定义、SQLite 权威标注、CVAT 对象身份映射，以及供现场人员完成检测、分类、指针分割标注和自助训练的可恢复业务流程。[SQLite 标注存储与对象身份](agent-notes/implemented/architecture/2026-09-16-sqlite-annotation-storage.md)和 [Point 三模型数据准备](agent-notes/implemented/feature/2026-09-16-point-classification-segmentation.md)均已通过离线回归和真实人工验收。训练提交协调、工作区编辑保护和独立用户任务页面通过离线回归，三个模型完成真实 ClearML、Agent、GPU 训练及人工验收；证据与限制见 [训练闭环记录](agent-notes/implemented/feature/2026-09-17-point-training-loop.md#live-acceptance-and-limitations)。
 
-项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export` 和 `review`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测、分类和指针分割标注入口。
+项目采用 `src` 布局，全部包源码位于 `src/xxtrain/`。安装后的 `xxtrain` 由 `xxtrain.cli` 分派 `train`、`export`、`review` 和 `serverctl`；安装 `platform` 可选依赖后，`xxtrain-platform` 运行单工作进程的 Point 检测、分类和指针分割标注入口。
+
+Linux 服务端由 `xxtrain serverctl` 在唯一 checkout 中管理：systemd 运行 loopback 平台，Docker Compose 运行 CVAT、ClearML Server 和只在指定私有内网地址监听的 nginx；配置、凭据和持久绑定目录保存在忽略的 `.deployment/`。同源代理核验 CVAT 会话，CVAT 保留任务权限判断；ClearML 入口独立于平台登录。操作步骤见[服务端部署指南](cookbook/server-deployment.md)，决策及现场覆盖见[服务端部署记录](agent-notes/implemented/architecture/2026-09-24-evidence-first-server-deployment.md)。
 
 ## Runtime flow
 

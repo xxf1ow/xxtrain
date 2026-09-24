@@ -15,6 +15,8 @@ uv sync --extra dev
 
 安装后使用 `xxtrain` 命令，不从 checkout 直接运行已删除的平铺脚本。本文及测试指南中的直接 `python`、`ruff` 和 `xxtrain` 命令都假定该环境已经激活。
 
+Linux 服务端从唯一 checkout 部署的操作步骤由[服务端部署指南](cookbook/server-deployment.md)负责；开发环境同步不注册或启动服务。
+
 开发 Point 检测标注入口时同时安装 `platform` 可选依赖：
 
 ```powershell
