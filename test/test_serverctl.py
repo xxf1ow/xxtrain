@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -683,6 +684,138 @@ class ServerctlTest(unittest.TestCase):
         )
         self.assertNotIn('EnvironmentFile=', unit)
         self.assertIn('ExecStopPost=/usr/bin/docker compose', unit)
+
+    def test_simulated_reboot_runs_rendered_unit_bootstrap_before_foreground(self) -> None:
+        from xxtrain import serverctl
+        from xxtrain.serverctl import bootstrap as real_bootstrap
+
+        source = Path(__file__).resolve().parents[1]
+        template = source / 'deploy/server/xxtrain-server.service'
+        compose = source / 'deploy/server/compose.yaml'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'deploy/server').mkdir(parents=True)
+            (root / 'deploy/server/xxtrain-server.service').write_bytes(template.read_bytes())
+            (root / 'deploy/server/compose.yaml').write_bytes(compose.read_bytes())
+            install_calls = []
+
+            def install_run(args, **kwargs):
+                install_calls.append((args, kwargs))
+                if args[:4] == ['sudo', 'mkdir', '-p', '--']:
+                    Path(args[-1]).mkdir(parents=True, exist_ok=True)
+                return subprocess.CompletedProcess(args, 0)
+
+            with (
+                patch('xxtrain.serverctl.site_root', return_value=root),
+                patch('xxtrain.serverctl.sys.platform', 'linux'),
+                patch('xxtrain.serverctl._check_private_env'),
+                patch('xxtrain.serverctl.getpass.getuser', return_value='site-operator'),
+            ):
+                install(root, install_run)
+
+            rendered_unit = install_calls[-2][1]['input']
+            pre_start = [
+                line.partition('=')[2] for line in rendered_unit.splitlines() if line.startswith('ExecStartPre=')
+            ]
+            start_command = next(
+                line.partition('=')[2] for line in rendered_unit.splitlines() if line.startswith('ExecStart=')
+            )
+
+            def step(command):
+                if command.endswith('serverctl prepare'):
+                    return 'prepare'
+                if command.startswith('/usr/bin/docker compose '):
+                    return 'compose-up'
+                if 'serverctl bootstrap --timeout 120' in command:
+                    return 'bootstrap'
+                return command
+
+            self.assertEqual(['prepare', 'compose-up', 'bootstrap'], [step(command) for command in pre_start])
+
+            for clearml_ready in (True, False):
+                if not clearml_ready:
+                    (root / '.deployment/workspace.json').unlink()
+                events = []
+
+                def backend_run(args, **kwargs):
+                    return subprocess.CompletedProcess(args, 0)
+
+                class Response:
+                    status = 200
+
+                    def __init__(self, payload):
+                        self.payload = payload
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_):
+                        return None
+
+                    def read(self):
+                        return json.dumps(self.payload).encode()
+
+                def request(req, timeout=5):
+                    if req.full_url.endswith('/api/auth/login'):
+                        return Response({'key': 'service-token'})
+                    if req.full_url.endswith('/api/users/self'):
+                        return Response({'id': 41})
+                    payload = (
+                        {'meta': {'result_code': 200}, 'data': {'token': 'jwt'}}
+                        if clearml_ready
+                        else {'meta': {'result_code': 401}, 'data': {}}
+                    )
+                    return Response(payload)
+
+                execve_calls = []
+
+                def execute(command):
+                    if command.startswith('/usr/bin/docker compose '):
+                        self.assertIn('deploy/server/compose.yaml', command)
+                        self.assertIn('up -d --no-build', command)
+                        events.append('compose-up')
+                        return 0
+
+                    arguments = shlex.split(command)
+                    action_index = arguments.index('serverctl') + 1
+                    action = arguments[action_index]
+                    events.append(action)
+                    if action == 'bootstrap':
+                        timeout_index = arguments.index('--timeout') + 1
+                        with patch.object(
+                            serverctl,
+                            'bootstrap',
+                            side_effect=lambda path, timeout: real_bootstrap(
+                                path, run=backend_run, request=request, timeout=timeout
+                            ),
+                        ):
+                            return serverctl.main(action, root=root, timeout=float(arguments[timeout_index]))
+                    return serverctl.main(action, root=root)
+
+                def simulate_systemd_boot():
+                    for command in pre_start:
+                        if execute(command):
+                            return
+                    with patch('xxtrain.serverctl.os.execve', side_effect=lambda *args: execve_calls.append(args)):
+                        execute(start_command)
+
+                with (
+                    patch('xxtrain.serverctl.site_root', return_value=root),
+                    patch('xxtrain.serverctl.sys.platform', 'win32'),
+                    redirect_stderr(StringIO()),
+                ):
+                    simulate_systemd_boot()
+
+                expected = ['prepare', 'compose-up', 'bootstrap']
+                if clearml_ready:
+                    expected.append('foreground')
+                    self.assertTrue((root / '.deployment/workspace.json').is_file())
+                    self.assertEqual(1, len(execve_calls))
+                    self.assertIn(str(root / '.deployment/workspace.json'), execve_calls[0][1])
+                else:
+                    self.assertFalse((root / '.deployment/workspace.json').exists())
+                    self.assertEqual([], execve_calls)
+                self.assertEqual(expected, events)
 
     def test_active_start_repeats_password_synchronization(self) -> None:
         calls = []
