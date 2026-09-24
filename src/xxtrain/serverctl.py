@@ -184,7 +184,9 @@ def _prepare_local_configuration(root: Path) -> None:
 
     lines, values = _platform_environment(env_file)
     access_key, secret_key = (values.get(name) for name in _CLEARML_KEYS)
-    if bool(access_key) != bool(secret_key):
+    if access_key == '' or secret_key == '':
+        raise ValueError('.deployment/platform.env ClearML keys must not be empty')
+    if (access_key is None) != (secret_key is None):
         missing = _CLEARML_KEYS[0] if access_key is None else _CLEARML_KEYS[1]
         raise ValueError(f'.deployment/platform.env must contain both ClearML keys; missing {missing}')
     additions: dict[str, str] = {}

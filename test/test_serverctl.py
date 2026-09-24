@@ -123,6 +123,38 @@ class ServerctlTest(unittest.TestCase):
         self.assertEqual(original, env_file.read_bytes())
         self.assertEqual([], calls)
 
+    def test_install_rejects_empty_clearml_pair_without_changing_environment(self) -> None:
+        deployment = self.root / '.deployment'
+        deployment.mkdir()
+        env_file = deployment / 'platform.env'
+        original = b'CLEARML_API_ACCESS_KEY=\nCLEARML_API_SECRET_KEY=\n'
+        env_file.write_bytes(original)
+        if os.name != 'nt':
+            os.chmod(env_file, 0o600)
+        calls = []
+
+        # Exercise pair validation with empty parsed values; the env parser rejects blank assignments earlier.
+        for values in (
+            {'CLEARML_API_ACCESS_KEY': '', 'CLEARML_API_SECRET_KEY': ''},
+            {'CLEARML_API_ACCESS_KEY': '', 'CLEARML_API_SECRET_KEY': 'existing-secret'},
+            {'CLEARML_API_ACCESS_KEY': 'existing-key', 'CLEARML_API_SECRET_KEY': ''},
+        ):
+            with self.subTest(values=tuple(values.values())):
+                env_file.write_bytes(original)
+                calls.clear()
+                with (
+                    patch('xxtrain.serverctl.site_root', return_value=self.root),
+                    patch(
+                        'xxtrain.serverctl._platform_environment',
+                        return_value=(original.decode().splitlines(True), values),
+                    ),
+                ):
+                    with self.assertRaisesRegex(ValueError, 'ClearML keys must not be empty'):
+                        install(self.root, lambda args, **kwargs: calls.append(args))
+
+                self.assertEqual(original, env_file.read_bytes())
+                self.assertEqual([], calls)
+
     def test_start_regenerates_clearml_derivative_from_authoritative_pair(self) -> None:
         deployment = self.root / '.deployment'
         deployment.mkdir()
