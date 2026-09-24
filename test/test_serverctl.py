@@ -372,6 +372,7 @@ class ServerLifecycleTests(unittest.TestCase):
         status_output = StringIO()
         with (
             patch('xxtrain.serverctl.subprocess.run', side_effect=run),
+            patch('xxtrain.serverctl.verify_endpoints'),
             redirect_stderr(StringIO()),
             redirect_stdout(status_output),
         ):
@@ -416,6 +417,35 @@ class ServerLifecycleTests(unittest.TestCase):
 
         with patch('httpx.Client', OfflineClient), redirect_stderr(StringIO()):
             self.assertNotEqual(serverctl.main('verify', root=self.root), 0)
+
+    def test_start_waits_for_verified_entry_and_times_out_when_unavailable(self):
+        calls = []
+
+        def run(args, **kwargs):
+            if args[0] == 'git':
+                return self.real_run(args, **kwargs)
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, '', '')
+
+        with (
+            patch('xxtrain.serverctl.subprocess.run', side_effect=run),
+            patch(
+                'xxtrain.serverctl.verify_endpoints', side_effect=[ValueError('platform endpoint is unavailable'), None]
+            ) as verify,
+            patch('xxtrain.serverctl.time.sleep'),
+        ):
+            serverctl.start(self.root)
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual([args[2] for args in calls if args[:2] == ['sudo', 'systemctl']], ['enable', 'restart'])
+
+        with (
+            patch('xxtrain.serverctl.subprocess.run', side_effect=run),
+            patch('xxtrain.serverctl.verify_endpoints', side_effect=OSError('not ready')),
+            patch('xxtrain.serverctl.time.monotonic', side_effect=[0, 600]),
+            patch('xxtrain.serverctl.time.sleep'),
+        ):
+            with self.assertRaisesRegex(TimeoutError, 'ready'):
+                serverctl.start(self.root)
 
     def test_verify_forwards_loopback_login_session_to_lan_gate(self):
         import httpx

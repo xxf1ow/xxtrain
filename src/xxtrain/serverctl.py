@@ -365,6 +365,15 @@ def start(root: Path) -> None:
         raise ValueError('run serverctl as the normal checkout user; privileged commands use sudo')
     _run(root, ['sudo', 'systemctl', 'enable', 'xxtrain-server.service'])
     _run(root, ['sudo', 'systemctl', 'restart', 'xxtrain-server.service'])
+    deadline = time.monotonic() + 600
+    while True:
+        try:
+            verify_endpoints(root)
+            return
+        except (OSError, ValueError):
+            if time.monotonic() >= deadline:
+                raise TimeoutError('server did not become ready') from None
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
 
 
 def stop(root: Path) -> None:
